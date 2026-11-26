@@ -378,7 +378,7 @@ class TestMuJoCoFlex(unittest.TestCase):
         ground = builder.add_ground_plane()
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        sensor = newton.sensors.SensorContact(model, sensing_shapes=[ground], request_contact_attributes=False)
+        sensor = newton.sensors.SensorContact(model, sensing_shapes=[ground])
         contacts = newton.Contacts(solver.get_max_contact_count(), 0, device=model.device)
         observables = solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts)
 

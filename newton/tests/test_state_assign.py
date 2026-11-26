@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -27,9 +26,6 @@ def _build_model(*, custom_attrs: tuple[str, ...] = ()):
         actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
     )
     builder.add_articulation([joint])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        builder.request_state_attributes("mujoco:qfrc_actuator")
     for name in custom_attrs:
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
@@ -47,36 +43,6 @@ def _build_model(*, custom_attrs: tuple[str, ...] = ()):
 
 
 class TestStateAssignNamespacedAttributes(unittest.TestCase):
-    def test_copies_namespaced_attribute(self):
-        model = _build_model()
-        state_0 = model.state()
-        state_1 = model.state()
-
-        sentinel = np.array([3.14], dtype=np.float32)
-        state_1.mujoco.qfrc_actuator.assign(sentinel)
-
-        state_0.assign(state_1)
-
-        np.testing.assert_allclose(state_0.mujoco.qfrc_actuator.numpy(), sentinel)
-
-    def test_raises_when_src_missing_namespaced_attribute(self):
-        model = _build_model()
-        state_0 = model.state()
-        state_1 = model.state()
-        delattr(state_1, "mujoco")
-
-        with self.assertRaises(ValueError):
-            state_0.assign(state_1)
-
-    def test_raises_when_dst_missing_namespaced_attribute(self):
-        model = _build_model()
-        state_0 = model.state()
-        state_1 = model.state()
-        delattr(state_0, "mujoco")
-
-        with self.assertRaises(ValueError):
-            state_0.assign(state_1)
-
     def test_copies_custom_namespaced_attribute(self):
         model = _build_model(custom_attrs=("my_attribute",))
         state_0 = model.state()
