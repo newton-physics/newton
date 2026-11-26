@@ -5495,7 +5495,9 @@ class ModelBuilder:
                 articulation is handled as in earlier releases: a joint to a body ignored by
                 a path without ``.*`` is attached to the world instead of being dropped, and with
                 ``bodies_follow_joint_ordering=True`` a body left without joints is not imported when its
-                articulation keeps other joints. Defaults to False.
+                articulation keeps other joints. With ``bodies_follow_joint_ordering=False`` such a body is
+                imported in an articulation labeled like the articulation root, without the root's custom
+                attributes, instead of one labeled with the body path. Defaults to False.
 
                 .. deprecated:: 1.9
                     Enabling this temporary flag emits a :class:`~newton.NewtonDeprecationWarning`. Add the bodies
