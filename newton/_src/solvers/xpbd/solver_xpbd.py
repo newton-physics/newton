@@ -200,8 +200,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             "deterministic_max_records": 0,
         }
         self._set_module_options(module_options, module=kernels)
-        self._set_module_options(module_options, module=solve_body_contact_positions.module)
-        self._set_module_options(module_options, module=solve_body_contact_positions_per_contact.module)
         self._set_module_options(module_options, module=tendon_kernels)
         self._restitution_module_options = module_options
         # Deterministic mode would record and sort every contact's body updates in every iteration.
@@ -307,7 +305,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _ensure_restitution_module_options(self) -> None:
         if self.enable_restitution and restitution_kernels not in self._module_options:
             self._set_module_options(self._restitution_module_options, module=restitution_kernels)
-            self._set_module_options(self._restitution_module_options, module=build_restitution_manifolds.module)
             # Registration may advance the shared revision while this solver's
             # core module options are stale, so force a complete reapplication.
             self._applied_module_options_revision = -1
@@ -511,8 +508,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         if contacts is not None and contacts._mesh_recovery_contacts is not None:
             contact_recovery = contacts._mesh_recovery_contacts
         rigid_contact_inv_weight = None
-        # A scalar specializes the contact kernels without pair work or array arguments.
-        contact_pairs = 0
+        contact_pairs = None
         restitution_contact_active = None
         restitution_manifold_key = None
         restitution_manifold_size = None

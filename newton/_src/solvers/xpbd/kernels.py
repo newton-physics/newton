@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
-
 import warp as wp
 
 from ...geometry import ParticleFlags
@@ -1971,20 +1969,18 @@ def compute_angular_correction(
 
 
 @wp.func
-def _contact_friction(contact_pairs: int, tid: int, mu: float, torsional: float, rolling: float):
-    return mu, -1.0, torsional, rolling
-
-
-@wp.func
 def _contact_friction(
     contact_pairs: wp.array[MaterialPairProperties], tid: int, mu: float, torsional: float, rolling: float
 ):
-    pair = contact_pairs[tid]
-    mu = material_pair_value(pair.mu, mu)
     static = -1.0
-    if pair.mu_static >= 0.0:
-        static = wp.max(pair.mu_static, mu)
-    return mu, static, material_pair_value(pair.mu_torsional, torsional), material_pair_value(pair.mu_rolling, rolling)
+    if contact_pairs:
+        pair = contact_pairs[tid]
+        mu = material_pair_value(pair.mu, mu)
+        if pair.mu_static >= 0.0:
+            static = wp.max(pair.mu_static, mu)
+        torsional = material_pair_value(pair.mu_torsional, torsional)
+        rolling = material_pair_value(pair.mu_rolling, rolling)
+    return mu, static, torsional, rolling
 
 
 @wp.func
@@ -2011,7 +2007,7 @@ def _solve_body_contact_positions(
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
     shape_material_friction_mode: wp.array[wp.int32],
-    contact_pairs: Any,
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
@@ -2256,7 +2252,7 @@ def _solve_body_contact_positions(
     return wp.spatial_vector(lin_delta_a, ang_delta_a), wp.spatial_vector(lin_delta_b, ang_delta_b), 1
 
 
-@wp.kernel(module="unique")
+@wp.kernel
 def solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2280,7 +2276,7 @@ def solve_body_contact_positions(
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
     shape_material_friction_mode: wp.array[wp.int32],
-    contact_pairs: Any,
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
@@ -2343,7 +2339,7 @@ def solve_body_contact_positions(
             wp.atomic_add(contact_inv_weight, body_b, 1.0)
 
 
-@wp.kernel(module="unique")
+@wp.kernel
 def solve_body_contact_positions_per_contact(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2367,7 +2363,7 @@ def solve_body_contact_positions_per_contact(
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
     shape_material_friction_mode: wp.array[wp.int32],
-    contact_pairs: Any,
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
