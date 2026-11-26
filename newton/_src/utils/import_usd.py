@@ -580,11 +580,8 @@ def parse_usd(
 
         filtered_paths = {path for path in non_regex_ignore_paths if cuts_articulation(path)}
         if filtered_paths:
-            # PhysicsScenes are not filtered by ignore_paths, so keep the ones found outside these paths.
-            scenes = ret_dict.get(UsdPhysics.ObjectType.Scene, ((), ()))
             native_exclude_paths = [path for path in native_exclude_paths if path not in filtered_paths]
             ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
-            ret_dict[UsdPhysics.ObjectType.Scene] = scenes
     # The parser only skips scenes below ignore paths without ".*".
     physics_scenes = [
         scene
