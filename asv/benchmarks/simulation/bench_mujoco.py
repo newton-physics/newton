@@ -343,7 +343,7 @@ class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
 
 
 class FastAllegro(_KpiBenchmark):
-    version = "5"  # Finger armature and one untimed frame before each sample.
+    version = "4"  # Each sample starts with one untimed frame.
     params = [[8192]]
     num_frames = 300
     robot = "allegro"

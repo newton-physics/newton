@@ -896,9 +896,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Validate solver-specific model compatibility after resolving the selected backend.
         self._validate_model_compatibility(model, self._config)
-        self._rod_joints = (
-            np.flatnonzero(model.joint_type.numpy() == JointType.ROD) if model.joint_count > 0 else np.empty(0, int)
-        )
+        joint_types = model.joint_type.numpy() if model.joint_count > 0 else np.empty(0, int)
+        self._rod_joints = np.flatnonzero(joint_types == JointType.ROD)
+        self._has_d6_joints = bool(np.any(joint_types == JointType.D6))
 
         # Create a Kamino model from the Newton model
         collision_config = config.collision_detector
@@ -1151,17 +1151,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._model_kamino.size, self.model, state, convert_to_com_frame=False
         )
 
-        # Convert Newton origin-frame body poses to Kamino CoM frame before reset.
-        has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
-        self._kamino.convert_body_origin_to_com(
-            body_com=self._model_kamino.bodies.i_r_com_i,
-            body_q_com=state_kamino.q_i,
-            body_q=state_kamino.q_i,
-            world_mask=local_world_mask if not has_callbacks else None,
-            body_wid=self._model_kamino.bodies.wid,
-        )
-        # Note: we convert all worlds if callbacks are set, so they see the full state correctly
-
         # Convert base pose from origin to CoM if needed
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
             base_q_com = wp.zeros_like(config.base_pose.base_q)
@@ -1172,8 +1161,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 base_q=config.base_pose.base_q,
                 base_q_com=base_q_com,
             )
-            config_cache = config.base_pose
-            config.base_pose = SolverKamino.ResetConfig.FromBaseQ(base_q_com)
+            config = replace(config, base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_com))
 
         # Cache fields excluded from the reset op, to restore them afterwards
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
@@ -1188,38 +1176,39 @@ class SolverKamino(SolverBase, CouplingInterface):
         _preserve_if_unset(state_kamino.q_i, StateFlags.BODY_Q)
         _preserve_if_unset(state_kamino.u_i, StateFlags.BODY_QD)
 
-        # Execute the reset operation of the Kamino solver,
-        # to write the reset state to `state_kamino`.
-        self._solver_kamino.reset(
-            state=state_kamino,
-            world_mask=local_world_mask,
-            config=config,
-            success_mask=success_mask,
-        )
-
-        if state.body_qdd is not None:
-            self._kamino.reset_body_acceleration(
-                body_wid=self._model_kamino.bodies.wid,
-                body_qdd=state.body_qdd,
-                world_mask=local_world_mask,
-            )
-
-        # Restore fields excluded from the reset op
-        for array, snapshot in restore_after_reset:
-            wp.copy(array, snapshot)
-
-        # Convert back body poses from COM-frame (Kamino) to body-origin frame (Newton)
-        self._kamino.convert_body_com_to_origin(
+        # Reset callbacks see CoM-frame poses for all worlds.
+        has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
+        pose_world_mask = None if has_callbacks else local_world_mask
+        self._kamino.convert_body_origin_to_com(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_kamino.q_i,
             body_q=state_kamino.q_i,
-            world_mask=local_world_mask if not has_callbacks else None,
+            world_mask=pose_world_mask,
             body_wid=self._model_kamino.bodies.wid,
         )
-
-        # Revert changes to config
-        if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
-            config.base_pose = config_cache
+        try:
+            self._solver_kamino.reset(
+                state=state_kamino,
+                world_mask=local_world_mask,
+                config=config,
+                success_mask=success_mask,
+            )
+            if state.body_qdd is not None:
+                self._kamino.reset_body_acceleration(
+                    body_wid=self._model_kamino.bodies.wid,
+                    body_qdd=state.body_qdd,
+                    world_mask=local_world_mask,
+                )
+        finally:
+            self._kamino.convert_body_com_to_origin(
+                body_com=self._model_kamino.bodies.i_r_com_i,
+                body_q_com=state_kamino.q_i,
+                body_q=state_kamino.q_i,
+                world_mask=pose_world_mask,
+                body_wid=self._model_kamino.bodies.wid,
+            )
+            for array, snapshot in restore_after_reset:
+                wp.copy(array, snapshot)
 
     def observables(
         self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
@@ -1849,8 +1838,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             flags
             & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
         )
-        # Keep transform-only notifications free of host validation, as before.
-        check_axes = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
+        # JOINT_PROPERTIES includes axis edits. Only D6 layouts need this host check.
+        check_axes = bool(
+            flags & ModelFlags.JOINT_DOF_PROPERTIES or (self._has_d6_joints and flags & ModelFlags.JOINT_PROPERTIES)
+        )
         check_body_immovability = bool(flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES))
         if not (check_dof or check_actuation or check_axes or check_body_immovability):
             return
@@ -1876,6 +1867,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
         cartesian_handedness_joint = violations[self._kamino.StructuralUpdateViolation.CARTESIAN_HANDEDNESS]
         cylindrical_axes_joint = violations[self._kamino.StructuralUpdateViolation.CYLINDRICAL_AXES]
+        d6_axis_frame_joint = violations[self._kamino.StructuralUpdateViolation.D6_AXIS_FRAME]
         immovability_flip_body = violations[self._kamino.StructuralUpdateViolation.IMMOVABILITY_FLIP]
         friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
         effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
@@ -1929,6 +1921,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
                 "universal, Cartesian, and gimbal axes must be unit length and orthogonal. "
                 "D6 linear and angular bases must each be orthonormal."
+            )
+
+        if d6_axis_frame_joint != sentinel:
+            joint = int(d6_axis_frame_joint)
+            raise ValueError(
+                f"Invalid joint configuration for SolverKamino:\n"
+                f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
+                "D6 linear and angular axes must use the same orthonormal frame."
             )
 
         if gimbal_handedness_joint != sentinel:

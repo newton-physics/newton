@@ -462,10 +462,18 @@ D6 joints
 SCC, LOX, and PADMM support D6 joints authored with
 :meth:`newton.ModelBuilder.add_joint_d6` or imported from USD. A D6 joint
 has zero to three linear axes and zero to three angular axes. Each family
-must be orthonormal and can have its own orientation. Omitted axes are
-locked. Coordinates and rates are ordered with linear axes first, in
-meters and meters per second, followed by the intrinsic angular axes, in
-radians and radians per second.
+must consist of unit-length, mutually orthogonal axes. Both families must
+use the same orthonormal frame, so every linear axis must be parallel or
+perpendicular to every angular axis. Either direction along a frame axis
+is allowed. Omitted degrees of freedom are locked.
+On models with D6 joints, issue ``ModelFlags.JOINT_PROPERTIES`` notifications
+outside CUDA graph capture so Kamino can validate axis updates.
+
+Coordinates and rates follow the authored order, with linear components
+first (meters and meters per second), then angular components (radians and
+radians per second). Angular coordinates are intrinsic angles applied in
+order about successive rotated axes. Two angular axes give universal-joint
+rotation and three give gimbal rotation.
 
 Each active axis supports position limits, direct effort, implicit drives,
 effort limits, armature, damping, and Coulomb friction. With three angular

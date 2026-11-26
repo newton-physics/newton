@@ -361,10 +361,6 @@ def _setup_allegro(articulation_builder):
         articulation_builder.joint_target_ke[i] = 3.0
         articulation_builder.joint_target_kd[i] = 0.1
         articulation_builder.joint_effort_limit[i] = 0.5
-    # Match the finger inertia used by the Allegro example at the 240 Hz step rate.
-    for joint, joint_type in enumerate(articulation_builder.joint_type):
-        if joint_type == newton.JointType.REVOLUTE:
-            articulation_builder.joint_armature[articulation_builder.joint_qd_start[joint]] = 1.0e-2
     if hasattr(articulation_builder, "joint_target_q"):
         articulation_builder.joint_target_q[:] = articulation_builder.joint_q
     else:

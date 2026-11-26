@@ -87,6 +87,7 @@ class StructuralUpdateViolation(IntEnum):
     EFFORT_CTS = 8
     CARTESIAN_HANDEDNESS = 9
     CYLINDRICAL_AXES = 10
+    D6_AXIS_FRAME = 11
 
 
 ###
@@ -418,6 +419,17 @@ def validate_joint_axes_kernel(
         if dof_type == JointDoFType.CYLINDRICAL:
             if wp.length_sq(joint_axis[dof_start] - joint_axis[dof_start + 1]) > 1.0e-12:
                 wp.atomic_min(violations, StructuralUpdateViolation.CYLINDRICAL_AXES, joint)
+        else:
+            for i in range(linear_count):
+                linear_axis = joint_axis[dof_start + i]
+                for j in range(angular_count):
+                    angular_axis = joint_axis[dof_start + linear_count + j]
+                    if (
+                        wp.abs(wp.dot(linear_axis, angular_axis)) > 1.0e-6
+                        and wp.length_sq(wp.cross(linear_axis, angular_axis)) > 1.0e-12
+                    ):
+                        wp.atomic_min(violations, StructuralUpdateViolation.D6_AXIS_FRAME, joint)
+                        return
         return
 
     is_universal = dof_type == JointDoFType.UNIVERSAL
@@ -1201,6 +1213,7 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.EFFORT_CTS`: effort-row topology changed
     - :attr:`StructuralUpdateViolation.CARTESIAN_HANDEDNESS`: Cartesian axes changed handedness
     - :attr:`StructuralUpdateViolation.CYLINDRICAL_AXES`: cylindrical axes became distinct
+    - :attr:`StructuralUpdateViolation.D6_AXIS_FRAME`: linear and angular axes do not share an orthonormal frame
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -1365,6 +1378,13 @@ def _validate_joint_axes(
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
             "universal, Cartesian, and gimbal axes must be unit length and orthogonal. "
             "D6 linear and angular bases must each be orthonormal."
+        )
+    invalid_joint = int(violations_np[StructuralUpdateViolation.D6_AXIS_FRAME])
+    if invalid_joint < model.joint_count:
+        raise ValueError(
+            f"Invalid joint configuration for SolverKamino:\n"
+            f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
+            "D6 linear and angular axes must use the same orthonormal frame."
         )
     invalid_joint = int(violations_np[StructuralUpdateViolation.GIMBAL_HANDEDNESS])
     if invalid_joint < model.joint_count:

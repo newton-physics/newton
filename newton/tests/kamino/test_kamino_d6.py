@@ -78,8 +78,55 @@ class TestKaminoD6(unittest.TestCase):
         wp.launch(_measure_angular_derivatives, dim=4, outputs=[analytic, finite_difference], device=self.device)
         np.testing.assert_allclose(analytic.numpy(), finite_difference.numpy(), atol=8.0e-5, rtol=0.0)
 
+    def test_axis_validation_on_construction_and_notification(self):
+        """Reject invalid D6 axes at construction and on model updates."""
+        for angular, edited, error in (
+            ((1, 0, 0), (0, 1, 0), "cylindrical joint"),
+            ((0, 0, 1), (0.6, 0.0, 0.8), "same orthonormal frame"),
+        ):
+            with self.subTest(angular=angular):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(mass=1.0, inertia=_INERTIA, lock_inertia=True)
+                joint = builder.add_joint_d6(
+                    -1,
+                    body,
+                    linear_axes=[builder.JointDofConfig(axis=(1, 0, 0))],
+                    angular_axes=[builder.JointDofConfig(axis=angular)],
+                )
+                builder.add_articulation([joint])
+                model = builder.finalize(device=self.device)
+                solver = SolverKamino(model)
+                model.joint_X_p.assign(np.array([[0.1, 0, 0, 0, 0, 0, 1]], dtype=np.float32))
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                model.joint_axis.assign(np.array([(1, 0, 0), edited], dtype=np.float32))
+                for flag in (newton.ModelFlags.JOINT_PROPERTIES, newton.ModelFlags.JOINT_DOF_PROPERTIES):
+                    with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, error):
+                        solver.notify_model_changed(flag)
+                if angular == (0, 0, 1):
+                    with self.assertRaisesRegex(ValueError, error):
+                        SolverKamino(model)
+
+    def test_failed_joint_reset_preserves_body_origin(self):
+        """Preserve the body origin frame when a joint-coordinate reset raises."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=_INERTIA, com=(0.25, 0, 0), lock_inertia=True)
+        joint = builder.add_joint_d6(
+            -1,
+            body,
+            linear_axes=[builder.JointDofConfig(axis=(1, 0, 0))],
+            angular_axes=[builder.JointDofConfig(axis=(0, 0, 1))],
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize(device=self.device)
+        solver = SolverKamino(model)
+        state = model.state()
+        original_pose = state.body_q.numpy().copy()
+        with self.assertRaisesRegex(RuntimeError, "FK solver must be enabled"):
+            solver.reset(state, config=SolverKamino.ResetConfig.from_joints())
+        np.testing.assert_array_equal(state.body_q.numpy(), original_pose)
+
     def test_layouts_project_body_wrench(self):
-        """Project independent linear and angular axes in all 16 layouts on every backend."""
+        """Project linear and angular axes in all 16 layouts on every backend."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         layouts = list(itertools.product(range(4), repeat=2))
         wrench = np.array((1.0, 2.0, 3.0, -2.0, 1.0, 3.0), dtype=np.float32)

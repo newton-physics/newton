@@ -1,1 +1,1 @@
-Support D6 joints with independent linear and angular axes in Kamino's SCC, LOX, and PADMM backends.
+Support D6 joints with linear and angular axes in a shared orthonormal frame in Kamino's SCC, LOX, and PADMM backends.
