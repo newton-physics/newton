@@ -312,6 +312,16 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
                     expected = 0.5
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
 
+        # Separated contacts rebound fully once they close within the step, and not before
+        constraints.contact_compliance = False
+        for backend in ("scc", "padmm"):
+            for gap, restitution, expected in ((0.015, 1.0, -1.0), (0.005, 0.5, 0.5), (0.005, 1.0, 1.0)):
+                with self.subTest(backend=backend, gap=gap, restitution=restitution):
+                    model = self._sphere(gap=gap, gravity=0.0, velocity=-1.0, restitution=restitution)
+                    solver = self._solver(model, constraints, backend=backend)
+                    state = self._step(model, solver)
+                    self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
+
     def test_material_refresh_and_contact_removal(self):
         """Refresh material compliance and clear retired contact rows in reused solver storage."""
         model = self._sphere()

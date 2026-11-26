@@ -635,11 +635,13 @@ class TestPADMMSolver(NewtonTestCase):
         float32 floor of the absolute primal residual, with and without acceleration.
         """
         test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device)
-        test.build()
 
         for use_acceleration in (False, True):
             for relative_tolerance in (0.0, 3e-7):
                 with self.subTest(use_acceleration=use_acceleration, relative_tolerance=relative_tolerance):
+                    # Solve each configuration from a freshly assembled problem
+                    test.build()
+
                     # Use an absolute primal tolerance below the float32 resolution of the contact impulses
                     config = PADMMSolver.Config()
                     config.primal_tolerance = 1e-12

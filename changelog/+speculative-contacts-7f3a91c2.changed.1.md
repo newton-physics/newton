@@ -1,0 +1,1 @@
+Apply restitution to separated contacts in the PADMM and SCC backends of `SolverKamino` only once they close within the step, as a full Newton impact. Restitutive bodies no longer rebound before reaching the surface, and speculative impacts no longer lose the gap-closing velocity from their rebound.

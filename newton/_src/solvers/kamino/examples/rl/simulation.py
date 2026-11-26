@@ -96,6 +96,8 @@ class SimulatorFromNewton:
             self._newton_state = newton_model.state()
             self._newton_collision_pipeline = newton.CollisionPipeline(newton_model)
             self._newton_contacts = self._newton_collision_pipeline.contacts()
+            # Largest per-world timestep, so that the contact cull keeps every contact reachable within a step
+            self._newton_contacts_dt = float(self._model.time.dt.numpy().max())
             per_world = max(1024, (newton_model.rigid_contact_max or 0) // max(newton_model.world_count, 1))
             if config.collision_detector.max_contacts_per_world is not None:
                 per_world = min(per_world, config.collision_detector.max_contacts_per_world)
@@ -160,6 +162,8 @@ class SimulatorFromNewton:
             body_q_com=state_kamino.q_i,
             body_q=self._newton_state.body_q,
         )
+        # Both use world-frame twists about the center of mass
+        wp.copy(self._newton_state.body_qd, state_kamino.u_i)
         self._newton_collision_pipeline.collide(self._newton_state, self._newton_contacts)
         convert_contacts_newton_to_kamino(
             self._newton_model,
@@ -168,7 +172,7 @@ class SimulatorFromNewton:
             self._contacts,
             contact_dead_zone=self._config.solver.constraints.delta,
             cull_unreachable_contacts=self._solver.cull_unreachable_contacts,
-            dt=self._config.dt if isinstance(self._config.dt, float) else 0.0,
+            dt=self._newton_contacts_dt,
         )
 
     def step(self):
