@@ -2224,11 +2224,7 @@ def _case(
     )
     state, out = model.state(), model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-    pipeline = newton.CollisionPipeline(
-        model,
-        rigid_contact_max=128 if free_count else 64,
-        deterministic=solver.deterministic != wp.DeterministicMode.NOT_GUARANTEED,
-    )
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=128 if free_count else 64)
     return model, solver, state, out, model.control(), pipeline, pipeline.contacts()
 
 
@@ -2268,16 +2264,8 @@ class TestSteelSparseSolver(unittest.TestCase):
         Box feet and a box object rest on several contacts each, so their patch regions link normal
         rows on the articulated and the free-body rows; the free body slides so its friction carries load.
         """
-        # Compare factor representations with the same contact and constraint row order.
-        # Atomic row allocation can change a finite Gauss-Seidel sweep's result.
-        options = {
-            "free_count": 1,
-            "boxes": True,
-            "friction_anchor_beta": 0.2,
-            "deterministic": wp.DeterministicMode.RUN_TO_RUN,
-        }
-        dense = _case(False, **options)
-        sparse = _case(True, **options)
+        dense = _case(False, free_count=1, boxes=True, friction_anchor_beta=0.2)
+        sparse = _case(True, free_count=1, boxes=True, friction_anchor_beta=0.2)
         self.assertIsNone(dense[1]._sparse_mass_matrix_size)
         self.assertEqual(sparse[1]._sparse_mass_matrix_size, 9)
         self.assertTrue(sparse[1]._friction_anchors_enabled)
