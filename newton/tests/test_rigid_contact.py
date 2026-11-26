@@ -992,7 +992,9 @@ def test_shape_friction_modes(test, device, solver_fn, supports_torsion):
     state_0.joint_qd.assign(joint_qd.reshape(-1))
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-    native_contacts = isinstance(solver, newton.solvers.SolverMuJoCo)
+    native_contacts = isinstance(solver, newton.solvers.SolverMuJoCo) and (
+        solver.use_mujoco_cpu or solver.mjw_model.opt.run_collision_detection
+    )
     collision_pipeline = None if native_contacts else newton.CollisionPipeline(model)
     contacts = None if native_contacts else collision_pipeline.contacts()
     simulate(solver, model, state_0, state_1, None, collision_pipeline, contacts, 0.2, 100)

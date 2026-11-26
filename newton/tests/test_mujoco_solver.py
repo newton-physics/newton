@@ -16358,12 +16358,14 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
 class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
     """Contact generation and simulation with per-world mesh layouts."""
 
-    def _step_once(self, model, solver):
+    def _step_once(self, model, solver, *, native=False):
         """Run one step from the initial state and return MuJoCo's contact world ids and distances."""
         state, state_next = model.state(), model.state()
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
+        contacts = None
+        if not native:
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
         solver.step(state, state_next, model.control(), contacts, 0.002)
         count = int(solver.mjw_data.nacon.numpy()[0])
         return solver.mjw_data.contact.worldid.numpy()[:count], solver.mjw_data.contact.dist.numpy()[:count]
@@ -16477,11 +16479,13 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
             )
             builder.add_world(world)
         model = builder.finalize()
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=32, njmax=64)
-        self.assertEqual(solver.mjw_model.nmesh, 2)
-        worlds, dist = self._step_once(model, solver)
-        np.testing.assert_array_equal(worlds[dist < 0.0], 1)
-        np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
+        for native in (False, True):
+            with self.subTest(native=native):
+                solver = SolverMuJoCo(model, use_mujoco_contacts=native, nconmax=32, njmax=64)
+                self.assertEqual(solver.mjw_model.nmesh, 2)
+                worlds, dist = self._step_once(model, solver, native=native)
+                np.testing.assert_array_equal(worlds[dist < 0.0], 1)
+                np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
 
     def test_mesh_scale_change_with_newton_contacts(self):
         """Allow mesh resizing when Newton generates contacts."""
