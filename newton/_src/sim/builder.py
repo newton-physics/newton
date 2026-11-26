@@ -1526,7 +1526,9 @@ class ModelBuilder:
             [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
             self.target_q = 0.0 if target_q is None else target_q
             """The target position of the joint axis.
-            Explicit targets are preserved independently of joint limits, including preload targets.
+            Explicit targets are preserved during construction independently of joint limits.
+            SolverXPBD and SolverVBD still clamp drive targets to the limits during solving;
+            preserving an out-of-range target does not enable preload in those solvers.
             If omitted, use zero when in range, otherwise the limit midpoint."""
             self.target_qd = 0.0 if target_qd is None else target_qd
             """The target velocity of the joint axis."""
