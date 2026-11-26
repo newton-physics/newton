@@ -29,6 +29,7 @@ import newton
 import newton.ik as ik
 import newton.utils
 from newton import JointTargetMode
+from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 
 @wp.kernel
@@ -126,6 +127,7 @@ class _TeleopLoop:
     linear_speed = 0.5
     sweep_half_period = 1.6
     arm_joint_indices = (*range(15, 22), *range(29, 36))
+    _robot: ClassVar[newton.ModelBuilder | None] = None
 
     def __init__(self, mode: _TeleopMode, stats_window: int):
         self.device = wp.get_device(mode.device)
@@ -137,7 +139,7 @@ class _TeleopLoop:
         self.frame_index = 0
         self.stats = _WindowStats(stats_window)
 
-        robot = self._build_robot()
+        robot = self._robot_builder()
         self.model_ik = copy.deepcopy(robot).finalize()
 
         scene = newton.ModelBuilder()
@@ -204,7 +206,16 @@ class _TeleopLoop:
                 self._simulate()
             self.graph_sim = capture.graph
 
-    def _build_robot(self) -> newton.ModelBuilder:
+    @classmethod
+    def _robot_builder(cls) -> newton.ModelBuilder:
+        """Return a copy of the robot, imported once per process."""
+        # The USD import dominates setup, which ASV repeats before every sample.
+        if cls._robot is None:
+            cls._robot = cls._build_robot()
+        return copy.deepcopy(cls._robot)
+
+    @classmethod
+    def _build_robot(cls) -> newton.ModelBuilder:
         robot = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(robot)
         robot.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1.0e-5)
@@ -219,15 +230,18 @@ class _TeleopLoop:
             enable_self_collisions=False,
             hide_collision_shapes=True,
             skip_mesh_approximation=True,
+            # Avoid imported actuators that oppose the IK joint targets.
+            ignore_paths=[".*/Physics/.*_joint$"],
+            # Read the asset's joint effort limits (mjc:actuatorfrcrange).
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],
         )
         robot.approximate_meshes("bounding_box")
 
         for i in range(robot.joint_dof_count):
-            robot.joint_target_ke[i] = 2500.0 if i in self.arm_joint_indices else 500.0
-            robot.joint_target_kd[i] = 120.0 if i in self.arm_joint_indices else 20.0
+            robot.joint_target_ke[i] = 500.0
+            # A saturated effort limit integrates damping explicitly: keep kd * dt below twice the wrist inertia.
+            robot.joint_target_kd[i] = 4.0 if i in cls.arm_joint_indices else 20.0
             robot.joint_target_mode[i] = int(JointTargetMode.POSITION_VELOCITY)
-        for i in self.arm_joint_indices:
-            robot.joint_effort_limit[i] = 200.0
         return robot
 
     @staticmethod
@@ -247,7 +261,8 @@ class _TeleopLoop:
             hx=0.5 * box_size[0],
             hy=0.5 * box_size[1],
             hz=0.5 * box_size[2],
-            cfg=newton.ModelBuilder.ShapeConfig(mu=1.2, kd=80.0, density=12000.0),
+            # A 1 kg box, light enough for the arms' effort limits.
+            cfg=newton.ModelBuilder.ShapeConfig(mu=1.2, kd=80.0, density=1000.0),
         )
         builder.add_ground_plane()
         return box_body, box_shape
@@ -456,13 +471,8 @@ class _TeleopMuJoCoBenchmark:
     def setup(self, mode: str) -> None:
         self.mode = _TELEOP_MODES[mode]
         _skip_unavailable_mode(self.mode)
-        previous_target_layout = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = True
-        try:
-            with wp.ScopedDevice(self.mode.device):
-                self.loop = _TeleopLoop(self.mode, self.num_frames)
-        finally:
-            newton.use_coord_layout_targets = previous_target_layout
+        with wp.ScopedDevice(self.mode.device):
+            self.loop = _TeleopLoop(self.mode, self.num_frames)
 
         self._step_frames(self.warmup_frames)
         self.loop.clear_metrics()
@@ -555,12 +565,14 @@ class TeleopMuJoCo(_TeleopMuJoCoBenchmark):
         return self.loop.stats.summary("target_error_m")[0]
 
     track_mean_target_error_m.unit = "m"
+    track_mean_target_error_m.version = "2"
 
     def track_mean_target_rotation_error_rad(self, mode: str) -> float:
         self._measure_frames(collect_workload_state=True)
         return self.loop.stats.summary("target_rotation_error_rad")[0]
 
     track_mean_target_rotation_error_rad.unit = "rad"
+    track_mean_target_rotation_error_rad.version = "2"
 
     def track_hand_object_contact_frame_pct(self, mode: str) -> float:
         self._measure_frames(collect_workload_state=True)
@@ -568,6 +580,7 @@ class TeleopMuJoCo(_TeleopMuJoCoBenchmark):
         return 100.0 * self.loop.stats.summary("hand_object_contact")[0]
 
     track_hand_object_contact_frame_pct.unit = "%"
+    track_hand_object_contact_frame_pct.version = "2"
 
     def track_object_displacement_m(self, mode: str) -> float:
         self._measure_frames(collect_workload_state=True)
@@ -575,6 +588,7 @@ class TeleopMuJoCo(_TeleopMuJoCoBenchmark):
         return self.loop.stats.summary("object_displacement_m")[2]
 
     track_object_displacement_m.unit = "m"
+    track_object_displacement_m.version = "2"
 
 
 if __name__ == "__main__":

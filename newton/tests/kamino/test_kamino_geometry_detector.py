@@ -3,12 +3,15 @@
 
 """Unit tests for `geometry/detector.py`"""
 
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+import newton
+from newton import ModelBuilder
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry import (
     CollisionDetector,
 )
@@ -17,35 +20,26 @@ from newton._src.solvers.kamino._src.geometry.detector import (
     _estimate_fallback_world_max_contacts,
     _resolve_contact_capacity,
 )
-from newton._src.solvers.kamino._src.models.builders import basics
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
+from newton.tests.unittest_utils import NewtonTestCase
+from newton.tests.utils import basics
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
 ###
 
 
-class TestCollisionDetectorConfig(unittest.TestCase):
+class TestCollisionDetectorConfig(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
         self.default_device = wp.get_device(test_context.device)
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            msg.info("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
-        else:
-            msg.reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_default(self):
         """Test making default collision detector config."""
@@ -62,28 +56,19 @@ class TestCollisionDetectorConfig(unittest.TestCase):
         self.assertEqual(config.bvtype, "aabb")
 
 
-class TestGeometryCollisionDetector(unittest.TestCase):
+class TestGeometryCollisionDetector(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for detailed output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
-        else:
-            msg.reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
         self.build_func = basics.build_boxes_nunchaku
         self.expected_contacts = 9  # NOTE: specialized to build_boxes_nunchaku
-        msg.debug(f"build_func: {self.build_func.__name__}")
-        msg.debug(f"expected_contacts: {self.expected_contacts}")
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+        logger.debug("build_func: %s", self.build_func.__name__)
+        logger.debug("expected_contacts: %s", self.expected_contacts)
 
     def test_01_primitive_pipeline(self):
         """
@@ -91,8 +76,9 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         on multiple worlds containing boxes_nunchaku model.
         """
         # Create and set up a model builder
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
-        model = builder.finalize(self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=self.build_func(), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
 
         # Create a collision detector with primitive pipeline
@@ -108,8 +94,8 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         detector.collide(data)
 
         # Create a list of expected number of contacts per shape pair
-        expected_world_contacts: list[int] = [self.expected_contacts] * builder.num_worlds
-        msg.debug("expected_world_contacts:\n%s\n", expected_world_contacts)
+        expected_world_contacts: list[int] = [self.expected_contacts] * builder.world_count
+        logger.debug("expected_world_contacts:\n%s\n", expected_world_contacts)
 
         # Define expected contacts dictionary
         expected = {
@@ -131,8 +117,9 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         on multiple worlds containing boxes_nunchaku model.
         """
         # Create and set up a model builder
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
-        model = builder.finalize(self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=self.build_func(), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
 
         # Create a collision detector with unified pipeline
@@ -148,8 +135,8 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         detector.collide(data)
 
         # Create a list of expected number of contacts per shape pair
-        expected_world_contacts: list[int] = [self.expected_contacts] * builder.num_worlds
-        msg.debug("expected_world_contacts:\n%s\n", expected_world_contacts)
+        expected_world_contacts: list[int] = [self.expected_contacts] * builder.world_count
+        logger.debug("expected_world_contacts:\n%s\n", expected_world_contacts)
 
         # Define expected contacts dictionary
         expected = {
@@ -167,8 +154,9 @@ class TestGeometryCollisionDetector(unittest.TestCase):
 
     def test_03_pair_based_world_budgets(self):
         """Verify per-world budgets follow geometry rather than an equal model split."""
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
-        model = builder.finalize(self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=self.build_func(), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
 
         config = CollisionDetector.Config(pipeline="primitive", broadphase="explicit")
         detector = CollisionDetector(model=model, config=config)
@@ -178,8 +166,9 @@ class TestGeometryCollisionDetector(unittest.TestCase):
 
     def test_04_max_contacts_caps_model_total(self):
         """Verify ``max_contacts`` caps rather than floors the geometry-based estimate."""
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
-        model = builder.finalize(self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=self.build_func(), copy_count=3)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         uncapped_total = sum(model.geoms.world_minimum_contacts)
         self.assertGreater(uncapped_total, 15)
 
@@ -195,10 +184,11 @@ class TestGeometryCollisionDetector(unittest.TestCase):
 
     def test_05_heterogeneous_world_budgets(self):
         """Verify worlds with different geometry receive different contact budgets."""
-        builder = ModelBuilderKamino(default_world=False)
+        builder = ModelBuilder()
         basics.build_boxes_nunchaku(builder=builder)
-        builder.add_world(name="empty_world")
-        model = builder.finalize(self.default_device)
+        builder.begin_world(label="empty_world")
+        builder.end_world()
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
 
         config = CollisionDetector.Config(pipeline="primitive", broadphase="explicit")
         detector = CollisionDetector(model=model, config=config)
@@ -209,11 +199,13 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         self.assertEqual(detector.world_max_contacts, model.geoms.world_minimum_contacts)
 
 
-class TestCollisionDetectorContactCapacity(unittest.TestCase):
+class TestCollisionDetectorContactCapacity(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
+
+        setup_test_output(self)
 
     def test_00_cap_world_contacts_at_total(self):
         """Verify proportional capping preserves the configured model total."""
@@ -223,8 +215,9 @@ class TestCollisionDetectorContactCapacity(unittest.TestCase):
 
     def test_01_fallback_explicit_per_world_pair_counts(self):
         """Verify fallback explicit broad-phase estimates accumulate pairs per world."""
-        builder = make_homogeneous_builder(num_worlds=2, build_fn=basics.build_boxes_nunchaku)
-        model = builder.finalize(self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=basics.build_boxes_nunchaku(), copy_count=2)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         config = CollisionDetector.Config(broadphase="explicit")
 
         world_max = _estimate_fallback_world_max_contacts(model, config)
@@ -235,7 +228,7 @@ class TestCollisionDetectorContactCapacity(unittest.TestCase):
     def test_02_resolve_contact_capacity_uses_pair_metadata(self):
         """Verify the default resolved budget matches pair-based metadata."""
         builder = basics.build_boxes_nunchaku()
-        model = builder.finalize(self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         config = CollisionDetector.Config()
 
         model_max, world_max = _resolve_contact_capacity(model, config)
@@ -250,6 +243,7 @@ class TestCollisionDetectorContactCapacity(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

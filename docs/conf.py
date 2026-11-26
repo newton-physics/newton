@@ -7,12 +7,14 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import datetime
-import importlib
 import inspect
+import logging
 import os
+import pkgutil
 import re
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -36,24 +38,9 @@ copyright = f"{datetime.date.today().year}, The Newton Developers. Documentation
 author = "The Newton Developers"
 
 # Read version from pyproject.toml
-# TODO: When minimum Python version is >=3.11, replace with:
-#   import tomllib
-#   with open(project_root / "pyproject.toml", "rb") as f:
-#       project_version = tomllib.load(f)["project"]["version"]
 project_root = Path(__file__).parent.parent
-try:
-    with open(project_root / "pyproject.toml", encoding="utf-8") as f:
-        content = f.read()
-    project_section = re.search(r"^\[project\]\s*\n(.*?)(?=^\[|\Z)", content, re.MULTILINE | re.DOTALL)
-    if not project_section:
-        raise ValueError("Could not find [project] section in pyproject.toml")
-    match = re.search(r'^version\s*=\s*"([^"]+)"', project_section.group(1), re.MULTILINE)
-    if not match:
-        raise ValueError("Could not find version in [project] section of pyproject.toml")
-    project_version = match.group(1)
-except Exception as e:
-    print(f"Error reading version from pyproject.toml: {e}", file=sys.stderr)
-    sys.exit(1)
+with open(project_root / "pyproject.toml", "rb") as f:
+    project_version = tomllib.load(f)["project"]["version"]
 
 release = project_version
 
@@ -90,7 +77,6 @@ extensions = [
     "sphinxcontrib.mermaid",
     "sphinx_copybutton",
     "sphinx_design",
-    "sphinx_tabs.tabs",
     "autodoc_filter",
     "autodoc_wpfunc",
     "experimental",
@@ -187,14 +173,26 @@ if pandoc_path is None:
         "build the complete documentation."
     )
 
+_USD_INVENTORY_URL = "https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest"
+
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp/stable", None),
-    "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
+    "usd": (_USD_INVENTORY_URL, None),
 }
+
+
+def _tolerate_usd_inventory_failure(record: logging.LogRecord) -> bool:
+    """Report a failed fetch of the USD inventory as info: the host is unreliable and ``-W`` would fail the build."""
+    if record.levelno == logging.WARNING and _USD_INVENTORY_URL in record.getMessage():
+        record.levelno, record.levelname = logging.INFO, "INFO"
+    return True
+
+
+logging.getLogger("sphinx.sphinx.ext.intersphinx").addFilter(_tolerate_usd_inventory_failure)
 
 # Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
 # ``pxr.*`` paths so intersphinx can resolve them against the USD inventory.
@@ -257,7 +255,7 @@ autodoc_default_options = {
     "members": True,
     "member-order": "groupwise",
     "special-members": "__init__",
-    "undoc-members": False,
+    "undoc-members": True,
     "exclude-members": "__weakref__, State",
     "imported-members": True,
     "autosummary": True,
@@ -386,8 +384,8 @@ def linkcode_resolve(domain: str, info: dict[str, str]) -> str | None:
         return None
 
     try:
-        # Import the module and get the object
-        module = importlib.import_module(module_name)
+        # Public namespaces may be module attributes rather than importable submodules.
+        module = pkgutil.resolve_name(module_name)
 
         if "fullname" in info:
             # Get the specific object (function, class, etc.)
@@ -448,7 +446,7 @@ def linkcode_resolve(domain: str, info: dict[str, str]) -> str | None:
         github_base = "https://github.com/newton-physics/newton"
         return f"{github_base}/blob/{github_version}/{rel_path}{line_fragment}"
 
-    except (ImportError, AttributeError, TypeError):
+    except (ImportError, AttributeError, TypeError, ValueError):
         return None
 
 

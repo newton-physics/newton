@@ -1,22 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Franka Cable IK Pick-and-Place (proxy coupling)
-#
-# A fixed-base Franka FR3 arm uses Newton's GPU IK solver to pick up a
-# deformable cable and move it to a target location. The arm is simulated
-# by MuJoCo (PD position targets driven from the IK result), the cable is
-# a VBD rod, and SolverCoupledProxy couples the two: the gripper bodies are
-# exposed to VBD as virtual proxies so the cable detects them as contacts.
-#
-# Cable geometry/material, Franka joint gains, contact parameters and the
-# proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
-#
-# Standalone: depends only on newton + warp (no IsaacLab).
-#
-# Command: python -m newton.examples franka_cable_ik_pick_place
-###########################################################################
+"""Example Franka Cable IK Pick-and-Place (proxy coupling)
+
+A fixed-base Franka FR3 arm uses Newton's GPU IK solver to pick up a
+deformable cable and move it to a target location. The arm is simulated
+by MuJoCo (PD position targets driven from the IK result), the cable is
+a VBD rod, and SolverCoupledProxy couples the two: the gripper bodies are
+exposed to VBD as virtual proxies so the cable detects them as contacts.
+
+Cable geometry/material, Franka joint gains, contact parameters and the
+proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
+
+Standalone: depends only on newton + warp (no IsaacLab).
+
+Success criteria:
+- A fixed-base Franka FR3 arm and a deformable cable appear on a working surface.
+- The Franka arm approaches the cable, descends to the cable, and closes the gripper around it.
+- The arm lifts the cable, moves it to a target location, lowers it, releases it, and retracts.
+- The cable behaves as a deformable VBD rod and interacts with the gripper through proxy contacts.
+- The grasped cable segment should be placed close to the target location.
+
+Runs:
+- `python -m newton.examples franka_cable_ik_pick_place`
+"""
 
 from __future__ import annotations
 
@@ -57,6 +64,8 @@ GRIPPER_DOWN = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
 # thin cable. Instead the grasp closes to GRIP_CLOSE to capture, then holds GRIP_HOLD (just
 # under the cable radius) so the fingers pinch firmly without ratcheting past it.
 GRIP_OPEN = 0.04
+PLACE_TOLERANCE = 0.01  # placement accuracy checked by the example test [m]
+SETTLE_TIME = 1.0  # time the example test lets the released cable come to rest [s]
 GRIP_CLOSE = 0.0
 GRIP_HOLD = 0.0  # held finger position once grasped
 GRIP_FORCE = 1500.0  # gripper effort limit [N] (IsaacLab panda_hand)
@@ -96,6 +105,7 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.sim_time = 0.0
+        self._release_checked = False
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, int(args.substeps))
@@ -129,8 +139,7 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             scale = max(1.0, float(np.sqrt(self.world_count)))
             self.viewer.set_camera(pos=wp.vec3(0.9 * scale, -1.4 * scale, 0.9 * scale), pitch=-22.0, yaw=120.0)
-            if hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
+            self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
@@ -150,6 +159,7 @@ class Example:
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[: len(FRANKA_Q)] = FRANKA_Q
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
@@ -167,7 +177,7 @@ class Example:
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.rigid_gap = template.rigid_gap
-        builder.replicate(template, world_count=self.world_count)
+        builder.replicate(template, copy_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
 
         # Match the gripper side to the cable material without overwriting
@@ -240,20 +250,18 @@ class Example:
             margin=0.0,
             gap=0.01,
         )
-        points, quats = newton.utils.rod_straight_points_and_quaternions(
+        rod = newton.Rod.create_straight(
             start=CABLE_CENTER - wp.vec3(0.5 * CABLE_LENGTH, 0.0, 0.0),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=CABLE_LENGTH,
-            num_segments=self.payload_segments,
+            segment_count=self.payload_segments,
             twist_total=0.0,
+            radius=self.payload_radius,
         )
         stretch_stiffness = 1.0e2
         bend_stiffness = 4.0e-4
         builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.payload_radius,
-            body_frame_origin="com",
+            rod=rod,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=1.0e-1,
@@ -317,7 +325,6 @@ class Example:
                     solver=lambda v: SolverVBD(
                         model=v,
                         iterations=int(args.vbd_iterations),
-                        rigid_compliant_alm=True,
                         rigid_contact_history=False,
                     ),
                     bodies=self.payload_bodies,
@@ -435,6 +442,9 @@ class Example:
         )
         self.targets = poses[:, 1:]
         self.key_times = np.cumsum(poses[:, 0])
+        # The release starts when the first keyframe after the grasp opens the fingers.
+        release_index = next(i for i in range(3, len(poses)) if poses[i, 8] == np.float32(GRIP_OPEN))
+        self.release_time = float(self.key_times[release_index - 1])
 
     def update_ik_targets(self):
         """Interpolate keyframes and update IK target arrays (CPU, before graph launch)."""
@@ -485,13 +495,18 @@ class Example:
         )
         wp.copy(dest=self.control_joint_target_q[:, : self.n_coords], src=self.ik_joint_q)
 
-        for _ in range(self.sim_substeps):
+        # A captured frame must end on the buffer it started from, so an odd count copies its last substep back.
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             newton.eval_ik(self.model, self.state_1, self.state_1.joint_q, self.state_1.joint_qd)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if need_state_copy and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         self.update_ik_targets()
@@ -516,13 +531,49 @@ class Example:
         assert np.all(np.isfinite(body_q)), "Body positions contain NaN or inf values"
         assert np.all(np.isfinite(body_qd)), "Body velocities contain NaN or inf values"
 
-        # The cable is grasped at its midpoint and carried to the place target; verify that
-        # the grasped segment was placed within 1 cm of the target (x, y) in every world.
+        end_time = float(self.key_times[-1]) + SETTLE_TIME
+        assert self.sim_time >= end_time - 1e-3, (
+            f"Test ran {self.sim_time:.2f} s; the sequence plus settling takes {end_time:.2f} s"
+        )
+        assert self._release_checked, "The placement check before release did not run"
+
+        # After release the cable drops onto the ground plane and comes to rest there. Its
+        # centerline rests one radius above the surface, and its xy extent (padded by the
+        # placement tolerance) still spans the place target. The drop bends the cable, so
+        # this is a coarse landed-at-the-target check; the 1 cm placement accuracy is
+        # verified before release in test_post_step.
+        target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
+        z_min = self.surface_z + 0.5 * self.payload_radius
+        z_max = self.surface_z + 3.0 * self.payload_radius
+        for world_idx in range(self.world_count):
+            first = world_idx * self.payload_body_count_per_world
+            positions = body_q[self.payload_bodies[first : first + self.payload_body_count_per_world], :3]
+            z_lo, z_hi = float(positions[:, 2].min()), float(positions[:, 2].max())
+            assert z_min < z_lo and z_hi < z_max, (
+                f"World {world_idx} cable not resting on the ground: z in [{z_lo:.3f}, {z_hi:.3f}] m "
+                f"(expected within ({z_min:.3f}, {z_max:.3f}) m)"
+            )
+            lo = positions[:, :2].min(axis=0) - PLACE_TOLERANCE
+            hi = positions[:, :2].max(axis=0) + PLACE_TOLERANCE
+            assert np.all(lo <= target_xy) and np.all(target_xy <= hi), (
+                f"World {world_idx} cable AABB xy [{lo}, {hi}] (padded by {PLACE_TOLERANCE} m) "
+                f"does not contain the place target {target_xy}"
+            )
+
+    def test_post_step(self):
+        # Just before the gripper opens, the carried cable midpoint sits at the place target.
+        if self._release_checked or self.sim_time < self.release_time:
+            return
+        self._release_checked = True
+        body_q = self.state_0.body_q.numpy()
         target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
         for world_idx in range(self.world_count):
             mid_body = self.payload_bodies[world_idx * self.payload_body_count_per_world + self.payload_mid_body_offset]
             dist = float(np.linalg.norm(body_q[mid_body, :2] - target_xy))
-            assert dist < 0.01, f"World {world_idx} cable placed {dist * 100:.1f} cm from target (expected < 1 cm)"
+            assert dist < PLACE_TOLERANCE, (
+                f"World {world_idx} cable midpoint {dist * 100:.2f} cm from target before release "
+                f"(expected < {PLACE_TOLERANCE * 100:.0f} cm)"
+            )
 
     @staticmethod
     def create_parser():
@@ -548,7 +599,7 @@ class Example:
         parser.add_argument("--payload-radius", type=float, default=0.005, help="Cable radius [m].")
         parser.add_argument("--vbd-iterations", type=int, default=20, help="VBD iterations per coupled substep.")
         parser.add_argument("--mujoco-iterations", type=int, default=100, help="MuJoCo solver iterations.")
-        parser.add_argument("--mujoco-ls-iterations", type=int, default=20, help="MuJoCo line-search iterations.")
+        parser.add_argument("--mujoco-ls-iterations", type=int, default=50, help="MuJoCo line-search iterations.")
         parser.add_argument(
             "--no-graph-capture",
             action="store_false",
@@ -561,7 +612,8 @@ class Example:
 
 if __name__ == "__main__":
     parser = Example.create_parser()
-    parser.set_defaults(num_frames=330)
+    # 7 s keyframe sequence plus SETTLE_TIME at 60 fps (checked by Example.test_final).
+    parser.set_defaults(num_frames=480)
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)

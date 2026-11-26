@@ -1,0 +1,1 @@
+Keep velocity-guided speculative contact extension during adaptive collision scheduling, refresh after observed shape velocity changes, and shorten those prediction horizons to one substep. Gravity and impacts may require a collision pass every substep.

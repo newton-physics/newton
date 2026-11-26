@@ -4,6 +4,7 @@
 """Tests for SensorIMU."""
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -13,8 +14,35 @@ from newton._src.sim.articulation import eval_fk
 from newton.sensors import SensorIMU
 
 
+class SolverBodyQdd(newton.solvers.SolverBase):
+    """Minimal solver declaring acceleration-output support for sensor tests."""
+
+    SUPPORTED_OBSERVABLES = frozenset({newton.solvers.SolverBase.ObservableKind.BODY_QDD})
+
+
 class TestSensorIMU(unittest.TestCase):
     """Test SensorIMU functionality."""
+
+    @staticmethod
+    def _observables(model, sensor):
+        return SolverBodyQdd(model).observables(kinds=sensor.solver_observable_kinds)
+
+    def test_observables_must_belong_to_sensor_model(self):
+        """Reject foreign or unowned arrays before launching the sensor kernel."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        site = builder.add_site(body)
+        model = builder.finalize(device="cpu")
+        sensor = SensorIMU(model, sites=[site])
+        foreign_models = (builder.finalize(device="cpu"), newton.ModelBuilder().finalize(device="cpu"))
+        for foreign_model in foreign_models:
+            observables = self._observables(foreign_model, sensor)
+            with self.subTest(body_count=foreign_model.body_count):
+                with mock.patch.object(wp, "launch") as launch, self.assertRaisesRegex(ValueError, "model"):
+                    sensor.update(model.state(), observables=observables)
+                launch.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "model"):
+            sensor.update(model.state(), observables=newton.solvers.SolverBase.Observables())
 
     def test_sensor_creation(self):
         """Test basic sensor creation."""
@@ -74,7 +102,7 @@ class TestSensorIMU(unittest.TestCase):
             SensorIMU(model, sites=[shape])
 
     def test_sensor_update_without_body_qdd(self):
-        """Test error when updating without body_qdd."""
+        """Test error when the observables do not contain body_qdd."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
@@ -82,9 +110,10 @@ class TestSensorIMU(unittest.TestCase):
 
         state = model.state()
         sensor = SensorIMU(model, sites=[site])
+        observables = SolverBodyQdd(model).observables(set())
 
-        with self.assertRaises(ValueError):
-            sensor.update(state)
+        with self.assertRaisesRegex(ValueError, "BODY_QDD"):
+            sensor.update(state, observables=observables)
 
     def test_sensor_update_with_body_qdd(self):
         """Test sensor update with body_qdd allocated."""
@@ -95,11 +124,12 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site])
+        observables = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        state.body_qdd.zero_()
-        sensor.update(state)
+        observables.body_qdd.zero_()
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()
         gyro = sensor.gyroscope.numpy()
@@ -107,6 +137,25 @@ class TestSensorIMU(unittest.TestCase):
         self.assertEqual(gyro.shape, (1, 3))
         np.testing.assert_allclose(acc, [wp.quat_rotate_inv(rot, -wp.vec3(model.gravity.numpy()[-1]))], atol=1e-8)
         np.testing.assert_allclose(gyro, [[0.0, 0.0, 0.0]], atol=1e-8)
+
+    def test_sensor_update_with_solver_observables(self):
+        """Consume acceleration outputs without extending State."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        site = builder.add_site(body, label="imu")
+        model = builder.finalize()
+
+        sensor = SensorIMU(model, sites=[site])
+        solver = SolverBodyQdd(model)
+        observables = solver.observables(kinds=sensor.solver_observable_kinds)
+        state = model.state()
+        eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        observables.body_qdd.zero_()
+        sensor.update(state, observables=observables.select(sensor.solver_observable_kinds))
+
+        np.testing.assert_allclose(sensor.accelerometer.numpy()[0], -model.gravity.numpy()[-1], atol=1e-5)
+        np.testing.assert_allclose(sensor.gyroscope.numpy()[0], [0.0, 0.0, 0.0], atol=1e-5)
 
     def test_sensor_static_body_gravity(self):
         """Test IMU on static body measures gravity."""
@@ -116,11 +165,12 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site])
+        observables = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        state.body_qdd.zero_()
-        sensor.update(state)
+        observables.body_qdd.zero_()
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
         gyro = sensor.gyroscope.numpy()[0]
@@ -136,10 +186,11 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[world_site])
+        observables = self._observables(model, sensor)
         state = model.state()
 
-        state.body_qdd.zero_()
-        sensor.update(state)
+        observables.body_qdd.zero_()
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
         gyro = sensor.gyroscope.numpy()[0]
@@ -166,10 +217,11 @@ class TestSensorIMU(unittest.TestCase):
 
         model = builder.finalize()
         sensor = SensorIMU(model, sites=[site_0, site_1, global_site, global_body_site])
+        observables = self._observables(model, sensor)
         state = model.state()
 
-        state.body_qdd.zero_()
-        sensor.update(state)
+        observables.body_qdd.zero_()
+        sensor.update(state, observables=observables)
 
         np.testing.assert_allclose(
             sensor.accelerometer.numpy(),
@@ -187,11 +239,12 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site])
+        observables = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        state.body_qdd.zero_()
-        sensor.update(state)
+        observables.body_qdd.zero_()
+        sensor.update(state, observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
 

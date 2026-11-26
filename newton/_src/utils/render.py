@@ -14,7 +14,7 @@ def bourke_color_map(low: float, high: float, v: float) -> list[float]:
     Values outside the [low, high] range are clamped.
 
     Based on Paul Bourke's colour ramping method:
-    https://paulbourke.net/texture_colour/colourspace/
+    https://paulbourke.net/miscellaneous/colourspace/
 
     Args:
         low: Minimum value of the input range.

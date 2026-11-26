@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.viewer.gl.image_logger import (
+from newton._src.viewer.image_logger import (
     _atlas_layout,
     _convert_to_packed_rgba_numpy,
     _pack_rgba_warp,

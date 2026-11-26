@@ -1,16 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cube Stacking
-#
-# Shows how to set up a simulation of a cube stacking task for multiple
-# worlds using inverse kinematics to set joint target position references
-# for the Franka Emika Franka Panda robot arm.
-#
-# Command: python -m newton.examples ik_cube_stacking --world-count 16
-#
-###########################################################################
+"""Example Cube Stacking
+
+Shows how to set up a simulation of a cube stacking task for multiple
+worlds using inverse kinematics to set joint target position references
+for the Franka Emika Franka Panda robot arm.
+
+Success criteria:
+- Replicated setups appear, each consisting of a Franka robotic arm in front of a table with three
+  cubes on it.
+- The Franka arm moves and stacks the three cubes together.
+
+Runs:
+- `python -m newton.examples ik_cube_stacking --world-count 4`
+  - Four replicated setups appear.
+- `python -m newton.examples ik_cube_stacking --world-count 16`
+  - Sixteen replicated setups appear.
+"""
 
 import enum
 import time
@@ -184,7 +191,6 @@ def advance_task_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -197,6 +203,7 @@ class Example:
         self.verbose = args.verbose
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         self.cube_count = 3
         self.cube_size = 0.05
@@ -258,7 +265,6 @@ class Example:
             self.viewer = newton.viewer.ViewerNull()
 
         self.viewer.set_model(self.model)
-        self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
 
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(1.5, 1.5, 0.0))
@@ -339,6 +345,7 @@ class Example:
             floating=False,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
+            joint_damping_mode="passive",
         )
 
         builder.joint_q[:9] = [
@@ -406,13 +413,10 @@ class Example:
         )
 
         if self.use_mujoco_contacts:
-            # Set condim=4 (torsional friction) on finger shapes
-            condim_attr = builder.custom_attributes["mujoco:condim"]
-            if condim_attr.values is None:
-                condim_attr.values = {}
+            # Enable torsional friction on the finger shapes
             for shape_idx in range(builder.shape_count):
                 if builder.shape_body[shape_idx] in (12, 13):  # left/right finger bodies
-                    condim_attr.values[shape_idx] = 4
+                    builder.shape_material_friction_mode[shape_idx] = newton.ShapeFrictionMode.SLIDING_TORSIONAL
 
         return builder
 
@@ -458,6 +462,9 @@ class Example:
     ):
         density = rng.uniform(density_range[0], density_range[1])
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, margin=0.0)
+        if self.use_mujoco_contacts:
+            # Enable torsional friction on the cube shapes
+            shape_cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_TORSIONAL
 
         def get_random_pos():
             random_x = rng.uniform(x_range[0], x_range[1])
@@ -491,7 +498,6 @@ class Example:
             mesh_body = scene.add_body(xform=body_xform)
 
             half_size = 0.5 * self.cube_size
-            cube_shape_idx = scene.shape_count
             if i == 0:
                 cube_color = [0.8, 0.2, 0.2]
             elif i == 1:
@@ -510,13 +516,6 @@ class Example:
                 label=key,
                 color=cube_color,
             )
-
-            if self.use_mujoco_contacts:
-                # Set condim=4 (torsional friction) on cube shapes
-                condim_attr = scene.custom_attributes["mujoco:condim"]
-                if condim_attr.values is None:
-                    condim_attr.values = {}
-                condim_attr.values[cube_shape_idx] = 4
 
     def setup_ik(self):
         self.ee_index = 11

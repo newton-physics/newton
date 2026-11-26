@@ -7,10 +7,9 @@ KAMINO: Simulation Module
 
 from .datalog import SimulationLogger
 from .simulator import Simulator, SimulatorData
-from .viewer import ViewerKamino
 
 ###
 # Module interface
 ###
 
-__all__ = ["SimulationLogger", "Simulator", "SimulatorData", "ViewerKamino"]
+__all__ = ["SimulationLogger", "Simulator", "SimulatorData"]

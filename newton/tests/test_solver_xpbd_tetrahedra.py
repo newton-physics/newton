@@ -142,6 +142,7 @@ def test_xpbd_tetrahedra_resist_compression(test, device):
 
 
 def test_xpbd_tetrahedra_use_material_stiffness(test, device):
+    """Preserve finite material compliance across iterations and relaxation."""
     points = np.array(
         [
             [0.0, 0.0, 0.0],
@@ -153,8 +154,36 @@ def test_xpbd_tetrahedra_use_material_stiffness(test, device):
     )
 
     with wp.ScopedDevice(device):
-        rest_volume, compressed_volume, low_volume = _step_compressed_tet(points, device, k_mu=1.0e1, k_lambda=1.0e1)
-        _, _, high_volume = _step_compressed_tet(points, device, k_mu=1.0e8, k_lambda=1.0e8)
+        model = _make_single_tet_model(points, device, k_mu=10.0, k_lambda=20.0)
+        state_in = model.state()
+        state_out = model.state()
+        solver = newton.solvers.SolverXPBD(model, soft_body_relaxation=0.5)
+        tet = model.tet_indices.numpy()[0]
+        rest_volume = _tet_volume(points, tet)
+        compressed_q = points.copy()
+        compressed_q[:, 2] *= 0.5
+        compressed_volume = _tet_volume(compressed_q, tet)
+
+        def solve(iterations):
+            state_in.particle_q.assign(compressed_q)
+            state_in.particle_qd.zero_()
+            solver.iterations = iterations
+            solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+            return _tet_volume(state_out.particle_q.numpy(), tet)
+
+        # Single steps expose compliance without the old ten-step rollouts.
+        low_volume = solve(12)
+        test.assertAlmostEqual(solve(20), low_volume, delta=1.0e-5)
+        test.assertGreater(low_volume, compressed_volume + 0.01)
+        test.assertLess(low_volume, rest_volume - 0.01)
+
+        solver.soft_body_relaxation = 1.0
+        # Nonlinear gradient updates leave a small path-dependent residual.
+        test.assertAlmostEqual(solve(12), low_volume, delta=1.0e-3)
+
+        model.tet_materials.assign([[1.0e8, 2.0e8, 0.0]])
+        solver.soft_body_relaxation = 0.5
+        high_volume = solve(12)
 
     recovery_scale = rest_volume - compressed_volume
     test.assertGreater(

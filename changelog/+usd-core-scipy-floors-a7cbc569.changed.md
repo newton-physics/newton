@@ -1,0 +1,1 @@
+Require `usd-core` 25.8 or newer and `scipy` 1.14.1 or newer in the `importers` extra, the first releases with Python 3.13 wheels. Environments that pin an older version must raise the pin; upgrade with `pip install --upgrade "newton[importers]"`.

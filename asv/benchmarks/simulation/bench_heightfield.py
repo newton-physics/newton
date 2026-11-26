@@ -78,7 +78,12 @@ class HeightfieldCollision:
                 self.state_0, self.state_1 = self.state_1, self.state_0
         self.graph = capture.graph
 
+        # Let the spheres land so the timed frames contain heightfield contacts.
+        for _frame in range(100):
+            wp.capture_launch(self.graph)
         wp.synchronize_device()
+        if int(self.contacts.rigid_contact_count.numpy()[0]) == 0:
+            raise RuntimeError("heightfield benchmark scene produced no contacts")
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

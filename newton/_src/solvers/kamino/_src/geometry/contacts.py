@@ -26,6 +26,7 @@ supporting both a Z-up and X-up convention.
 from __future__ import annotations
 
 import functools
+import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Literal
@@ -34,15 +35,18 @@ import warp as wp
 
 from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
+from .....sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
 from .....sim.model import Model
 from .....sim.state import State
+from ..core.bodies import is_immovable_for_kamino
 from ..core.materials import MaterialMixMode, make_get_mixed_material_pair_property
 from ..core.model import ModelKamino
 from ..core.types import (
     to_warp_int32_array,
 )
-from ..utils import logger as msg
 from .keying import build_pair_key2
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -295,6 +299,27 @@ class ContactsKaminoData:
     """
     The material properties of each active contact with format `(0: friction, 1: restitution)`.
     Shape of ``(model_max_contacts_host,)``.
+    """
+
+    angular_friction: wp.array[wp.vec2f] | None = None
+    """Torsional and rolling friction coefficients [m], mixed per shape pair like the sliding friction.
+
+    Shape of ``(model_max_contacts_host,)``; used by spatial LOX contacts.
+    """
+
+    stiffness: wp.array[wp.float32] | None = None
+    """Normal stiffness of each active contact [N/m], transported from Newton contacts.
+
+    Shape of ``(model_max_contacts_host,)``. Positive per-contact
+    ``rigid_contact_stiffness`` takes precedence when compliance is enabled.
+    Zero selects shape-material fallback on PADMM/SCC and hard contact on LOX.
+    """
+
+    damping: wp.array[wp.float32] | None = None
+    """Normal damping of each active contact [N s/m]; used with a positive :attr:`stiffness`.
+
+    Shape of ``(model_max_contacts_host,)``. Transported from Newton's per-contact
+    ``rigid_contact_damping``; used by compliant PADMM, SCC, and LOX contacts.
     """
 
     margins: wp.array[wp.vec2f] | None = None
@@ -732,6 +757,24 @@ class ContactsKamino:
         return self._data.material
 
     @property
+    def angular_friction(self) -> wp.array[wp.vec2f]:
+        """Return per-contact torsional and rolling friction coefficients [m]."""
+        self._assert_has_data()
+        return self._data.angular_friction
+
+    @property
+    def stiffness(self) -> wp.array[wp.float32]:
+        """Return normal stiffness [N/m]; zero inherits shape gains on PADMM/SCC and stays hard on LOX."""
+        self._assert_has_data()
+        return self._data.stiffness
+
+    @property
+    def damping(self) -> wp.array[wp.float32]:
+        """Return the normal damping of each contact [N s/m], used with a positive stiffness."""
+        self._assert_has_data()
+        return self._data.damping
+
+    @property
     def margins(self) -> wp.array[wp.vec2f]:
         """
         Returns the effective shape-pair margins of each active contact.
@@ -878,7 +921,7 @@ class ContactsKamino:
 
         # Skip allocation if there are no contacts to allocate
         if model_max_contacts == 0:
-            msg.debug("ContactsKamino: Skipping contact data allocations since total requested capacity was `0`.")
+            logger.debug("ContactsKamino: Skipping contact data allocations since total requested capacity was `0`.")
             return
 
         # Allocate the contacts data on the specified device
@@ -900,6 +943,9 @@ class ContactsKamino:
                 gapfunc=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec4f),
                 frame=wp.zeros(shape=(model_max_contacts,), dtype=wp.quatf),
                 material=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
+                angular_friction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
+                stiffness=wp.zeros(shape=(model_max_contacts,), dtype=wp.float32),
+                damping=wp.zeros(shape=(model_max_contacts,), dtype=wp.float32),
                 margins=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 key=wp.zeros(shape=(model_max_contacts,), dtype=wp.uint64),
                 reaction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
@@ -943,6 +989,7 @@ def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
     cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
+    kinematic_only_immovable: bool = False,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -951,7 +998,9 @@ def make_convert_contacts_newton_to_kamino(
         friction_mix_mode: The mixing mode to use for friction.
         restitution_mix_mode: The mixing mode to use for restitution.
         cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
-            with positive margin-shifted distance.
+            whose margin-shifted distance exceeds the kernel's ``contact_dead_zone``.
+        kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
+            see :func:`is_immovable_for_kamino`.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -975,12 +1024,20 @@ def make_convert_contacts_newton_to_kamino(
         newton_margin0: wp.array[wp.float32],
         newton_margin1: wp.array[wp.float32],
         newton_force: wp.array[wp.spatial_vectorf],
+        newton_stiffness: wp.array[wp.float32],
+        newton_damping: wp.array[wp.float32],
         newton_shape_margin: wp.array[wp.float32],
         shape_body: wp.array[wp.int32],
         shape_world: wp.array[wp.int32],
         shape_mu: wp.array[wp.float32],
         shape_restitution: wp.array[wp.float32],
+        shape_mu_torsional: wp.array[wp.float32],
+        shape_mu_rolling: wp.array[wp.float32],
         body_q: wp.array[wp.transformf],
+        body_inv_mass: wp.array[wp.float32],
+        body_inv_inertia: wp.array[wp.mat33f],
+        body_flags: wp.array[wp.int32],
+        contact_dead_zone: wp.float32,
         # Outputs:
         kamino_model_active: wp.array[wp.int32],
         kamino_world_active: wp.array[wp.int32],
@@ -993,6 +1050,9 @@ def make_convert_contacts_newton_to_kamino(
         kamino_gapfunc: wp.array[wp.vec4f],
         kamino_frame: wp.array[wp.quatf],
         kamino_material: wp.array[wp.vec2f],
+        kamino_angular_friction: wp.array[wp.vec2f],
+        kamino_stiffness: wp.array[wp.float32],
+        kamino_damping: wp.array[wp.float32],
         kamino_margins: wp.array[wp.vec2f],
         kamino_key: wp.array[wp.uint64],
         kamino_reaction: wp.array[wp.vec3f],
@@ -1011,7 +1071,7 @@ def make_convert_contacts_newton_to_kamino(
         the no-swap case, B -> A in the swap case, which is negated to restore the
         Kamino A->B convention).
 
-        Optionally also converts Newton's :attr:`Contacts.force` (the wrench on body0
+        Optionally also converts Newton contact wrenches (the wrench on body0
         by body1 at the CoM of body0, in world) into Kamino's ``reaction`` (the linear
         force on body B by body A in the local contact frame). The linear part is
         invariant to reference-point shifts, so this is a pure rotation into the
@@ -1030,6 +1090,9 @@ def make_convert_contacts_newton_to_kamino(
         # Retrieve the shape and body indices for this contact
         sid_0 = newton_shape0[cid]
         sid_1 = newton_shape1[cid]
+        # Skip contacts that a coupling filter disabled with negative shape indices
+        if sid_0 < 0 or sid_1 < 0:
+            return
         bid_0 = shape_body[sid_0]
         bid_1 = shape_body[sid_1]
         wid_0 = shape_world[sid_0]
@@ -1076,10 +1139,10 @@ def make_convert_contacts_newton_to_kamino(
         # and the per-shape surface thicknesses stored in rigid_contact_margin*.
         distance = contact_surface_separation(p0_world, p1_world, normal, margin_0, margin_1)
 
-        # Cull speculative contacts whose margin-shifted surfaces have not yet
-        # made contact (positive gap distance).
+        # Cull speculative contacts. The dynamics treat separations within the dead-zone
+        # as touching, so rounding must not drop a resting contact.
         if wp.static(cull_speculative):
-            if distance > 0.0:
+            if distance > contact_dead_zone:
                 return
 
         # Ensure static body is always Kamino A, dynamic body is Kamino B
@@ -1106,6 +1169,18 @@ def make_convert_contacts_newton_to_kamino(
             pos_B = p1_surf
             margin_A = margin_0
             margin_B = margin_1
+
+        # Skip contacts between two bodies that Kamino treats as immovable
+        # (both masks are zero, so the Delassus row would be structurally zero).
+        # The bid_A == -1 case (world-static A) is intentionally kept: the other
+        # endpoint is exercised against an infinite-mass anchor.
+        if bid_A >= 0 and bid_B >= 0:
+            if is_immovable_for_kamino(
+                body_inv_mass[bid_A], body_inv_inertia[bid_A], body_flags[bid_A], kinematic_only_immovable
+            ) and is_immovable_for_kamino(
+                body_inv_mass[bid_B], body_inv_inertia[bid_B], body_flags[bid_B], kinematic_only_immovable
+            ):
+                return
 
         # Retrieve the material properties for this contact
         # TODO: Integrate use of material manager to retrieve material properties
@@ -1144,6 +1219,19 @@ def make_convert_contacts_newton_to_kamino(
         kamino_gapfunc[mcid] = gapfunc
         kamino_frame[mcid] = q_frame
         kamino_material[mcid] = wp.vec2f(mu, epsilon)
+        kamino_angular_friction[mcid] = wp.vec2f(
+            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+                shape_mu_torsional[sid_0], shape_mu_torsional[sid_1]
+            ),
+            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+                shape_mu_rolling[sid_0], shape_mu_rolling[sid_1]
+            ),
+        )
+        kamino_stiffness[mcid] = 0.0
+        kamino_damping[mcid] = 0.0
+        if newton_stiffness:
+            kamino_stiffness[mcid] = newton_stiffness[cid]
+            kamino_damping[mcid] = newton_damping[cid]
         kamino_margins[mcid] = wp.vec2f(margin_A, margin_B)
         kamino_key[mcid] = build_pair_key2(wp.uint32(gid_A), wp.uint32(gid_B))
 
@@ -1386,9 +1474,13 @@ def convert_contacts_newton_to_kamino(
     contacts_in: Contacts,
     contacts_out: ContactsKamino,
     convert_forces: bool = False,
-    friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
-    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
+    contact_f: wp.array[wp.spatial_vector] | None = None,
+    friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average",
+    restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
+    kinematic_only_immovable: bool = False,
+    contact_dead_zone: float = 1.0e-6,
+    geom_friction_mode: wp.array[wp.int32] | None = None,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1405,7 +1497,7 @@ def convert_contacts_newton_to_kamino(
     coordinates, applies Kamino's A/B conventions and populates the
     :class:`ContactsKamino` fields.
 
-    If ``convert_forces`` is true and Newton's :attr:`Contacts.force` is set,
+    If ``convert_forces`` is true and ``contact_f`` is given,
     each Newton wrench (on body0 by body1 at the CoM of body0, in world) is
     rotated into the local contact frame and stored as
     :attr:`ContactsKaminoData.reaction`, with a sign chosen by whether the
@@ -1424,15 +1516,27 @@ def convert_contacts_newton_to_kamino(
         contacts_out:
             The output :class:`ContactsKamino` object to populate with the converted contact data.
         convert_forces:
-            If ``True``, also convert ``contacts_in.force`` into``contacts_out.reaction``.
-            If ``False`` or ``contacts_in.force`` is missing, ``contacts_out.reaction`` is left untouched.
+            If ``True``, also convert ``contact_f`` into ``contacts_out.reaction``.
+            If ``False`` or ``contact_f`` is ``None``, ``contacts_out.reaction`` is left untouched.
+        contact_f:
+            Optional Newton contact wrenches indexed like ``contacts_in``, such as
+            :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
         friction_mix_mode:
             The mixing mode to use for contact friction. Defaults to `"average"`.
         restitution_mix_mode:
             The mixing mode to use for contact restitution. Defaults to `"min"`.
         cull_speculative_contacts:
-            If ``True`` (the default), drop speculative contacts (contacts with
-            positive margin-shifted distance).
+            If ``True`` (the default), drop speculative contacts (contacts whose
+            margin-shifted distance exceeds ``contact_dead_zone``).
+        kinematic_only_immovable:
+            Whether only KINEMATIC bodies are immovable, see
+            :func:`is_immovable_for_kamino`. Defaults to ``False``.
+        contact_dead_zone:
+            Margin-shifted distance [m] up to which a contact counts as touching and is
+            not culled; should match ``ConstraintStabilizationConfig.delta``.
+        geom_friction_mode:
+            Per-geometry :class:`~newton.ShapeFrictionMode` used to remove
+            friction components the contact pairs do not enable, or ``None``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1456,14 +1560,14 @@ def convert_contacts_newton_to_kamino(
     # Issue warning to the user if the number of contacts to
     # convert exceeds the capacity of the output contacts.
     if contacts_in.rigid_contact_max > contacts_out.model_max_contacts_host:
-        msg.warning(
+        logger.warning(
             "Newton `rigid_contact_max` (%d) exceeds Kamino `model_max_contacts_host` (%d); active contacts may be truncated.",
             contacts_in.rigid_contact_max,
             contacts_out.model_max_contacts_host,
         )
 
     # Skip conversion of contact forces if not requested
-    contacts_in_force = contacts_in.force if convert_forces else None
+    contacts_in_force = contact_f if convert_forces else None
 
     # Scan every Newton contact slot so saturated worlds cannot prevent later
     # worlds from filling their own capacity. The kernel skips inactive slots
@@ -1479,6 +1583,7 @@ def convert_contacts_newton_to_kamino(
         friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
         cull_speculative=cull_speculative_contacts,
+        kinematic_only_immovable=kinematic_only_immovable,
     )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format.
@@ -1501,12 +1606,20 @@ def convert_contacts_newton_to_kamino(
             contacts_in.rigid_contact_margin0,
             contacts_in.rigid_contact_margin1,
             contacts_in_force,
+            contacts_in.rigid_contact_stiffness,
+            contacts_in.rigid_contact_damping,
             model.shape_margin,
             model.shape_body,
             model.shape_world,
             model.shape_material_mu,
             model.shape_material_restitution,
+            model.shape_material_mu_torsional,
+            model.shape_material_mu_rolling,
             state.body_q,
+            model.body_inv_mass,
+            model.body_inv_inertia,
+            model.body_flags,
+            contact_dead_zone,
         ],
         outputs=[
             contacts_out.model_active_contacts,
@@ -1520,12 +1633,58 @@ def convert_contacts_newton_to_kamino(
             contacts_out.gapfunc,
             contacts_out.frame,
             contacts_out.material,
+            contacts_out.angular_friction,
+            contacts_out.stiffness,
+            contacts_out.damping,
             contacts_out.margins,
             contacts_out.key,
             contacts_out.reaction,
             contacts_out.remap,
         ],
         device=model.device,
+    )
+    apply_contact_friction_modes(contacts_out, geom_friction_mode)
+
+
+@wp.kernel(enable_backward=False)
+def _apply_contact_friction_modes(
+    model_active_contacts: wp.array[wp.int32],
+    gid_AB: wp.array[wp.vec2i],
+    geom_friction_mode: wp.array[wp.int32],
+    material: wp.array[wp.vec2f],
+    angular_friction: wp.array[wp.vec2f],
+):
+    cid = wp.tid()
+    if cid >= model_active_contacts[0]:
+        return
+    gids = gid_AB[cid]
+    mode = geom_friction_mode[gids[0]] | geom_friction_mode[gids[1]]
+    if (mode & FRICTION_SLIDING_BIT) == 0:
+        material[cid] = wp.vec2f(0.0, material[cid][1])
+    angular = angular_friction[cid]
+    if (mode & FRICTION_TORSIONAL_BIT) == 0:
+        angular[0] = 0.0
+    if (mode & FRICTION_ROLLING_BIT) == 0:
+        angular[1] = 0.0
+    angular_friction[cid] = angular
+
+
+def apply_contact_friction_modes(contacts: ContactsKamino, geom_friction_mode: wp.array[wp.int32] | None) -> None:
+    """Remove the friction components that the contacts' geometry pairs do not enable.
+
+    Args:
+        contacts: Contacts whose friction coefficients are restricted in place.
+        geom_friction_mode: Per-geometry :class:`~newton.ShapeFrictionMode`, or
+            ``None`` when every contact keeps all its coefficients.
+    """
+    if geom_friction_mode is None or contacts.model_max_contacts_host == 0:
+        return
+    wp.launch(
+        _apply_contact_friction_modes,
+        dim=contacts.model_max_contacts_host,
+        inputs=[contacts.model_active_contacts, contacts.gid_AB, geom_friction_mode],
+        outputs=[contacts.material, contacts.angular_friction],
+        device=contacts.device,
     )
 
 
@@ -1536,6 +1695,7 @@ def convert_contacts_kamino_to_newton(
     contacts_out: Contacts,
     clear_output: bool = False,
     convert_forces: bool = False,
+    contact_f: wp.array[wp.spatial_vector] | None = None,
 ) -> None:
     """
     Converts Kamino :class:`ContactsKamino` to Newton's :class:`Contacts` format.
@@ -1543,7 +1703,7 @@ def convert_contacts_kamino_to_newton(
     Newton's conventions for contact data are:
 
     - ``rigid_contact_normal[cid]`` points from ``shape0`` to ``shape1``.
-    - ``force[cid]`` is the wrench applied on Newton's ``body0`` by Newton's
+    - ``contact_f[cid]`` is the wrench applied on Newton's ``body0`` by Newton's
       ``body1``, expressed at the CoM of ``body0`` in world coordinates.
 
     This function operates in one of two modes selected by ``clear_output``:
@@ -1551,13 +1711,13 @@ def convert_contacts_kamino_to_newton(
     - ``clear_output=True``: the active-contacts path. The output contacts are
       cleared and repopulated from scratch with the currently active Kamino
       contacts; Newton's ``shape0/shape1`` are written to match Kamino's A/B
-      ordering. If ``convert_forces`` is true, ``contacts_out.force`` is
+      ordering. If ``convert_forces`` is true, ``contact_f`` is
       populated as well; otherwise it is left untouched.
     - ``clear_output=False``: the existing-contacts path. The geometric data
       already on ``contacts_out`` is preserved and only the per-contact
-      reaction is converted into ``contacts_out.force``. This path requires
+      reaction is converted into ``contact_f``. This path requires
       ``contacts_in.remap`` (allocated by setting ``remappable=True`` on the
-      :class:`ContactsKamino`) and ``contacts_out.force``, so it is only valid
+      :class:`ContactsKamino`) and ``contact_f``, so it is only valid
       with ``convert_forces=True``.
 
     Args:
@@ -1574,12 +1734,16 @@ def convert_contacts_kamino_to_newton(
         clear_output:
             If ``True``, overwrite ``contacts_out`` from scratch with the active
             contacts in ``contacts_in``. If ``False``, only the per-contact
-            reaction is converted and written into ``contacts_out.force`` using
+            reaction is converted and written into ``contact_f`` using
             the preserved ``shape0``/``point0`` and the ``contacts_in.remap``.
         convert_forces:
-            If ``True``, converts ``contacts_in.reaction`` into ``contacts_out.force``
+            If ``True``, converts ``contacts_in.reaction`` into ``contact_f``
             using Newton's wrench convention. Required when ``clear_output=False``;
             with ``clear_output=False`` and ``convert_forces=False`` the call is a no-op.
+        contact_f:
+            Optional destination for converted contact wrenches, indexed like
+            ``contacts_out``, such as :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
+            When ``None``, no forces are written.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_in.model_max_contacts_host == 0 or contacts_out.rigid_contact_max == 0:
@@ -1602,14 +1766,14 @@ def convert_contacts_kamino_to_newton(
 
     # Only Kamino-generated contacts can be truncated during export.
     if clear_output and contacts_in.model_max_contacts_host > contacts_out.rigid_contact_max:
-        msg.warning(
+        logger.warning(
             "Kamino `model_max_contacts_host` (%d) exceeds Newton `rigid_contact_max` (%d); active contacts may be truncated.",
             contacts_in.model_max_contacts_host,
             contacts_out.rigid_contact_max,
         )
 
     # Skip conversion of contact forces if not requested
-    contacts_out_force = contacts_out.force if convert_forces else None
+    contacts_out_force = contact_f if convert_forces else None
 
     # Set the maximum number of contacts to convert to the smallest of the
     # number of contacts detected and the maximum capacity of the output contacts.

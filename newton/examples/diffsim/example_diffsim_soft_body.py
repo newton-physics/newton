@@ -1,19 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Soft Body
-#
-# Shows how to use Newton to optimize for the material parameters of a soft body,
-# such that it bounces off the wall and floor in order to hit a target.
-#
-# This example uses the built-in wp.Tape() object to compute gradients of
-# the distance to target (loss) w.r.t the material parameters, followed by
-# a simple gradient-descent optimization step.
-#
-# Command: python -m newton.examples diffsim_soft_body
-#
-###########################################################################
+"""Example Diffsim Soft Body
+
+Shows how to use Newton to optimize for the material parameters of a soft body,
+such that it bounces off the wall and floor in order to hit a target.
+
+This example uses the built-in wp.Tape() object to compute gradients of
+the distance to target (loss) w.r.t the material parameters, followed by
+a simple gradient-descent optimization step.
+
+Success criteria:
+- A deformable box is bouncing on the ground plane then on a wall and tries to reach a floating
+  target (purple box).
+- Previously displayed rollout trajectories remain visible while newer trajectories are added.
+- The deformable box is becoming increasingly good at reaching the target.
+
+Runs:
+- `python -m newton.examples diffsim_soft_body`
+"""
 
 import numpy as np
 import warp as wp
@@ -101,7 +106,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="explicit",
-            soft_contact_margin=0.001,
+            soft_contact_gap=0.001,
             requires_grad=True,
         )
 

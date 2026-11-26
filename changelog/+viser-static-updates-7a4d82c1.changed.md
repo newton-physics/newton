@@ -1,0 +1,1 @@
+Skip unchanged stationary-shape transforms and transfers in Viser. Layer placement and world-spacing setters refresh stationary shapes automatically; after modifying static model transforms in place, set `viewer.model_changed = True` before logging state.

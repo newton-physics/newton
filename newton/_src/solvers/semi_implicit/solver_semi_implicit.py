@@ -1,13 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
-from ...utils.deprecation import deprecate_nonkeyword_arguments
+from ...sim import Contacts, Control, JointType, Model, State
+from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
 from .kernels_body import (
     eval_body_joint_forces,
@@ -51,7 +53,9 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
-        - Equality and mimic constraints are not supported.
+        - Joint-owned mimic relationships are enforced as penalty springs for PRISMATIC, REVOLUTE, and D6 joints.
+          Their stability and accuracy depend on ``joint_mimic_ke``, ``joint_mimic_kd``, and the simulation time step.
+          Equality constraints and the deprecated sparse mimic constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -69,15 +73,15 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
 
     """
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
         *,
         angular_damping: float = 0.05,
-        friction_smoothing: float = 1.0,
         joint_attach_ke: float = 1.0e4,
         joint_attach_kd: float = 1.0e2,
+        joint_mimic_ke: float = 1.0e2,
+        joint_mimic_kd: float = 1.0,
         enable_tri_contact: bool = True,
         deterministic: wp.DeterministicMode | None = None,
     ):
@@ -85,16 +89,28 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             angular_damping: Angular damping factor to be used in rigid body integration. Defaults to 0.05.
-            friction_smoothing: Huber norm delta used for friction velocity normalization (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`). Defaults to 1.0.
             joint_attach_ke: Joint attachment spring stiffness. Defaults to 1.0e4.
             joint_attach_kd: Joint attachment spring damping. Defaults to 1.0e2.
+            joint_mimic_ke: Global position-error gain for joint mimic penalty springs. The units are
+                N/m for linear follower coordinates and N·m/rad for angular follower coordinates.
+                Defaults to 1.0e2.
+            joint_mimic_kd: Global velocity-error gain for joint mimic penalty springs. The units are
+                N·s/m for linear follower coordinates and N·m·s/rad for angular follower coordinates.
+                Defaults to 1.0.
             enable_tri_contact: Enable triangle contact. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
+
+        Raises:
+            ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD` joint.
         """
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverSemiImplicit does not support JointType.ROD joints.")
+
         super().__init__(model=model)
+        warn_unsupported_friction_modes(model, "SolverSemiImplicit")
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
         if model.joint_count > 0:
@@ -110,15 +126,58 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in deterministic_modules:
             self._set_module_options(options, module=module)
+        # Gather contact wrenches per body instead of recording them as deterministic atomics.
+        self._gather_contact_wrenches = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
         self.angular_damping = angular_damping
-        self.friction_smoothing = friction_smoothing
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
+        for name, value in (("joint_mimic_ke", joint_mimic_ke), ("joint_mimic_kd", joint_mimic_kd)):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative, got {value}")
+        self.joint_mimic_ke = float(joint_mimic_ke)
+        self.joint_mimic_kd = float(joint_mimic_kd)
         self.enable_tri_contact = enable_tri_contact
+
+        has_supported_joint_mimics(model, "SolverSemiImplicit")
 
         if model.particle_count > 1 and model.particle_grid is not None:
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
+
+        # State.body_f and State.particle_f are read-only step inputs; internal forces accumulate in
+        # these solver-owned work buffers instead. Differentiable steps allocate their own buffers.
+        self._body_f_work, self._particle_f_work = self._allocate_force_work(requires_grad=False)
+
+    def _allocate_force_work(self, requires_grad: bool) -> tuple[wp.array | None, wp.array | None]:
+        model = self.model
+        body_f = None
+        particle_f = None
+        if model.body_count:
+            body_f = wp.empty(
+                model.body_count, dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
+            )
+        if model.particle_count:
+            particle_f = wp.empty(model.particle_count, dtype=wp.vec3, device=model.device, requires_grad=requires_grad)
+        return body_f, particle_f
+
+    def _force_work(self, state_in: State) -> tuple[wp.array | None, wp.array | None]:
+        """Return work buffers initialized with the external force inputs of ``state_in``.
+
+        A differentiable step gets new buffers: the tape keeps them alive, so each recorded step's
+        adjoint reads its own forces. Reused buffers would hold the last step's forces instead.
+        """
+        if state_in.requires_grad:
+            work = self._allocate_force_work(requires_grad=True)
+        else:
+            work = (self._body_f_work, self._particle_f_work)
+        for dst, src in zip(work, (state_in.body_f, state_in.particle_f), strict=True):
+            if dst is None:
+                continue
+            if src is None:
+                dst.zero_()
+            else:
+                wp.copy(dst, src)
+        return work
 
     @override
     def step(
@@ -128,6 +187,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -141,32 +202,25 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             contacts: The contact information.
                 Defaults to `None` which means no contacts are used.
             dt: The time step (typically in seconds).
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
 
         .. warning::
             The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation
             for simulations involving particle collisions.
             To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
         """
+        self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         with wp.ScopedTimer("simulate", False):
-            particle_f = None
-            body_f = None
-
-            if state_in.particle_count:
-                particle_f = state_in.particle_f
-
-            if state_in.body_count:
-                body_f = state_in.body_f
-
             model = self.model
 
             if control is None:
                 control = model.control(clone_variables=False)
 
-            body_f_work = body_f
-            if body_f is not None and model.joint_count and control.joint_f is not None:
-                # Avoid accumulating joint_f into the persistent state body_f buffer.
-                body_f_work = wp.clone(body_f)
+            body_f, particle_f = self._force_work(state_in)
 
             # damped springs
             eval_spring_forces(model, state_in, particle_f)
@@ -181,7 +235,16 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             eval_tetrahedra_forces(model, state_in, control, particle_f)
 
             # body joints
-            eval_body_joint_forces(model, state_in, control, body_f_work, self.joint_attach_ke, self.joint_attach_kd)
+            eval_body_joint_forces(
+                model,
+                state_in,
+                control,
+                body_f,
+                self.joint_attach_ke,
+                self.joint_attach_kd,
+                self.joint_mimic_ke,
+                self.joint_mimic_kd,
+            )
 
             # muscles
             if False:
@@ -200,18 +263,11 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
 
             # body contacts
             eval_body_contact_forces(
-                model, state_in, contacts, friction_smoothing=self.friction_smoothing, body_f_out=body_f_work
+                model, state_in, contacts, body_f_out=body_f, deterministic=self._gather_contact_wrenches
             )
 
             # particle shape contact
-            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f_work)
+            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
-            self.integrate_particles(model, state_in, state_out, dt)
-
-            if body_f_work is body_f:
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-            else:
-                body_f_prev = state_in.body_f
-                state_in.body_f = body_f_work
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-                state_in.body_f = body_f_prev
+            self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
+            self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f)

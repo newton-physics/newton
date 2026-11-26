@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..utils.deprecation import RemovedAttribute
-
 if TYPE_CHECKING:
     from .model import Model
 
@@ -20,13 +18,9 @@ class Control:
     activation forces. Create via :func:`newton.Model.control()`.
 
     Position and velocity targets live on :attr:`joint_target_q` and
-    :attr:`joint_target_qd`. The shape of :attr:`joint_target_q` depends on
-    :data:`newton.use_coord_layout_targets` — coord-shaped when ``True``,
-    DOF-shaped otherwise.
+    :attr:`joint_target_qd`, matching the coordinate layout of
+    :attr:`State.joint_q` and DOF layout of :attr:`State.joint_qd`, respectively.
     """
-
-    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
-    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def __init__(self):
         self.joint_f: wp.array | None = None
@@ -34,22 +28,36 @@ class Control:
         Array of generalized joint forces [N or N·m, depending on joint type] with shape ``(joint_dof_count,)``
         and type ``float``.
 
-        The degrees of freedom for FREE and DISTANCE joints are included in this array and have the same
+        The degrees of freedom for FREE, DISTANCE, and ROD joints are included in this array and have the same
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
         ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
         of the force vector (linear) [N] and ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular) [N·m]. For FREE and DISTANCE joints, the wrench is applied in world
+        components of the torque vector (angular) [N·m]. For FREE, DISTANCE, and ROD joints, the wrench is applied in world
         frame with the child body's center of mass (COM) as reference point.
         """
         self.joint_target_q: wp.array | None = None
-        """Joint position targets [m or rad]. Shape is ``(joint_coord_count,)``
-        when :data:`newton.use_coord_layout_targets` is ``True``, otherwise
-        ``(joint_dof_count,)`` (legacy layout).
+        """Joint position targets [m or rad, with unit quaternions for rotations
+        of ball and free joints], shape ``(joint_coord_count,)``.
+        Matches :attr:`State.joint_q`; index via :attr:`Model.joint_target_q_start`.
         """
 
         self.joint_target_qd: wp.array | None = None
         """Joint velocity targets [m/s or rad/s], shape ``(joint_dof_count,)``.
         Matches :attr:`~newton.State.joint_qd`.
+        """
+
+        self.particle_target_q: wp.array[wp.vec3] | None = None
+        """Kinematic particle position targets [m], world frame, shape ``(particle_count,)``.
+
+        Matches :attr:`~newton.State.particle_q`. Read only for particles flagged
+        ``ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC``; other entries are ignored.
+        The target is the end-of-step position of the current ``solver.step()`` call.
+        If this array is ``None`` or no Control is passed, kinematic particles hold their ``state_in`` position with zero velocity.
+
+        .. experimental::
+
+            ``Control.particle_target_q`` is experimental; see
+            :attr:`ParticleFlags.KINEMATIC <newton.ParticleFlags.KINEMATIC>`.
         """
 
         self.joint_act: wp.array | None = None
@@ -69,22 +77,47 @@ class Control:
         """
         Array of muscle activations [dimensionless, 0 to 1] with shape ``(muscle_count,)`` and type ``float``.
 
-        .. note::
-            Support for muscle dynamics is not yet implemented.
+        .. deprecated:: 1.9
+            Legacy muscles are deprecated; see :meth:`newton.ModelBuilder.add_muscle`.
         """
 
-    def clear(self, model: Model | None = None) -> None:
-        """Reset all control inputs to zero.
+        self._attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
 
-        ``joint_target_q`` is special: zeroing it under coord layout corrupts
+    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
+        """
+        Get the frequency of an attribute.
+
+        Args:
+            name: Name of the attribute.
+
+        Returns:
+            The frequency of the attribute.
+                Either a Model.AttributeFrequency enum value or a string for custom frequencies.
+
+        Raises:
+            KeyError: If the attribute frequency is not known, e.g. on a
+                Control that was not created by :meth:`Model.control() <newton.Model.control>`.
+        """
+        if name not in self._attribute_frequency:
+            raise KeyError(f"Attribute frequency of '{name}' is not known")
+        return self._attribute_frequency[name]
+
+    def clear(self, model: Model | None = None) -> None:
+        """Reset all control inputs to zero, except the position targets below.
+
+        ``joint_target_q`` is special: zeroing it corrupts
         FREE/BALL/DISTANCE quaternion slots (``(0,0,0,0)`` is not a valid
         rotation). Pass ``model`` to restore it from ``model.joint_target_q``
         instead. Without ``model`` it falls back to the legacy zero-fill.
 
+        ``particle_target_q`` is never zeroed, since that would drive kinematic
+        particles to the origin. Pass ``model`` to restore it from
+        ``model.particle_q``; without ``model`` it is left unchanged.
+
         Args:
-            model: Optional source :class:`Model` whose ``joint_target_q``
-                seeds this Control. Required for models with FREE/BALL/DISTANCE
-                joints under coord layout.
+            model: Optional source :class:`Model` whose ``joint_target_q`` and
+                ``particle_q`` seed this Control. Required for models with
+                FREE/BALL/DISTANCE joints.
         """
 
         if self.joint_f is not None:
@@ -104,6 +137,8 @@ class Control:
             self.joint_target_qd.zero_()
         if self.joint_act is not None:
             self.joint_act.zero_()
+        if self.particle_target_q is not None and model is not None and model.particle_q is not None:
+            wp.copy(self.particle_target_q, model.particle_q)
         self._clear_namespaced_arrays()
 
     def _clear_namespaced_arrays(self) -> None:

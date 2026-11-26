@@ -1,0 +1,1 @@
+Fix sticky contact matching losing the contacts of rolling and spinning bodies: a contact that travels with one body's translation, like a rolling wheel's, now keeps its match and identity across frames, while replay keeps its fresh geometry once the saved witnesses moved beyond ``contact_matching_pos_threshold`` on their bodies.

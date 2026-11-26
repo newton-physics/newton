@@ -1,22 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Twist
-#
-# Demonstrates twist propagation along cables with dynamic spinning.
-# Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
-# The first segment of each cable continuously spins, propagating twist along the cable.
-# The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
-# is transported through rod joints and across bends.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_twist
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_twist --test --viewer null
-#
-###########################################################################
+"""Example Cable Twist
+
+Demonstrates twist propagation along cables with dynamic spinning.
+Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
+The first segment of each cable continuously spins, propagating twist along the cable.
+The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
+is transported through rod joints and across bends.
+
+Success criteria:
+- Three cables of different angular stiffness twist continuously along their zigzag paths.
+- In the initial camera view, motion is larger toward the right-hand cable.
+- The segments remain connected without explosive motion or excessive ground penetration.
+
+Runs:
+- `python -m newton.examples cable_twist`
+"""
 
 import numpy as np
 import warp as wp
@@ -54,8 +54,13 @@ def spin_first_capsules_kernel(
 
 class Example:
     def create_cable_geometry_with_turns(
-        self, pos: wp.vec3 | None = None, num_elements=16, length=6.4, twisting_angle=0.0
-    ):
+        self,
+        pos: wp.vec3 | None = None,
+        num_elements=16,
+        length=6.4,
+        twisting_angle=0.0,
+        radius: float | None = None,
+    ) -> newton.Rod:
         """Create a zigzag cable route with parallel-transported quaternions.
 
         Generates a cable path with three sharp 90-degree turns lying on the XY-plane.
@@ -67,11 +72,11 @@ class Example:
             num_elements: Number of cable segments (num_points = num_elements + 1).
             length: Total cable length.
             twisting_angle: Total twist in radians around capsule axis (0 = no twist).
+            radius: Capsule radius.
 
         Returns:
-            Tuple of (points, quaternions):
-            - points: List of polyline points in world space (num_elements + 1).
-            - quaternions: Per-segment orientations using parallel transport (num_elements).
+            Rod containing the polyline points and
+            parallel-transported segment frames.
         """
         if pos is None:
             pos = wp.vec3()
@@ -109,19 +114,21 @@ class Example:
             z = 0.0
             points.append(pos + wp.vec3(x, y, z))
 
-        edge_q = newton.utils.rod_parallel_transport_quaternions(points, twist_total=float(twisting_angle))
-        return points, edge_q
+        rod = newton.Rod(points, radius=radius)
+        rod.compute_frames(twist_total=float(twisting_angle))
+        return rod
 
     def __init__(self, viewer, args):
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
+        self.solver_type = getattr(args, "solver", "vbd") if args is not None else "vbd"
 
         # Simulation cadence
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 2 if self.solver_type == "kamino" else 10
         self.sim_iterations = 5
         self.update_step_interval = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
@@ -142,6 +149,8 @@ class Example:
 
         # Create builder for the simulation
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
 
         # Set default material properties before adding any shapes
         builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
@@ -163,28 +172,29 @@ class Example:
             # Cables start at ground level (z=0) to lay flat on ground
             start_pos = wp.vec3(-self.cable_length * 0.25, y_pos, cable_radius)
 
-            cable_points, cable_edge_q = self.create_cable_geometry_with_turns(
+            rod = self.create_cable_geometry_with_turns(
                 pos=start_pos,
                 num_elements=self.num_elements,
                 length=self.cable_length,
                 twisting_angle=0.0,
+                radius=cable_radius,
             )
 
             rod_bodies, _rod_joints = builder.add_rod(
-                positions=cable_points,
-                quaternions=cable_edge_q,
-                radius=cable_radius,
+                rod=rod,
                 stretch_stiffness=stretch_stiffness,
                 bend_stiffness=angular_stiffness,
                 twist_stiffness=angular_stiffness,
                 bend_damping=1.0e-2 * angular_stiffness,
                 twist_damping=1.0e-2 * angular_stiffness,
                 label=f"cable_{i}",
-                body_frame_origin="com",
             )
 
             # Fix the first body to make it kinematic
             first_body = rod_bodies[0]
+            if self.solver_type == "kamino":
+                # Kamino advances kinematic bodies with their prescribed velocity
+                builder.body_flags[first_body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
             builder.body_inertia[first_body] = wp.mat33(0.0)
@@ -208,11 +218,15 @@ class Example:
         self.model = builder.finalize()
 
         self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
-        )
+        if self.solver_type == "kamino":
+            config = newton.solvers.SolverKamino.Config.from_model(self.model, dynamics_solver="lox")
+            config.use_collision_detector = False
+            self.solver = newton.solvers.SolverKamino(self.model, config=config)
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=self.sim_iterations,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -225,6 +239,16 @@ class Example:
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)
         self.first_twist_rates = wp.array(twist_rates, dtype=wp.float32)
+
+        if self.solver_type == "kamino":
+            # The spin about the capsule axis keeps that axis fixed, so its angular velocity is constant
+            body_q = self.state_0.body_q.numpy()
+            body_qd = self.state_0.body_qd.numpy()
+            for body, rate in zip(kinematic_body_indices, twist_rates, strict=True):
+                axis = wp.quat_rotate(wp.quat(*body_q[body][3:7]), wp.vec3(0.0, 0.0, 1.0))
+                body_qd[body][3:6] = rate * np.array(axis)
+            self.state_0.body_qd.assign(body_qd)
+            self.state_1.body_qd.assign(body_qd)
 
         self.capture()
 
@@ -240,22 +264,24 @@ class Example:
             self.state_0.clear_forces()
 
             # Apply continuous spin to first capsules
-            wp.launch(
-                kernel=spin_first_capsules_kernel,
-                dim=self.kinematic_bodies.shape[0],
-                inputs=[self.kinematic_bodies, self.first_twist_rates, self.sim_dt],
-                outputs=[self.state_0.body_q, self.state_1.body_q],
-            )
+            if self.solver_type == "vbd":
+                wp.launch(
+                    kernel=spin_first_capsules_kernel,
+                    dim=self.kinematic_bodies.shape[0],
+                    inputs=[self.kinematic_bodies, self.first_twist_rates, self.sim_dt],
+                    outputs=[self.state_0.body_q, self.state_1.body_q],
+                )
 
             # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
             # Collision detection and contact refresh cadence.
-            refresh_contacts = (substep % self.update_step_interval) == 0
+            refresh_contacts = self.solver_type == "kamino" or (substep % self.update_step_interval) == 0
             if refresh_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
 
-            self.solver.set_rigid_history_update(refresh_contacts)
+            if self.solver_type == "vbd":
+                self.solver.set_rigid_history_update(refresh_contacts)
             self.solver.step(
                 self.state_0,
                 self.state_1,
@@ -326,7 +352,9 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["vbd", "kamino"], default="vbd", help="Cable dynamics solver.")
+    viewer, args = newton.examples.init(parser)
 
     # Create example and run
     newton.examples.run(Example(viewer, args), args)

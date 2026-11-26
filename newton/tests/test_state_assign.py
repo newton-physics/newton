@@ -19,14 +19,13 @@ def _build_model(*, custom_attrs: tuple[str, ...] = ()):
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_pos=0.0,
+        target_q=0.0,
         target_ke=100.0,
         target_kd=10.0,
         effort_limit=5.0,
         actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
     )
     builder.add_articulation([joint])
-    builder.request_state_attributes("mujoco:qfrc_actuator")
     for name in custom_attrs:
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
@@ -44,36 +43,6 @@ def _build_model(*, custom_attrs: tuple[str, ...] = ()):
 
 
 class TestStateAssignNamespacedAttributes(unittest.TestCase):
-    def test_copies_namespaced_attribute(self):
-        model = _build_model()
-        state_0 = model.state()
-        state_1 = model.state()
-
-        sentinel = np.array([3.14], dtype=np.float32)
-        state_1.mujoco.qfrc_actuator.assign(sentinel)
-
-        state_0.assign(state_1)
-
-        np.testing.assert_allclose(state_0.mujoco.qfrc_actuator.numpy(), sentinel)
-
-    def test_raises_when_src_missing_namespaced_attribute(self):
-        model = _build_model()
-        state_0 = model.state()
-        state_1 = model.state()
-        delattr(state_1, "mujoco")
-
-        with self.assertRaises(ValueError):
-            state_0.assign(state_1)
-
-    def test_raises_when_dst_missing_namespaced_attribute(self):
-        model = _build_model()
-        state_0 = model.state()
-        state_1 = model.state()
-        delattr(state_0, "mujoco")
-
-        with self.assertRaises(ValueError):
-            state_0.assign(state_1)
-
     def test_copies_custom_namespaced_attribute(self):
         model = _build_model(custom_attrs=("my_attribute",))
         state_0 = model.state()
@@ -129,25 +98,6 @@ class TestStateAssignNamespacedAttributes(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             state_0.assign(state_1)
-
-
-class TestStateDeprecatedAttributes(unittest.TestCase):
-    def test_body_q_prev_warns_and_remains_assignable(self):
-        state_0 = newton.State()
-        state_1 = newton.State()
-        previous_q = wp.array([wp.transform_identity()], dtype=wp.transform)
-
-        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
-            state_0.body_q_prev = wp.empty_like(previous_q)
-        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
-            state_1.body_q_prev = previous_q
-
-        state_0.assign(state_1)
-
-        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
-            copied_q = state_0.body_q_prev
-        self.assertIsNot(copied_q, previous_q)
-        np.testing.assert_array_equal(copied_q.numpy(), previous_q.numpy())
 
 
 if __name__ == "__main__":

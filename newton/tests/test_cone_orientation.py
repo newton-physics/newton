@@ -48,7 +48,7 @@ class TestConeOrientation(unittest.TestCase):
     def test_cone_sdf_values(self):
         """Test cone SDF values at key points."""
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def compute_sdf_kernel(
             points: wp.array[wp.vec3], sdf_values: wp.array[float], radius: float, half_height: float
         ):

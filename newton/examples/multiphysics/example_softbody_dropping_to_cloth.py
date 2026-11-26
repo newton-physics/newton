@@ -1,16 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Softbody Dropping to Cloth
-#
-# This simulation demonstrates a volumetric soft body (tetrahedral grid)
-# dropping onto a cloth sheet. The soft body uses Neo-Hookean elasticity
-# and deforms on impact with the cloth.
-#
-# Command: python -m newton.examples.multiphysics.example_softbody_dropping_to_cloth
-#
-###########################################################################
+"""Example Softbody Dropping to Cloth
+
+This simulation demonstrates a volumetric soft body (tetrahedral grid)
+dropping onto a cloth sheet. The soft body uses Neo-Hookean elasticity
+and deforms on impact with the cloth.
+
+Success criteria:
+- A deformable box is dropped on an extended piece of cloth.
+- The deformable box is bouncing several times on the cloth.
+
+Runs:
+- `python -m newton.examples softbody_dropping_to_cloth`
+"""
 
 import numpy as np
 import warp as wp
@@ -91,8 +94,8 @@ class Example:
         vbd_kwargs = {
             "iterations": args.vbd_iterations,
             "particle_enable_self_contact": True,
-            "particle_self_contact_radius": 0.01,
-            "particle_self_contact_margin": 0.02,
+            "particle_self_contact_margin": 0.01,
+            "particle_self_contact_gap": 0.01,
             "particle_enable_tile_solve": True,
         }
         if self.solver_type == "vbd":

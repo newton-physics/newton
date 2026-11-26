@@ -15,14 +15,18 @@ from newton._src.geometry.support_function import (
     GenericShapeData,
     GeoTypeEx,
     SupportMapDataProvider,
+    create_triangle_prism_penetration_refiner,
     support_map,
 )
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 @wp.kernel
 def _triangle_mpr_kernel(
     triangle_b: wp.array[wp.vec3],
     triangle_c: wp.array[wp.vec3],
+    triangle_type: int,
+    refine_proxy: bool,
     shape_b_type: int,
     shape_b_scale: wp.vec3,
     shape_b_position: wp.array[wp.vec3],
@@ -37,7 +41,7 @@ def _triangle_mpr_kernel(
     i = wp.tid()
 
     shape_a = GenericShapeData()
-    shape_a.shape_type = int(GeoTypeEx.TRIANGLE)
+    shape_a.shape_type = triangle_type
     shape_a.scale = triangle_b[i]
     shape_a.auxiliary = triangle_c[i]
 
@@ -55,6 +59,19 @@ def _triangle_mpr_kernel(
         0.0,
         data_provider,
     )
+    if collision and refine_proxy:
+        point_a, point_b, normal, penetration = wp.static(create_triangle_prism_penetration_refiner(support_map))(
+            shape_a,
+            shape_b,
+            shape_b_orientation[i],
+            shape_b_position[i],
+            0.0,
+            data_provider,
+            point_a,
+            point_b,
+            normal,
+            penetration,
+        )
 
     collision_out[i] = int(collision)
     point_a_out[i] = point_a
@@ -103,7 +120,16 @@ def _box_mpr_kernel(
     penetration_out[i] = penetration
 
 
-def _run_triangle_mpr(triangle_b, triangle_c, shape_type, shape_scale, shape_positions, shape_orientations):
+def _run_triangle_mpr(
+    triangle_b,
+    triangle_c,
+    shape_type,
+    shape_scale,
+    shape_positions,
+    shape_orientations,
+    triangle_type=GeoTypeEx.TRIANGLE,
+    refine_proxy=False,
+):
     """Run direct triangle-vs-convex MPR cases on CPU and return NumPy outputs."""
     device = "cpu"
     count = len(triangle_b)
@@ -125,6 +151,8 @@ def _run_triangle_mpr(triangle_b, triangle_c, shape_type, shape_scale, shape_pos
         inputs=[
             triangle_b_wp,
             triangle_c_wp,
+            int(triangle_type),
+            refine_proxy,
             int(shape_type),
             wp.vec3(*shape_scale),
             shape_positions_wp,
@@ -298,6 +326,99 @@ class TestMPRTriangleInitialization(unittest.TestCase):
         self.assertGreater(float(points_a[1, 1] - points_a[1, 0]), 1.0e-4)
         np.testing.assert_allclose(normals, [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], atol=1.0e-5)
         np.testing.assert_allclose(penetrations, [0.1, 0.1], atol=1.0e-5)
+
+
+class TestTrianglePrismSurfacePolicy(unittest.TestCase):
+    """Cover physical-surface refinement for volumetric triangle proxies."""
+
+    def test_deep_box_penetration_uses_top_face(self):
+        """Resolve a deeply embedded box through the prism's physical face."""
+        depth = 0.05
+        half_height = 0.02
+        collision, points_a, points_b, normals, penetrations = _run_triangle_mpr(
+            triangle_b=[[1.0, 0.0, 0.0]],
+            triangle_c=[[0.0, 1.0, 0.0]],
+            triangle_type=GeoTypeEx.TRIANGLE_PRISM,
+            refine_proxy=True,
+            shape_type=GeoType.BOX,
+            shape_scale=(0.1, 0.1, half_height),
+            shape_positions=[[0.25, 0.25, half_height - depth]],
+            shape_orientations=[[0.0, 0.0, 0.0, 1.0]],
+        )
+
+        np.testing.assert_array_equal(collision, [1])
+        np.testing.assert_allclose(normals, [[0.0, 0.0, 1.0]], atol=1.0e-6)
+        np.testing.assert_allclose(penetrations, [depth], atol=1.0e-6)
+        np.testing.assert_allclose(points_a[:, 2], [0.0], atol=1.0e-6)
+        np.testing.assert_allclose(points_b[:, 2], [-depth], atol=1.0e-6)
+
+    def test_deep_box_exits_the_top_face_without_refinement(self):
+        """MPR alone must not settle on the volume the triangle is extruded into.
+
+        MPR reports the face its ray from the Minkowski seed to the origin exits through. Seeding
+        a prism on its own top face -- the face is on the prism's boundary -- lets that ray
+        reverse as soon as the partner's center crosses the surface, and the portal then settles
+        on the extruded bottom: about ``TRIANGLE_PRISM_EXTRUSION`` metres of penetration with a
+        normal pointing into the terrain. The box here is centered below the face, which is one
+        substep of a normal landing for a humanoid foot, so this is the configuration that has to
+        hold before any surface refinement runs.
+        """
+        depth = 0.05
+        half_height = 0.02
+        collision, _points_a, _points_b, normals, penetrations = _run_triangle_mpr(
+            triangle_b=[[1.0, 0.0, 0.0]],
+            triangle_c=[[0.0, 1.0, 0.0]],
+            triangle_type=GeoTypeEx.TRIANGLE_PRISM,
+            refine_proxy=False,
+            shape_type=GeoType.BOX,
+            shape_scale=(0.1, 0.1, half_height),
+            shape_positions=[[0.25, 0.25, half_height - depth]],
+            shape_orientations=[[0.0, 0.0, 0.0, 1.0]],
+        )
+
+        np.testing.assert_array_equal(collision, [1])
+        self.assertGreater(float(normals[0][2]), 0.9, f"MPR exited through {normals[0]}")
+        self.assertLess(float(penetrations[0]), 10.0 * depth, f"reported {penetrations[0]} m")
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _nonnegative_portal_kernel(position: wp.array[wp.vec3], valid: wp.array[int], points: wp.array[wp.vec3]):
+    triangle = GenericShapeData()
+    triangle.shape_type = int(GeoTypeEx.TRIANGLE)
+    triangle.scale = wp.vec3(20.0, 160.0, 0.0)
+    triangle.auxiliary = wp.vec3(0.0, 160.0, 0.0)
+    box = GenericShapeData()
+    box.shape_type = int(GeoType.BOX)
+    box.scale = wp.vec3(0.03, 0.009, 0.013)
+    hit, point_a, point_b, _normal, _depth, _seed, accepted = wp.static(create_solve_mpr(support_map).portal_core)(
+        triangle, box, wp.quat_identity(), position[0], 0.0, SupportMapDataProvider(), wp.vec3(0.0)
+    )
+    valid[0] = int(hit and accepted)
+    points[0] = point_a
+    points[1] = point_b
+
+
+def test_mpr_nonnegative_portal(test, device):
+    """Accept an interior portal without renormalizing its nonnegative weights."""
+    position = np.array([13.282333, 156.9778, 0.009500497], dtype=np.float32)
+    position_wp = wp.array([position], dtype=wp.vec3, device=device)
+    valid = wp.zeros(1, dtype=int, device=device)
+    points = wp.zeros(2, dtype=wp.vec3, device=device)
+    wp.launch(_nonnegative_portal_kernel, dim=1, inputs=[position_wp, valid, points], device=device)
+    test.assertEqual(int(valid.numpy()[0]), 1)
+    point_a, point_b = points.numpy()
+    np.testing.assert_allclose(point_a[:2], point_b[:2], atol=2.0e-5)
+    test.assertAlmostEqual(float(point_a[2]), 0.0, delta=1.0e-6)
+    test.assertAlmostEqual(float(point_b[2]), float(position[2]) - 0.013, delta=1.0e-6)
+    test.assertTrue(np.all(np.abs(point_b - position) <= np.array([0.03, 0.009, 0.013]) + 2.0e-5))
+
+
+add_function_test(
+    TestMPRTriangleInitialization,
+    "test_mpr_nonnegative_portal",
+    test_mpr_nonnegative_portal,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":

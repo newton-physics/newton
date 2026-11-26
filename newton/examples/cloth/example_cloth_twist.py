@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cloth Twist
-#
-# This simulation demonstrates twisting an FEM cloth model using the VBD
-# solver, showcasing its ability to handle complex self-contacts while
-# ensuring it remains intersection-free.
-#
-# Command: python -m newton.examples cloth_twist
-#
-###########################################################################
+"""Example Cloth Twist
+
+This simulation demonstrates twisting an FEM cloth model using the VBD
+solver, showcasing its ability to handle complex self-contacts while
+ensuring it remains intersection-free.
+
+Success criteria:
+- A suspended sheet twists as its two ends rotate.
+- The sheet stays connected and resolves folds without visible self-intersections or explosive
+  stretching.
+
+Runs:
+- `python -m newton.examples cloth_twist`
+"""
 
 import math
 import os
@@ -66,11 +70,9 @@ def apply_rotation(
     roots_to_ps: wp.array[wp.vec3],
     t: wp.array[float],
     angular_velocity: float,
-    dt: float,
     end_time: float,
     # output
-    pos_0: wp.array[wp.vec3],
-    pos_1: wp.array[wp.vec3],
+    target_q: wp.array[wp.vec3],
 ):
     cur_t = t[0]
     if cur_t > end_time:
@@ -104,11 +106,12 @@ def apply_rotation(
     root_to_p_rot = R * root_to_p
     p_rot = root + root_to_p_rot
 
-    pos_0[v_index] = p_rot
-    pos_1[v_index] = p_rot
+    target_q[v_index] = p_rot
 
-    if tid == 0:
-        t[0] = cur_t + dt
+
+@wp.kernel
+def advance_time(t: wp.array[float], dt: float):
+    t[0] = t[0] + dt
 
 
 class Example:
@@ -172,8 +175,8 @@ class Example:
 
         if len(rot_point_indices):
             flags = self.model.particle_flags.numpy()
-            for fixed_vertex_id in rot_point_indices:
-                flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
+            for driven_vertex_id in rot_point_indices:
+                flags[driven_vertex_id] = flags[driven_vertex_id] | ParticleFlags.KINEMATIC
 
             self.model.particle_flags = wp.array(flags)
 
@@ -181,8 +184,12 @@ class Example:
             self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.002,
-            particle_self_contact_margin=0.0035,
+            particle_self_contact_margin=0.002,
+            particle_self_contact_gap=0.0015,
+            # Tight twisting exceeds the default buffer capacities (measured
+            # peak demand: 49 vertex / 104 edge pairs); overflow drops pairs.
+            particle_vertex_contact_buffer_size=64,
+            particle_edge_contact_buffer_size=128,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -238,6 +245,7 @@ class Example:
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
 
+            wp.launch(kernel=advance_time, dim=1, inputs=[self.t, self.sim_dt])
             wp.launch(
                 kernel=apply_rotation,
                 dim=self.rot_point_indices.shape[0],
@@ -248,13 +256,9 @@ class Example:
                     self.roots_to_ps,
                     self.t,
                     self.rot_angular_velocity,
-                    self.sim_dt,
                     self.rot_end_time,
                 ],
-                outputs=[
-                    self.state_0.particle_q,
-                    self.state_1.particle_q,
-                ],
+                outputs=[self.control.particle_target_q],
             )
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)

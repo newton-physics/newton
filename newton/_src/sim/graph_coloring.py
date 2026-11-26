@@ -8,6 +8,8 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
+
 
 class ColoringAlgorithm(Enum):
     MCS = 0
@@ -303,6 +305,7 @@ def color_graph(
                 f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
                 f"exceeds target {target_max_min_color_ratio:.3f}. "
                 "The graph may not be further optimizable.",
+                NewtonWarning,
                 stacklevel=2,
             )
 
@@ -410,27 +413,6 @@ def combine_independent_coloring_plan(sized_groups_1, sized_groups_2) -> list:
     return combined
 
 
-def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list:
-    """
-    A function that combines 2 independent coloring groups. Note that color_groups_1 and color_groups_2 must be from 2 independent
-    graphs so that there is no connection between them. This algorithm will sort color_groups_1 in ascending order and
-    sort color_groups_2 in descending order, and combine each group with the same index, this way we are always combining
-    the smaller group with the larger group.
-
-    Args:
-        color_groups_1: A list of `np.array` with `dtype`=`int`. The length of the list is the number of colors
-            and each `np.array` contains the indices of vertices with this color.
-        color_groups_2: A list of `np.array` with `dtype`=`int`. The length of the list is the number of colors
-            and each `np.array` contains the indices of vertices with this color.
-
-    """
-    plan = combine_independent_coloring_plan(
-        [(len(group), [group]) for group in color_groups_1],
-        [(len(group), [group]) for group in color_groups_2],
-    )
-    return [chunks[0] if len(chunks) == 1 else np.concatenate(chunks) for _, chunks in plan]
-
-
 def color_rigid_bodies(
     num_bodies: int,
     joint_parent: list[int],
@@ -438,13 +420,14 @@ def color_rigid_bodies(
     balance_colors: bool = True,
     target_max_min_color_ratio: float = 1.1,
     algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
+    additional_edges: list[tuple[int, int]] | None = None,
 ):
     """
-    Generate a graph coloring for rigid bodies from joint connectivity.
+    Generate a graph coloring for rigid bodies from force-element connectivity.
 
-    Bodies connected by a joint are treated as adjacent in the graph and cannot share
-    the same color. The result can be used to schedule per-color parallel processing
-    (e.g. in the VBD solver) without conflicts.
+    Bodies connected by a joint or an additional force-element edge are treated as
+    adjacent in the graph and cannot share the same color. The result can be used to
+    schedule per-color parallel processing (e.g. in the VBD solver) without conflicts.
 
     Returns a list of ``np.ndarray`` with ``dtype=int``. The list length is the number
     of colors, and each array contains the body indices of that color. This mirrors the
@@ -457,6 +440,7 @@ def color_rigid_bodies(
         balance_colors: Whether to balance color group sizes.
         target_max_min_color_ratio: Stop balancing when max/min group size ratio reaches this value.
         algorithm: Coloring algorithm to use.
+        additional_edges: Additional pairs of connected body indices.
     """
     if num_bodies == 0:
         return []
@@ -472,6 +456,11 @@ def color_rigid_bodies(
     for parent, child in zip(joint_parent, joint_child, strict=True):
         if parent != -1 and child != -1 and parent != child:
             edge_list.append([parent, child])
+
+    if additional_edges is not None:
+        for body_0, body_1 in additional_edges:
+            if body_0 != -1 and body_1 != -1 and body_0 != body_1:
+                edge_list.append([body_0, body_1])
 
     if not edge_list:
         # No joints between bodies, all can have same color

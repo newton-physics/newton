@@ -1,0 +1,6 @@
+Fast(?!SensorCamera)\w*\.time_
+FastSensorCamera\.time_render_(color_depth|depth_only)(\(|$)
+FastSensorCameraPixel\.time_render_color_depth(\(|$)
+Fast(?!NewtonOverhead)\w*\.track_simulate(\(|$)
+Fast(?!TeleopMuJoCo)\w*\.track_mean_\w*(time|ms)(\(|$)
+Fast\w*\.track_p95_\w*(time|ms)(\(|$)

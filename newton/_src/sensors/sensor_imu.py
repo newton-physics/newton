@@ -3,6 +3,7 @@
 
 """IMU Sensor - measures accelerations and angular velocities at sensor sites."""
 
+import logging
 import re
 
 import warp as wp
@@ -10,7 +11,10 @@ import warp as wp
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
+from ..solvers.solver import SolverBase
 from ..utils.selection import match_labels
+
+logger = logging.getLogger(__name__)
 
 
 @wp.kernel
@@ -76,11 +80,15 @@ class SensorIMU:
     given sites. Each site defines an IMU frame; outputs are expressed in that
     frame.
 
-    This sensor requires the extended state attribute ``body_qdd``. By default,
-    constructing the sensor requests ``body_qdd`` from the model so that
-    subsequent ``model.state()`` calls allocate it automatically. The solver
-    must also support computing ``body_qdd``
-    (e.g. :class:`~newton.solvers.SolverMuJoCo`).
+    This sensor requires the :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_QDD`
+    solver observable. The solver must support computing ``body_qdd``
+    (e.g. :class:`~newton.solvers.SolverKamino` or
+    :class:`~newton.solvers.SolverMuJoCo`).
+
+    .. experimental::
+
+        The :attr:`solver_observable_kinds` attribute and the ``observables`` argument
+        to :meth:`update` may change with the solver observable API.
 
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
@@ -101,11 +109,12 @@ class SensorIMU:
 
             imu = SensorIMU(model, sites="imu_*")
             solver = newton.solvers.SolverMuJoCo(model)
+            observables = solver.observables(kinds=imu.solver_observable_kinds)
             state = model.state()
 
             # after solver step
-            solver.step(state, state, None, None, dt=1.0 / 60.0)
-            imu.update(state)
+            solver.step(state, state, None, None, dt=1.0 / 60.0, observables=observables)
+            imu.update(state, observables=observables)
             acc = imu.accelerometer.numpy()
             gyro = imu.gyroscope.numpy()
     """
@@ -116,28 +125,25 @@ class SensorIMU:
     gyroscope: wp.array[wp.vec3]
     """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
+    solver_observable_kinds = frozenset({SolverBase.ObservableKind.BODY_QDD})
+    """Solver observables required to update this sensor."""
+
     def __init__(
         self,
         model: Model,
         sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
-        request_state_attributes: bool = True,
     ):
         """Initialize SensorIMU.
-
-        Transparently requests the extended state attribute ``body_qdd`` from the model, which is required for acceleration
-        data.
 
         Args:
             model: The model to use.
             sites: Glob pattern, list of glob patterns, compiled regular-expression
                 pattern to match against site labels, or list of site indices. Regular
                 expressions use full matching.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
-            request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.
-                If False, ``model`` is not modified and the attribute must be requested elsewhere before calling ``model.state()``.
         Raises:
             ValueError: If no labels match or invalid sites are passed.
         """
@@ -152,10 +158,6 @@ class SensorIMU:
                 raise ValueError("'sites' must not be empty")
             raise ValueError(f"No sites matched the given pattern {original_sites!r}")
 
-        # request acceleration state attribute
-        if request_state_attributes:
-            self.model.request_state_attributes("body_qdd")
-
         self._validate_sensor_sites(sites)
 
         self.sensor_sites_arr = wp.array(sites, dtype=int, device=model.device)
@@ -164,8 +166,7 @@ class SensorIMU:
         self.gyroscope = wp.zeros(self.n_sensors, dtype=wp.vec3, device=model.device)
 
         if self.verbose:
-            print("SensorIMU initialized:")
-            print(f"  Sites: {len(set(sites))}")
+            logger.info("SensorIMU initialized:\n  Sites: %s", len(set(sites)))
             # TODO: body per site
 
     def _validate_sensor_sites(self, sensor_sites: list[int]):
@@ -177,14 +178,26 @@ class SensorIMU:
             if not (shape_flags[site_idx] & ShapeFlags.SITE):
                 raise ValueError(f"sensor site index {site_idx} is not a site")
 
-    def update(self, state: State):
+    def update(self, state: State, *, observables: SolverBase.Observables):
         """Update the IMU sensor.
 
         Args:
             state: The state to update the sensor from.
+            observables: Solver observables containing rigid-body accelerations. Must be
+                allocated by a solver for this sensor's model.
+
+        Raises:
+            ValueError: If solver observables belong to a different model or the
+                required body acceleration array is missing.
         """
-        if state.body_qdd is None:
-            raise ValueError("SensorIMU requires a State with body_qdd allocated. Create SensorIMU before State.")
+        if observables.model is not self.model:
+            raise ValueError("Solver observables must belong to the sensor's model.")
+        body_qdd = observables.body_qdd
+        if body_qdd is None:
+            raise ValueError(
+                "SensorIMU requires SolverBase.Observables with BODY_QDD allocated. "
+                "Call solver.observables(kinds=sensor.solver_observable_kinds) and pass the result to solver.step() and sensor.update()."
+            )
 
         wp.launch(
             compute_sensor_imu_kernel,
@@ -199,7 +212,7 @@ class SensorIMU:
                 self.sensor_sites_arr,
                 state.body_q,
                 state.body_qd,
-                state.body_qdd,
+                body_qdd,
             ],
             outputs=[self.accelerometer, self.gyroscope],
             device=self.model.device,

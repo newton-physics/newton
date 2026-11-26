@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Rigid Soft Contact
-#
-# Shows how to set up a rigid sphere colliding with a soft FEM beam.
-#
-# Command: uv run -m newton.examples rigid_soft_contact
-#
-###########################################################################
+"""Example Rigid Soft Contact
+
+Shows how to set up a rigid sphere colliding with a soft FEM beam.
+
+Success criteria:
+- An orange ball falls on a deformable cuboid
+- The deformable cuboid is vibrating/oscillating before the ball hits it.
+- The ball bounces off the cuboid and rolls off screen.
+- The cuboid approaches rest over time.
+
+Runs:
+- `python -m newton.examples rigid_soft_contact`
+"""
 
 import numpy as np
 import warp as wp
@@ -68,7 +73,7 @@ def _make_kamino_config() -> SolverKamino.Config:
 def _rigid_solver_entry_args(rigid_solver: str):
     rigid_solver = _normalized_rigid_solver_name(rigid_solver)
     if rigid_solver == "vbd":
-        return "rigid_vbd", SolverVBD, {"iterations": 10, "rigid_compliant_alm": True}
+        return "rigid_vbd", SolverVBD, {"iterations": 10}
     if rigid_solver == "kamino":
         return "kamino", SolverKamino, {"config": _make_kamino_config()}
     if rigid_solver == "mjc":
@@ -89,7 +94,6 @@ def _soft_solver_entry_args(soft_solver: str, args):
                 "iterations": args.vbd_iterations,
                 "particle_enable_self_contact": False,
                 "particle_enable_tile_solve": False,
-                "rigid_compliant_alm": True,
                 "rigid_body_particle_contact_buffer_size": 512,
             },
         )
@@ -98,7 +102,6 @@ def _soft_solver_entry_args(soft_solver: str, args):
 
 class Example:
     def __init__(self, viewer: ViewerBase, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.solver_type = args.solver
         self.rigid_solver = _normalized_rigid_solver_name(args.rigid_solver)
@@ -209,7 +212,6 @@ class Example:
                 iterations=10,
                 particle_enable_self_contact=False,
                 particle_enable_tile_solve=False,
-                rigid_compliant_alm=True,
                 rigid_body_particle_contact_buffer_size=512,
             )
         elif self.solver_type == "coupled":

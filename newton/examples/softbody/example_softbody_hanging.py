@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Softbody Hanging
-#
-# This simulation demonstrates volumetric soft bodies (tetrahedral grids) hanging
-# from fixed particles on the left side. Four grids with different damping values
-# (1e4 to 1e1) showcase the effect of damping on Neo-Hookean elastic behavior.
-#
-# Command: uv run -m newton.examples softbody.example_softbody_hanging
-#
-###########################################################################
+"""Example Softbody Hanging
+
+This simulation demonstrates volumetric soft bodies (tetrahedral grids) hanging
+from fixed particles on the left side. Four grids with different damping values
+(1e4 to 1e1) showcase the effect of damping on Neo-Hookean elastic behavior.
+
+Success criteria:
+- 4 hanging elongated softbodies appear with different damping values.
+- The softbodies are oscillating until reaching a steady state.
+- Damping value is higher on the left so the softbodies stop oscillating earlier on the left.
+
+Runs:
+- `python -m newton.examples softbody_hanging`
+"""
 
 import warp as wp
 
