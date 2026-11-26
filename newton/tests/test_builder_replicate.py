@@ -1022,7 +1022,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         self.assertIn("particle_q", scene._array_backed_attributes)
         self.assertNotIn("particle_q", vars(scene))
-        self.assertIsInstance(scene._array_backed_attributes["particle_q"][0], np.ndarray)
+        self.assertIsInstance(scene._array_backed_attributes["particle_q"].values, np.ndarray)
         self.assertIsNot(scene._array_backed_attributes, other_scene._array_backed_attributes)
 
         scene.replicate(source, 1)
@@ -1057,7 +1057,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         scene.add_particle([4.0, 5.0, 6.0], wp.vec3(), 1.0)
         scene.replicate(source, 1)
 
-        self.assertEqual(scene._array_backed_attributes["particle_q"][0].dtype, np.dtype(np.float64))
+        self.assertEqual(scene._array_backed_attributes["particle_q"].values.dtype, np.dtype(np.float64))
         self.assertTrue(all(isinstance(position, wp.vec3) for position in scene.particle_q))
         np.testing.assert_array_equal(scene.particle_q, [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]])
 
@@ -1159,6 +1159,124 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(scene.particle_world, [0, 1, 2])
         np.testing.assert_array_equal(np.asarray(scene.particle_q), np.tile(np.asarray(source.particle_q), (3, 1)))
 
+    def test_add_shape_after_replicate_keeps_array_backing(self):
+        """Add shapes after replication without turning the replicated shape attributes back into lists."""
+        source = ModelBuilder()
+        body = source.add_body()
+        cfg = ModelBuilder.ShapeConfig(mu_static=1.3)
+        source.add_shape_box(body, hx=0.1, hy=0.2, hz=0.3, cfg=cfg)
+        source.add_shape_sphere(body, radius=0.4, cfg=cfg)
+        shape_names = sorted(name for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES if name.startswith("shape_"))
+
+        scene = ModelBuilder()
+        scene.replicate(source, 3)
+        materialized = ModelBuilder()
+        materialized.replicate(source, 3)
+        for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+            getattr(materialized, name)
+        self.assertFalse(materialized._array_backed_attributes)
+
+        # The default config leaves mu_static as None, appended here to a float array.
+        for builder in (scene, materialized):
+            builder.begin_world()
+            builder.add_shape_box(-1, xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()), hx=0.5)
+            builder.end_world()
+
+        self.assertEqual(len(shape_names), 22)
+        self.assertEqual(set(shape_names) - set(scene._array_backed_attributes), set())
+        self.assertEqual(set(shape_names) & set(vars(scene)), set())
+        self.assertEqual(scene.shape_count, 7)
+
+        # Replicating again merges the appended shape into the arrays, in order, and the ground plane appends to
+        # the merged arrays. The reference goes back to lists first, so that it finalizes the ground plane from
+        # plain appends.
+        for builder in (scene, materialized):
+            builder.replicate(source, 1)
+        for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+            getattr(materialized, name)
+        self.assertFalse(materialized._array_backed_attributes)
+        for builder in (scene, materialized):
+            builder.add_ground_plane()
+        self.assertEqual(len(scene._array_backed_attributes["shape_transform"].appended), 1)
+        self.assertEqual(len(scene._array_backed_attributes["shape_material_friction_mode"].appended), 1)
+        expected = materialized.finalize(device="cpu")
+        actual = scene.finalize(device="cpu")
+        for name in shape_names:
+            with self.subTest(attribute=name):
+                np.testing.assert_array_equal(getattr(actual, name).numpy(), getattr(expected, name).numpy())
+
+        shape_transform = scene.shape_transform
+        self.assertIsInstance(shape_transform, list)
+        self.assertEqual(len(shape_transform), 10)
+        np.testing.assert_array_equal(np.asarray(shape_transform), np.asarray(materialized.shape_transform))
+
+    def test_read_after_add_shape_includes_pending_values(self):
+        """Read replicated shape attributes while the values appended after replication are still pending."""
+        source = ModelBuilder()
+        body = source.add_body()
+        cfg = ModelBuilder.ShapeConfig(mu_static=1.3)
+        source.add_shape_box(body, hx=0.1, hy=0.2, hz=0.3, cfg=cfg)
+        source.add_shape_sphere(body, radius=0.4, cfg=cfg)
+
+        scene = ModelBuilder()
+        scene.replicate(source, 3)
+        materialized = ModelBuilder()
+        materialized.replicate(source, 3)
+        for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+            getattr(materialized, name)
+        self.assertFalse(materialized._array_backed_attributes)
+
+        # The default config leaves mu_static as None.
+        xform = wp.transform((1.0, 2.0, 3.0), wp.quat_identity())
+        for builder in (scene, materialized):
+            builder.add_shape_box(-1, xform=xform, hx=0.5)
+        self.assertEqual(len(scene._array_backed_attributes["shape_transform"].appended), 1)
+        self.assertEqual(len(scene._array_backed_attributes["shape_material_mu_static"].appended), 1)
+
+        shape_transform = scene.shape_transform
+        shape_material_mu_static = scene.shape_material_mu_static
+
+        self.assertEqual(len(shape_transform), 7)
+        np.testing.assert_array_equal(np.asarray(shape_transform), np.asarray(materialized.shape_transform))
+        np.testing.assert_array_equal(np.asarray(shape_transform[6]), (1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0))
+        self.assertIs(type(shape_transform[6]), type(materialized.shape_transform[6]))
+        self.assertEqual(len(shape_material_mu_static), 7)
+        self.assertEqual(shape_material_mu_static, materialized.shape_material_mu_static)
+        self.assertIsNone(shape_material_mu_static[6])
+
+    def test_counts_and_coloring_keep_array_backing(self):
+        """Count bodies and particles and color bodies without turning their arrays back into lists."""
+        source = ModelBuilder()
+        parent = source.add_body()
+        child = source.add_body()
+        source.add_joint_revolute(parent=parent, child=child, axis=(0.0, 0.0, 1.0))
+        source.add_particle(wp.vec3(1.0, 2.0, 3.0), wp.vec3(), 2.0)
+
+        scene = ModelBuilder()
+        scene.replicate(source, 3)
+        materialized = ModelBuilder()
+        materialized.replicate(source, 3)
+        for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+            getattr(materialized, name)
+
+        self.assertEqual(scene.body_count, 6)
+        self.assertEqual(scene.particle_count, 3)
+        scene.color()
+        materialized.color()
+
+        self.assertIn("body_q", scene._array_backed_attributes)
+        self.assertIn("particle_q", scene._array_backed_attributes)
+        self.assertIn("joint_parent", scene._array_backed_attributes)
+        self.assertIn("joint_child", scene._array_backed_attributes)
+        self.assertEqual(len(scene.body_color_groups), len(materialized.body_color_groups))
+        for actual_group, expected_group in zip(scene.body_color_groups, materialized.body_color_groups, strict=True):
+            np.testing.assert_array_equal(actual_group, expected_group)
+        # Without edges, color() puts every particle in one group.
+        self.assertEqual(len(scene.particle_color_groups), 1)
+        np.testing.assert_array_equal(scene.particle_color_groups[0], [0, 1, 2])
+        self.assertEqual(len(materialized.particle_color_groups), 1)
+        np.testing.assert_array_equal(materialized.particle_color_groups[0], [0, 1, 2])
+
     def test_array_backed_dtype_is_at_least_declared_dtype(self):
         """Do not truncate offsets when a source reference array uses a narrow dtype."""
         source = ModelBuilder()
@@ -1171,7 +1289,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
             scene.add_particle(wp.vec3(), wp.vec3(), 1.0)
         scene.replicate(source, 1)
 
-        spring_indices = scene._array_backed_attributes["spring_indices"][0]
+        spring_indices = scene._array_backed_attributes["spring_indices"].values
         self.assertEqual(spring_indices.dtype, np.dtype(np.int32))
         np.testing.assert_array_equal(spring_indices, [128, 129])
 
@@ -1182,12 +1300,12 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         scene = ModelBuilder()
         scene.replicate(source, 2)
-        particle_q = scene._array_backed_attributes["particle_q"][0]
+        particle_q = scene._array_backed_attributes["particle_q"].values
 
         model = scene.finalize(device="cpu")
 
         self.assertIn("particle_q", scene._array_backed_attributes)
-        self.assertIs(scene._array_backed_attributes["particle_q"][0], particle_q)
+        self.assertIs(scene._array_backed_attributes["particle_q"].values, particle_q)
         np.testing.assert_array_equal(model.particle_q.numpy(), particle_q)
 
     def test_finalize_matches_materialized_finalize(self):

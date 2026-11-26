@@ -1,0 +1,1 @@
+Speed up adding shapes, reading `body_count` or `particle_count`, and calling `color()` on a `ModelBuilder` after `replicate()`, which no longer convert the replicated attributes back to Python lists. No migration is required.
