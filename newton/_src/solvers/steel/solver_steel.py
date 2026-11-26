@@ -1550,9 +1550,9 @@ class SolverSteel(SolverBase, CouplingInterface):
     and the world is flagged in :attr:`constraint_overflow`, a device boolean array with one entry
     per world plus a final entry for global (world ``-1``) articulations. It also records
     contact-buffer overflow and contacts dropped by global contact reduction. The flags persist
-    until :meth:`reset`. By default a later eager :meth:`step` raises once a world is flagged
-    (see ``raise_constraint_overflow``). Read the flags in a device kernel (for example an RL
-    termination term) or call :meth:`check_constraint_capacity` outside graph capture.
+    until :meth:`reset`. Read the flags in a device kernel (for example an RL termination term)
+    or call :meth:`check_constraint_capacity` outside graph capture; with
+    ``raise_constraint_overflow`` a later eager :meth:`step` raises once a world is flagged.
 
     Global articulations are solved together with world 0. A kinematic global free body
     (for example a moving platform) contacts the bodies of every world.
@@ -1892,7 +1892,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         free_body_constraint_max: int = 512,
         propagation_constraint_max: int | None = None,
         warn_constraint_overflow: bool = True,
-        raise_constraint_overflow: bool = True,
+        raise_constraint_overflow: bool = False,
         row_watermark: bool = False,
         drive_mode: Literal["augmented", "rows"] = "augmented",
         fuse_joint_velocity_limits: bool = True,
@@ -2050,7 +2050,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 mimic and loop-closing rows) and three rows (four with contact torsion) per contact of
                 the collision pipeline's per-world estimate over the shape pairs that stay dense: with
                 the ``"immediate"`` response the pairs that touch an articulated body other than a free
-                body. With ``"propagation"`` only pairs of two links of one articulation stay dense,
+                body. A global articulation's pairs count toward world 0, where it is solved. With ``"propagation"`` only pairs of two links of one articulation stay dense,
                 and the estimate counts every pair of two such articulated bodies as an upper bound
                 (none when ``propagation_same_articulation_rows`` is set). The result is
                 at least 32 and at most 256 unless the joint rows alone need more; the attribute reads
@@ -2074,19 +2074,18 @@ class SolverSteel(SolverBase, CouplingInterface):
                 through :mod:`warnings` instead.
             raise_constraint_overflow: Raise :class:`RuntimeError` from :meth:`step`, before it
                 launches any work, once an eager step has flagged a world in
-                :attr:`constraint_overflow`; the error names the capacity to raise. An eager step
-                with no unread sample counts the flagged entries on the device after its work. A
-                later eager step polls whether that step has finished on the device; if so it reads
-                the count back on a side stream, which waits only for that copy, not for the work
-                queued after the sample. A nonzero count is confirmed on the live status, which
-                synchronizes the device. The raise therefore comes at the first eager step after
-                the device finishes a sampled step at or after the loss; how many steps later
-                depends on how far the host runs ahead of the device. After a raise, each eager step
-                re-checks the live status, synchronizing, and raises until a :meth:`reset` clears
-                the flagged worlds. Captured steps do not check: call
-                :meth:`check_constraint_capacity` after replays. ``False`` keeps stepping with the
-                rows dropped, which :attr:`constraint_overflow` and
-                :meth:`check_constraint_capacity` still report.
+                :attr:`constraint_overflow`; the error names the capacity to raise. Off by default,
+                so the check adds no host copy or device wait to :meth:`step`; dropped rows are
+                then reported by :attr:`constraint_overflow` and :meth:`check_constraint_capacity`.
+                When on, an eager step with no unread sample counts the flagged entries after its
+                work and copies the count to pinned host memory without waiting. A later eager step
+                reads it once the device has finished that step; a nonzero count is confirmed on the
+                live status, which synchronizes the device. The raise therefore comes at the first
+                eager step after the device finishes a sampled step at or after the loss; how many
+                steps later depends on how far the host runs ahead of the device. After a raise, each
+                eager step re-checks the live status, synchronizing, and raises until a
+                :meth:`reset` clears the flagged worlds. Captured steps do not check: call
+                :meth:`check_constraint_capacity` after replays.
             row_watermark: Accumulate the high-water marks of the per-world row counts of
                 every row family and of the contact count on the device in every step,
                 including captured ones; read them with :meth:`constraint_row_watermarks`.
@@ -3120,12 +3119,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._fk_id_next_state_token = 1
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
-        # Kinds of loss latched with constraint_overflow, and the flagged count an eager step reads back on the next one.
+        # Kinds of loss latched with constraint_overflow, and the flagged count an eager step copies to the host.
         self._overflow_causes = wp.zeros(
             (int(model.world_count) + 1, _OVERFLOW_CAUSE_COUNT), dtype=wp.int32, device=model.device
         )
         self._overflow_report = wp.zeros(1, dtype=wp.int32, device=model.device)
-        self._overflow_report_host = wp.zeros(1, dtype=wp.int32, device="cpu")
+        self._overflow_report_host = wp.zeros(1, dtype=wp.int32, device="cpu", pinned=model.device.is_cuda)
         self._overflow_report_event = wp.Event(model.device) if model.device.is_cuda else None
         # A recorded count not yet read, and a loss already raised that later steps re-check on the live status.
         self._overflow_report_pending = False
@@ -4174,7 +4173,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             # Shared with the collision pipeline's capacity estimate and SolverMuJoCo's njmax.
             from ...sim.collide import (  # noqa: PLC0415
                 _estimate_rigid_contact_max,
-                _estimate_rigid_contact_max_per_world,
+                _estimate_rigid_contacts_per_pair_world,
             )
 
             body_articulation = self._body_to_articulation.numpy()
@@ -4184,10 +4183,24 @@ class SolverSteel(SolverBase, CouplingInterface):
             contact_max = model.rigid_contact_max
             if contact_max is None:
                 contact_max = _estimate_rigid_contact_max(model)
-            # Under propagation, pairs of two articulated shapes bound the same-articulation pairs.
-            contacts = _estimate_rigid_contact_max_per_world(
-                model, int(contact_max), shape_mask=dense_shape, both_selected=not immediate
-            )
+            contacts = 0
+            if model.shape_contact_pair_count:
+                # Under propagation, pairs of two articulated shapes bound the same-articulation pairs.
+                both = not immediate
+                pair_contacts = _estimate_rigid_contacts_per_pair_world(model, dense_shape, both_selected=both)
+                # Pairs without a global articulated shape are solved in their own world; the others join world 0,
+                # where global articulations are solved.
+                local_dense = dense_shape & (model.shape_world.numpy() >= 0)
+                if both:
+                    local_contacts = _estimate_rigid_contacts_per_pair_world(model, local_dense, both_selected=True)
+                else:
+                    local_contacts = pair_contacts - _estimate_rigid_contacts_per_pair_world(
+                        model, dense_shape & ~local_dense
+                    )
+                global_contacts = int(pair_contacts.sum() - local_contacts.sum())
+                world_contacts = local_contacts[1:]
+                world_contacts[:1] += global_contacts
+                contacts = min(int(contact_max), int(np.max(world_contacts, initial=global_contacts)))
             contact_rows = contacts * (_DENSE_ROWS_PER_CONTACT + int(self._contact_torsion_enabled))
         rows = min(joint_rows_max + contact_rows, max(_AUTO_ARTICULATION_CONSTRAINT_MAX, joint_rows_max))
         return min(max(rows, _AUTO_ARTICULATION_CONSTRAINT_MIN), self._dense_max_constraints_limit)
@@ -7239,7 +7252,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         return state_out
 
     def _record_overflow_report(self) -> None:
-        """Count the flagged status entries after an eager step, unless an earlier count is still unread."""
+        """Count the flagged status entries after an eager step into host memory, unless an earlier count is unread."""
         if self._overflow_report_pending or self._overflow_raised:
             return
         device = self.model.device
@@ -7251,6 +7264,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             outputs=[self._overflow_report],
             device=device,
         )
+        # An asynchronous copy into pinned memory, read once the event shows the step finished.
+        wp.copy(self._overflow_report_host, self._overflow_report)
         if self._overflow_report_event is not None:
             wp.get_stream(device).record_event(self._overflow_report_event)
         self._overflow_report_pending = True
@@ -7262,17 +7277,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             if not self._overflow_report_pending or (event is not None and not event.is_complete):
                 return
             self._overflow_report_pending = False
-            if event is None:
-                flagged = int(self._overflow_report.numpy()[0])
-            else:
-                # Only eager steps write the count and its step has finished; a side stream reads it back.
-                if self._status_readback_stream is None:
-                    self._status_readback_stream = wp.Stream(self.model.device)
-                stream = self._status_readback_stream
-                wp.copy(self._overflow_report_host, self._overflow_report, stream=stream)
-                wp.synchronize_stream(stream)
-                flagged = int(self._overflow_report_host.numpy()[0])
-            if not flagged:
+            if not self._overflow_report_host.numpy()[0]:
                 return
         # A reset replayed in a graph since can have cleared the flags; confirm on the live status.
         flagged = int(np.count_nonzero(self.constraint_overflow.numpy()))

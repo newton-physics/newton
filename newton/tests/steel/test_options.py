@@ -892,7 +892,6 @@ def test_global_overflow_has_its_own_reset_slot(test, device, solve_mode="serial
         True,
         solve_mode=solve_mode,
         warn_constraint_overflow=False,
-        raise_constraint_overflow=False,
         articulated_contact_response=response,
         **capacity,
     )
@@ -991,7 +990,6 @@ def _check_global_slot_reset(test, device, model, z_contact, z_free, solve_mode,
         model.world_count > 1,
         solve_mode=solve_mode,
         warn_constraint_overflow=False,
-        raise_constraint_overflow=False,
         articulated_contact_response=response,
         **capacity,
     )

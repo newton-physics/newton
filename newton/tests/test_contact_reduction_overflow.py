@@ -203,7 +203,7 @@ def test_reducer_failures_reach_solver_status(test, device):
 
     pipeline = newton.CollisionPipeline(model, max_triangle_pairs=candidate_count - 2, verify_buffers=False)
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverSteel(model, warn_constraint_overflow=False, raise_constraint_overflow=False)
+    solver = newton.solvers.SolverSteel(model, warn_constraint_overflow=False)
 
     # A lossless pass leaves the status clear.
     solver.step(state_0, state_1, control, reference_contacts, 1.0 / 60.0)

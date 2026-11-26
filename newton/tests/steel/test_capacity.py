@@ -3,6 +3,7 @@
 
 """Row capacities, overflow reporting, watermarks and heterogeneous-world guards of SolverSteel."""
 
+import contextlib
 import gc
 import unittest
 import unittest.mock
@@ -82,14 +83,10 @@ def test_overflow_warning_is_printed_once(test, device, solve_mode="serial", res
     if response == "propagation":
         # The propagation rows hold every contact, in free_body_constraint_max + articulation_constraint_max rows.
         solver = SolverSteel(
-            model,
-            free_body_constraint_max=1,
-            articulation_constraint_max=1,
-            articulated_contact_response=response,
-            raise_constraint_overflow=False,
+            model, free_body_constraint_max=1, articulation_constraint_max=1, articulated_contact_response=response
         )
     else:
-        solver = SolverSteel(model, solve_mode=solve_mode, free_body_constraint_max=1, raise_constraint_overflow=False)
+        solver = SolverSteel(model, solve_mode=solve_mode, free_body_constraint_max=1)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -274,8 +271,8 @@ add_function_test(
 )
 
 
-def _pad_template(height=0.0):
-    """A slider plate with 72 sphere pads at ``height`` above the ground (issue #5592)."""
+def _pad_template(height=0.0, driven_links=0):
+    """A slider plate with 72 sphere pads at ``height`` above the ground (issue #5592), and a driven chain without shapes."""
     template = newton.ModelBuilder()
     plate = template.add_link()
     template.add_articulation([template.add_joint_prismatic(-1, plate, axis=newton.Axis.Z)])
@@ -283,13 +280,20 @@ def _pad_template(height=0.0):
         for j in range(8):
             xform = wp.transform(wp.vec3(0.06 * (i - 4), 0.06 * (j - 3.5), 0.019 + height), wp.quat_identity())
             template.add_shape_sphere(plate, xform=xform, radius=0.02)
+    parent, joints = -1, []
+    for _ in range(driven_links):
+        link = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
+        joints.append(template.add_joint_revolute(parent, link, axis=newton.Axis.Y, target_ke=100.0, target_kd=10.0))
+        parent = link
+    if joints:
+        template.add_articulation(joints)
     return template
 
 
-def _pad_slider(device, worlds=1, lifted_worlds=0):
+def _pad_slider(device, worlds=1, lifted_worlds=0, driven_links=0):
     """Pad sliders on the ground, 216 dense contact rows per world, followed by ``lifted_worlds`` without contacts."""
     builder = newton.ModelBuilder()
-    builder.replicate(_pad_template(), worlds, spacing=(1.0, 0.0, 0.0))
+    builder.replicate(_pad_template(driven_links=driven_links), worlds, spacing=(1.0, 0.0, 0.0))
     for _ in range(lifted_worlds):
         builder.add_world(_pad_template(height=2.0))
     builder.add_ground_plane()
@@ -320,7 +324,9 @@ def test_default_capacity_keeps_every_pad_contact(test, device):
 def test_explicit_capacity_drops_rows_and_raises(test, device):
     """Keep an explicit capacity, drop the rows beyond it and raise from the next step until reset."""
     model, pipeline, contacts = _pad_slider(device)
-    solver = SolverSteel(model, articulation_constraint_max=32, warn_constraint_overflow=False)
+    solver = SolverSteel(
+        model, articulation_constraint_max=32, warn_constraint_overflow=False, raise_constraint_overflow=True
+    )
     test.assertEqual(solver.articulation_constraint_max, 32)
     states = (model.state(), model.state())
     _step(solver, model, pipeline, contacts, states)
@@ -339,12 +345,10 @@ def test_explicit_capacity_drops_rows_and_raises(test, device):
     _step(solver, model, pipeline, contacts, states)
 
 
-def test_overflow_raise_opt_out_keeps_stepping(test, device):
-    """Step on with rows dropped when raise_constraint_overflow is off, and raise once it is switched on."""
+def test_overflow_raise_is_opt_in(test, device):
+    """Step on with rows dropped by default, and raise once raise_constraint_overflow is switched on."""
     model, pipeline, contacts = _pad_slider(device)
-    solver = SolverSteel(
-        model, articulation_constraint_max=32, warn_constraint_overflow=False, raise_constraint_overflow=False
-    )
+    solver = SolverSteel(model, articulation_constraint_max=32, warn_constraint_overflow=False)
     states = (model.state(), model.state())
     _step(solver, model, pipeline, contacts, states, steps=3)
     test.assertTrue(solver.constraint_overflow.numpy()[0])
@@ -360,7 +364,9 @@ def test_overflow_raise_keeps_graph_capture(test, device):
     """Capture steps with the overflow raise on; replays report through the check and the eager step after one."""
     for capacity in (None, 32):
         model, pipeline, contacts = _pad_slider(device)
-        solver = SolverSteel(model, articulation_constraint_max=capacity, warn_constraint_overflow=False)
+        solver = SolverSteel(
+            model, articulation_constraint_max=capacity, warn_constraint_overflow=False, raise_constraint_overflow=True
+        )
         states = (model.state(), model.state())
         # First use inside the capture: no eager step ran before.
         with wp.ScopedCapture(device) as capture:
@@ -397,7 +403,9 @@ class _LaggingEvent:
 def test_overflow_raise_reads_every_sample_while_the_host_runs_ahead(test, device):
     """Keep the recorded sample until its step finishes, so a lagging device still raises a few steps later."""
     model, pipeline, contacts = _pad_slider(device)
-    solver = SolverSteel(model, articulation_constraint_max=32, warn_constraint_overflow=False)
+    solver = SolverSteel(
+        model, articulation_constraint_max=32, warn_constraint_overflow=False, raise_constraint_overflow=True
+    )
     event = _LaggingEvent()
     solver._overflow_report_event = event
     record_event = wp.Stream.record_event
@@ -468,7 +476,9 @@ def test_auto_capacity_counts_dense_self_contacts_under_propagation(test, device
 def test_overflow_raise_survives_masked_resets_of_other_worlds(test, device):
     """Keep raising, with the flagged world's remedy, while every step first resets only another world."""
     model, pipeline, contacts = _pad_slider(device, lifted_worlds=1)
-    solver = SolverSteel(model, articulation_constraint_max=32, warn_constraint_overflow=False)
+    solver = SolverSteel(
+        model, articulation_constraint_max=32, warn_constraint_overflow=False, raise_constraint_overflow=True
+    )
     states = (model.state(), model.state())
     other_world = wp.array([False, True, False], dtype=wp.bool, device=device)
     raised_at = None
@@ -481,26 +491,114 @@ def test_overflow_raise_survives_masked_resets_of_other_worlds(test, device):
             raised_at = step
             break
     test.assertEqual(raised_at, 1)
+    # Later steps keep raising after another masked reset.
+    solver.reset(states[0], other_world)
+    with test.assertRaisesRegex(RuntimeError, "raise articulation_constraint_max, or pass"):
+        _step(solver, model, pipeline, contacts, states)
     np.testing.assert_array_equal(solver.constraint_overflow.numpy(), [True, False, False])
 
 
 def test_auto_capacity_follows_the_contact_response(test, device):
-    """Leave contact rows out of the automatic dense capacity when contacts use the propagation rows."""
-    model, _, _ = _pad_slider(device)
-    solver = SolverSteel(model, articulated_contact_response="propagation")
-    test.assertEqual(solver.articulation_constraint_max, 32)
-    test.assertEqual(solver._propagation_max_constraints, 512 + 32)
+    """Size the dense rows for each contact response so that every pad contact and drive row is kept."""
+    model, pipeline, contacts = _pad_slider(device, driven_links=36)
+    kept = {}
+    for response in ("immediate", "propagation"):
+        solver = SolverSteel(model, drive_mode="rows", articulated_contact_response=response)
+        _step(solver, model, pipeline, contacts, (model.state(), model.state()))
+        solver.check_constraint_capacity()
+        propagation_rows = 0 if response == "immediate" else int(solver._propagation_constraint_count.numpy()[0])
+        kept[response] = (
+            solver.articulation_constraint_max,
+            int(solver._constraint_count.numpy()[0]),
+            propagation_rows,
+        )
+    # Immediate: 36 drive rows and 216 pad contact rows stay dense; the estimate reaches the 256-row cap.
+    test.assertEqual(kept["immediate"], (256, 252, 0))
+    # Propagation: the pad contacts take propagation rows, and the 37 joint rows alone size the dense rows.
+    test.assertEqual(kept["propagation"], (37, 36, 216))
     test.assertEqual(SolverSteel(model, articulation_constraint_max=40).articulation_constraint_max, 40)
     with test.assertRaisesRegex(ValueError, "articulation_constraint_max must be >= 1"):
         SolverSteel(model, articulation_constraint_max=0)
 
 
+def test_auto_capacity_counts_global_articulation_contacts_in_world_zero(test, device):
+    """Count the contacts of a global slider with the shapes of every world in world 0, where they are solved."""
+    builder = newton.ModelBuilder()
+    plate = builder.add_link()
+    builder.add_articulation([builder.add_joint_prismatic(-1, plate, axis=newton.Axis.Z)])
+    builder.add_shape_box(
+        plate, hx=1.2, hy=0.2, hz=0.02, xform=wp.transform(wp.vec3(0.0, 0.0, 0.039), wp.quat_identity())
+    )
+    for i in range(12):
+        builder.begin_world()
+        xform = wp.transform(wp.vec3(0.1 * i - 0.55, 0.0, 0.0), wp.quat_identity())
+        builder.add_shape_sphere(-1, xform=xform, radius=0.02)
+        builder.end_world()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    solver = SolverSteel(model)
+    # Twelve primitive pairs, five contacts each, three rows per contact.
+    test.assertEqual(solver.articulation_constraint_max, 180)
+    states = (model.state(), model.state())
+    _step(solver, model, pipeline, contacts, states)
+    solver.check_constraint_capacity()
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), 36)
+
+
+def test_default_step_reads_nothing_back(test, device):
+    """Copy nothing to the host and never synchronize in clean eager steps by default; the opt-in raise only copies."""
+    core = wp._src.context.runtime.core
+    names = ("wp_memcpy_d2h", "wp_cuda_stream_synchronize", "wp_cuda_context_synchronize", "wp_cuda_event_synchronize")
+    calls = dict.fromkeys(names, 0)
+    stepping = False
+
+    def counted(name):
+        original = getattr(core, name)
+
+        def call(*args):
+            if stepping:
+                calls[name] += 1
+            return original(*args)
+
+        return call
+
+    model, pipeline, contacts = _pad_slider(device)
+    states = (model.state(), model.state())
+    steps = 10
+    for raise_overflow in (False, True):
+        solver = SolverSteel(model, raise_constraint_overflow=raise_overflow)
+        _step(solver, model, pipeline, contacts, states)
+        calls = dict.fromkeys(names, 0)
+        with contextlib.ExitStack() as stack:
+            for name in names:
+                stack.enter_context(unittest.mock.patch.object(core, name, counted(name)))
+            for _ in range(steps):
+                pipeline.collide(states[0], contacts)
+                stepping = True
+                solver.step(states[0], states[1], model.control(), contacts, 1.0 / 240.0)
+                stepping = False
+            wp.synchronize_device(device)
+        solver.check_constraint_capacity()
+        copies = calls.pop("wp_memcpy_d2h")
+        test.assertEqual(calls, dict.fromkeys(names[1:], 0))
+        # The opt-in raise copies one count per sample, without waiting for it.
+        if raise_overflow:
+            test.assertIn(copies, range(1, steps + 1))
+        else:
+            test.assertEqual(copies, 0)
+
+
 for name, function in (
     ("test_default_capacity_keeps_every_pad_contact", test_default_capacity_keeps_every_pad_contact),
     ("test_explicit_capacity_drops_rows_and_raises", test_explicit_capacity_drops_rows_and_raises),
-    ("test_overflow_raise_opt_out_keeps_stepping", test_overflow_raise_opt_out_keeps_stepping),
+    ("test_overflow_raise_is_opt_in", test_overflow_raise_is_opt_in),
     ("test_auto_capacity_counts_joint_rows", test_auto_capacity_counts_joint_rows),
     ("test_auto_capacity_follows_the_contact_response", test_auto_capacity_follows_the_contact_response),
+    (
+        "test_auto_capacity_counts_global_articulation_contacts_in_world_zero",
+        test_auto_capacity_counts_global_articulation_contacts_in_world_zero,
+    ),
     (
         "test_auto_capacity_counts_dense_self_contacts_under_propagation",
         test_auto_capacity_counts_dense_self_contacts_under_propagation,
@@ -525,6 +623,14 @@ add_function_test(
     TestSteelCapacityStatus,
     "test_overflow_raise_reads_every_sample_while_the_host_runs_ahead",
     test_overflow_raise_reads_every_sample_while_the_host_runs_ahead,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestSteelCapacityStatus,
+    "test_default_step_reads_nothing_back",
+    test_default_step_reads_nothing_back,
     devices=devices,
 )
 
@@ -1004,7 +1110,6 @@ def test_watermarks_record_capacity_overflow(test, device, solve_mode="serial"):
         friction_anchor_beta=0.0,
         free_body_constraint_max=capacity,
         warn_constraint_overflow=False,
-        raise_constraint_overflow=False,
     )
     steps = 5
     observed, _ = _run(model, solver, steps)

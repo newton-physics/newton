@@ -2304,9 +2304,7 @@ def test_prebuild_matches_the_first_fit_reference(test, device):
         with test.subTest(shape=shape, order=order):
             model = _heap(device, *shape)
             # The large heap overflows the rows; the coloring covers the units that were allocated.
-            solver = _colored_solver(
-                model, warn_constraint_overflow=False, raise_constraint_overflow=False, propagation_color_order=order
-            )
+            solver = _colored_solver(model, warn_constraint_overflow=False, propagation_color_order=order)
             state, _ = _settle(model, solver, steps=4)
             test.assertTrue(np.isfinite(state.body_q.numpy()).all())
             n, color, offsets, row_start, sorted_contact = _first_fit_reference(solver)

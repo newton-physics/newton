@@ -655,11 +655,7 @@ def test_overflow_warning_names_deterministic_mode(test, device):
     for deterministic in (wp.DeterministicMode.NOT_GUARANTEED, RUN_TO_RUN):
         with test.subTest(deterministic=deterministic.name):
             solver = SolverSteel(
-                model,
-                deterministic=deterministic,
-                friction_anchor_beta=0.0,
-                free_body_constraint_max=24,
-                raise_constraint_overflow=False,
+                model, deterministic=deterministic, friction_anchor_beta=0.0, free_body_constraint_max=24
             )
             capture = StdOutCapture()
             if check_output:

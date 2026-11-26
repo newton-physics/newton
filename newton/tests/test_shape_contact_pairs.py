@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.collide import _estimate_rigid_contact_max_per_world
+from newton._src.sim.collide import _estimate_rigid_contact_max_per_world, _estimate_rigid_contacts_per_pair_world
 from newton._src.sim.model import _pack_shape_pair_codes, _ShapeCollisionFilterPairs
 from newton._src.sim.shape_contact_pairs import (
     _shape_contact_pair_count_for_mask,
@@ -409,8 +409,8 @@ class TestShapeContactPairs(unittest.TestCase):
                     self.assertEqual(compute_required_contact_capacity(model), (2, counts[1:]))
                     self.assertEqual(model.shape_contact_pair_count, 2)
 
-    def test_per_world_estimate_counts_pairs_touching_mask(self):
-        """Count only the pairs with at least one masked shape in the per-world estimate."""
+    def test_per_world_contact_estimate_counts_pairs_touching_mask(self):
+        """Count only the pairs with at least one masked shape, or with both, in each world's contact estimate."""
         builder = newton.ModelBuilder()
         builder.begin_world()
         for _ in range(3):
@@ -418,8 +418,8 @@ class TestShapeContactPairs(unittest.TestCase):
         builder.end_world()
         builder.add_ground_plane()
         model = builder.finalize(device="cpu")
-        # Three sphere pairs and three sphere-ground pairs.
-        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100), 30)
+        # Three sphere pairs and three sphere-ground pairs, all in world 0; no global pairs.
+        np.testing.assert_array_equal(_estimate_rigid_contacts_per_pair_world(model), [0, 30])
         for mask, estimate in (
             ([True, False, False, False], 15),
             ([False, False, False, True], 15),
@@ -427,14 +427,15 @@ class TestShapeContactPairs(unittest.TestCase):
             ([True, True, True, True], 30),
         ):
             with self.subTest(mask=mask):
-                shape_mask = np.array(mask)
-                self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100, shape_mask=shape_mask), estimate)
-        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 12, shape_mask=np.ones(4, dtype=bool)), 12)
+                contacts = _estimate_rigid_contacts_per_pair_world(model, np.array(mask))
+                np.testing.assert_array_equal(contacts, [0, estimate])
         # Pairs whose two shapes are selected: the three sphere pairs, without the ground.
         spheres = np.array([True, True, True, False])
-        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100, shape_mask=spheres, both_selected=True), 15)
+        np.testing.assert_array_equal(
+            _estimate_rigid_contacts_per_pair_world(model, spheres, both_selected=True), [0, 15]
+        )
         one = np.array([True, False, False, False])
-        self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100, shape_mask=one, both_selected=True), 0)
+        np.testing.assert_array_equal(_estimate_rigid_contacts_per_pair_world(model, one, both_selected=True), [0, 0])
 
     def test_empty_models_and_filtered_scenes(self):
         """Return empty arrays for empty and fully excluded scenes."""

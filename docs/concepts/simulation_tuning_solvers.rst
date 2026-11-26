@@ -325,7 +325,8 @@ repository examples spend tuning effort, not a shared solver API.
        driven DOF then uses one row of ``articulation_constraint_max``. By default
        ``articulation_constraint_max`` is sized from the model: the joint rows of the
        busiest world plus three rows (four with contact torsion) per contact of the
-       collision pipeline's per-world estimate for the contacts that stay dense,
+       collision pipeline's per-world estimate for the contacts that stay dense
+       (a global articulation's contacts count toward world 0, where it is solved),
        between 32 and 256 rows unless the joint rows alone need more. With the
        ``"immediate"`` response these are the contacts of articulated bodies. With
        ``"propagation"`` only contacts between two links of the same articulation stay
@@ -337,13 +338,11 @@ repository examples spend tuning effort, not a shared solver API.
        ``free_body_constraint_max`` (free bodies) or
        ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
-       and a final entry for global articulations). A later eager ``step()``
-       then raises, naming the capacity to raise: the first one after the device
-       has finished a sampled step at or after the loss, so how much later
-       depends on how far the host runs ahead. ``raise_constraint_overflow=False``
-       keeps stepping instead. Captured steps do not raise: call
+       and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
-       capacity and reset the world when it reports a world. To check a step
+       capacity and reset the world when it reports a world.
+       ``raise_constraint_overflow=True`` also makes a later eager ``step()``
+       raise, at the cost of a small host copy per step. To check a step
        without waiting for the steps queued after it, call
        ``snapshot_constraint_status()`` after that step and
        ``check_constraint_capacity(snapshot=True)`` later; check the last
