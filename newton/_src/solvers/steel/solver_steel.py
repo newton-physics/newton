@@ -2250,7 +2250,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 penetrate deeper than it. Switching between ``None`` (or ``inf``) and a
                 finite or ``-inf`` value requires a new solver. With patch friction, a contact
                 separated by more than 1% of the smaller body's radius never holds a friction
-                anchor when another contact of its body pair touches, whatever this limit.
+                anchor when another contact of its friction region touches, whatever this limit.
             contact_shared_anchor: Apply every contact row at the midpoint of the two witness
                 points instead of at each body's own witness point, as PhysX applies a contact at
                 one point. ``phi`` still comes from the witness points. Friction patch rows keep

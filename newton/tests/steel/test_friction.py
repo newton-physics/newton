@@ -3,6 +3,7 @@
 
 """Friction patches, anchors, directions and friction modes of SolverSteel."""
 
+import itertools
 import math
 import unittest
 import warnings
@@ -1895,18 +1896,43 @@ class TestFrictionPatchHistory(unittest.TestCase):
         self.assertAlmostEqual(float(patches.view.weight.numpy().sum()), 1.0)
 
     def test_material_normal_and_disconnected_regions_stay_separate(self):
-        """Keep friction from pooling across incompatible or spatially separate regions."""
+        """Keep friction from pooling across incompatible or spatially separate regions.
+
+        A speculative region keeps its friction while another region of the same body pair touches.
+        """
         cases = (
             {"points": [[0, 0, 0], [0.01, 0, 0]], "shape0": [0, 2], "materials": (0.5, 0.5, 0.8)},
             {"points": [[0, 0, 0], [0.01, 0, 0]], "normals": [[0, 0, -1], [0, -1, 0]]},
             {"points": [[0, 0, 0], [0, 0, 0.05]]},
             {"points": [[0, 0, 0], [1, 0, 0]]},
         )
-        for case in cases:
-            with self.subTest(case=case):
-                _, _, _, patches = _patch_fixture(**case)
+        # The 3 mm gap exceeds the touching tolerance of these bodies (1% of their 0.2 m radius).
+        for case, gaps in itertools.product(cases, ([0, 0], [0, 0.003])):
+            with self.subTest(case=case, gaps=gaps):
+                _, _, _, patches = _patch_fixture(**case, gaps=gaps)
                 self.assertEqual(len(np.unique(patches.current.owner.numpy()[:2])), 2)
                 np.testing.assert_array_equal(patches.view.weight.numpy()[:2], [1, 1])
+
+    def test_warp_flood_gates_separated_members_like_the_serial_flood(self):
+        """Gate a large pair's separated members on the warp flood exactly as the serial flood does."""
+        floor = [[x, 0, 0] for x in np.linspace(-0.1, 0.1, 41)]
+        wall = [[0.15, 0, 0.05], [0.15, 0, 0.1]]
+        # The floor's end contacts lie beyond the touching tolerance; the wall region is speculative.
+        gaps = [0.003] + [0] * 39 + [0.003] + [0.003] * 2
+        normals = [[0, 0, -1]] * 41 + [[-1, 0, 0]] * 2
+        model, state, contacts, patches = _patch_fixture(floor + wall, normals=normals, gaps=gaps)
+        results = []
+        for device_flood in (True, False):
+            patches.device_flood = device_flood
+            patches.build(model, state, contacts, shape_material_mu=model.shape_material_mu)
+            results.append([patches.view.weight.numpy(), patches.view.point_a.numpy(), patches.current.owner.numpy()])
+            if device_flood:
+                self.assertEqual(int(patches._flood_pair_count.numpy()[0]), 1)
+        expected = np.zeros(len(results[0][0]))
+        expected[[1, 39, 41, 42]] = 0.5
+        np.testing.assert_array_equal(results[0][0], expected)
+        for flooded, serial in zip(*results, strict=True):
+            np.testing.assert_array_equal(flooded, serial)
 
     def test_contact_churn_preserves_error_at_current_points(self):
         """Preserve a sticking region's history even when every contact sample changes."""
@@ -2495,11 +2521,12 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
         displacement[anchor] = [1.0e-3, 0.0, 0.0]
         patches.previous.displacement.assign(displacement)
 
-        # Contact 0 is 10 mm off the ground: a region of its own, seeded before the touching contact 1.
+        # Contact 0 is 10 mm off the ground, beyond the friction gap limit: a region of its own
+        # without friction rows, seeded before the touching contact 1.
         contacts.rigid_contact_count.assign([2])
         contacts.rigid_contact_point0.assign([[0.05, 0, 0.01], [0, 0, 0]])
         contacts.rigid_contact_point1.assign([[0.05, 0, 0], [0, 0, 0]])
-        patches.build(model, s1, contacts, shape_material_mu=model.shape_material_mu)
+        patches.build(model, s1, contacts, shape_material_mu=model.shape_material_mu, friction_gap_limit=0.005)
         np.testing.assert_array_equal(patches.current.source.numpy()[:2], [-1, anchor])
         np.testing.assert_allclose(patches.current.displacement.numpy()[1, :2], [1.0e-3, 0.0], atol=1.0e-6)
 
@@ -2591,7 +2618,7 @@ class TestSteelFrictionAnchorSelection(unittest.TestCase):
             np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], [0, 1, 0])
 
     def test_separated_contacts_without_touch_keep_nearest_anchors(self):
-        """Keep friction on the nearest contacts of a pair that is only speculatively in contact."""
+        """Keep friction on the nearest contacts of a region that is only speculatively in contact."""
         with wp.ScopedDevice(_DEVICE):
             builder = newton.ModelBuilder()
             ground = builder.add_ground_plane()
