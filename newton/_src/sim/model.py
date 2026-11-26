@@ -631,6 +631,7 @@ class Model:
             AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES
         ),
         "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_friction_mode": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_gap": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
@@ -1144,6 +1145,12 @@ class Model:
         """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
         """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_friction_mode: wp.array[wp.int32] | None = None
+        """Shape friction mode, shape [shape_count], int.
+
+        Values are :class:`~newton.ShapeFrictionMode`. Solvers and the collision
+        pipeline may read the mode only when they are constructed: set it before
+        constructing them; changing it afterwards is not supported."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
@@ -3567,7 +3574,7 @@ class Model:
 
                 print(model.get_attribute_update_flags("shape_material_mu").name)
                 print(model.get_attribute_update_flags("mujoco:solref").name)
-                print(model.get_attribute_update_flags("mujoco:condim"))
+                print(model.get_attribute_update_flags("shape_material_friction_mode"))
 
             .. testoutput::
 

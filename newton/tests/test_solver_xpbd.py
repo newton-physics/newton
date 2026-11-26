@@ -2729,7 +2729,6 @@ def test_xpbd_material_pair_friction(test, device):
         shape = builder.add_shape_sphere(body, radius=0.25, cfg=builder.ShapeConfig(material_id=material, mu=mu))
 
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
     state_in, state_out = model.state(), model.state()
     initial_velocity = np.zeros((model.body_count, 6), dtype=np.float32)
     initial_velocity[:, 0] = 2.0
@@ -2744,15 +2743,18 @@ def test_xpbd_material_pair_friction(test, device):
     shape1[(shape1 == floor_shape) & (shape0 == shape)] = -1
     contacts.rigid_contact_shape0.assign(shape0)
     contacts.rigid_contact_shape1.assign(shape1)
-    solver.step(state_in, state_out, None, contacts, 0.01)
+    for mode in (wp.DeterministicMode.NOT_GUARANTEED, wp.DeterministicMode.RUN_TO_RUN):
+        with test.subTest(deterministic=mode):
+            solver = newton.solvers.SolverXPBD(model, iterations=2, deterministic=mode)
+            solver.step(state_in, state_out, None, contacts, 0.01)
 
-    velocity = state_out.body_qd.numpy()
-    test.assertLess(float(velocity[3, 0]), float(velocity[0, 0]))
-    test.assertLess(float(velocity[0, 0]), float(velocity[2, 0]))
-    test.assertAlmostEqual(float(velocity[2, 0]), 2.0, delta=1.0e-4)
-    np.testing.assert_allclose(velocity[0], velocity[1], atol=2.0e-4, rtol=0.0)
-    np.testing.assert_allclose(velocity[3], velocity[4], atol=2.0e-4, rtol=0.0)
-    np.testing.assert_allclose(velocity[1], velocity[5], atol=2.0e-4, rtol=0.0)
+            velocity = state_out.body_qd.numpy()
+            test.assertLess(float(velocity[3, 0]), float(velocity[0, 0]))
+            test.assertLess(float(velocity[0, 0]), float(velocity[2, 0]))
+            test.assertAlmostEqual(float(velocity[2, 0]), 2.0, delta=1.0e-4)
+            np.testing.assert_allclose(velocity[0], velocity[1], atol=2.0e-4, rtol=0.0)
+            np.testing.assert_allclose(velocity[3], velocity[4], atol=2.0e-4, rtol=0.0)
+            np.testing.assert_allclose(velocity[1], velocity[5], atol=2.0e-4, rtol=0.0)
 
 
 def test_xpbd_material_pairs_per_world(test, device):
@@ -2803,7 +2805,13 @@ def test_xpbd_material_pair_angular_and_static_friction(test, device):
     """Apply each angular override to its own axis and let static friction hold a slowly sliding sphere."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     floor = builder.add_material("floor")
-    cfg = builder.ShapeConfig(material_id=floor, mu=0.0, mu_torsional=0.0, mu_rolling=0.0)
+    cfg = builder.ShapeConfig(
+        material_id=floor,
+        mu=0.0,
+        mu_torsional=0.0,
+        mu_rolling=0.0,
+        friction_mode=newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING,
+    )
     builder.add_ground_plane(cfg=cfg)
     cases = ({}, {"mu_torsional": 0.5}, {"mu_rolling": 0.5}, {"mu_static": 10.0})
     for i, overrides in enumerate(cases):

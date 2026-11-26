@@ -228,10 +228,22 @@ formulation.
   at the start of the step, unless ``enable_restitution=False``),
   :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
   :class:`~newton.solvers.SolverKamino`.
-- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
-  :class:`~newton.solvers.SolverMuJoCo`.
-  :class:`~newton.solvers.SolverVBD` also supports these properties for
-  compliant-ALM rigid-rigid contacts.
+- ``friction_mode``: every built-in solver makes a contact frictionless when
+  both of its shapes are ``NONE``, and a particle contact when its shape is
+  (except :class:`~newton.solvers.SolverMuJoCo` flexes, see
+  :ref:`mujoco-flexes`). The modes with torsional or rolling friction are
+  supported by
+  :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
+  :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverKamino`
+  with the LOX backend (torsional and rolling friction share its elliptic
+  friction budget). Other solvers apply sliding friction only, and warn if they
+  solve rigid contacts. :class:`~newton.solvers.SolverSteel` provides
+  experimental torsion on shapes whose mode enables torsional friction and that also set
+  ``steel:min_torsional_patch_radius``.
+- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverVBD`,
+  and the LOX backend of :class:`~newton.solvers.SolverKamino`, on contacts
+  whose ``friction_mode`` enables them.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static`. Built-in
   solvers use ``mu`` for per-shape friction. :class:`~newton.solvers.SolverXPBD`
   supports a separate static coefficient through :ref:`Material pair friction`.

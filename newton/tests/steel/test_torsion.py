@@ -428,6 +428,25 @@ def test_invalid_input_and_unsupported_modes(test, device):
             fixture(radius, device=device)
     with test.assertRaises(ValueError):
         fixture(0.01, device=device, contact_warmstart=True)
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    builder.add_shape_box(builder.add_body(), hx=0.1, hy=0.1, hz=0.1)
+    model = builder.finalize(device=device)
+    set_torsion_radius(model, 0.01)
+    mode = newton.ShapeFrictionMode
+    for friction_mode in (mode.SLIDING, mode.SLIDING_ROLLING):
+        model.shape_material_friction_mode.fill_(int(friction_mode))
+        with test.assertRaisesRegex(ValueError, "Model.shape_material_friction_mode"):
+            SolverSteel(model)
+    # One warning names every friction component the solver leaves out.
+    model.steel.min_torsional_patch_radius.zero_()
+    model.shape_material_friction_mode.fill_(int(mode.SLIDING_TORSIONAL_ROLLING))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        SolverSteel(model)
+    messages = [str(w.message) for w in caught if issubclass(w.category, newton.NewtonWarning)]
+    test.assertEqual(len(messages), 1, messages)
+    test.assertRegex(messages[0], "rolling friction and applies torsional friction only")
 
 
 def test_capture_is_explicitly_rejected(test, device):

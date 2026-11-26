@@ -13,7 +13,7 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
-from .....sim import JointTargetMode
+from .....sim import JointTargetMode, ShapeFrictionMode
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
@@ -1978,6 +1978,16 @@ def convert_joints(
     return model_joints
 
 
+def _restricting_friction_modes(model: Model | ModelView) -> wp.array | None:
+    """Copy the shape friction modes when any differs from sliding friction, else return ``None``."""
+    modes = model.shape_material_friction_mode
+    if modes is None or not model.shape_count:
+        return None
+    if np.all(modes.numpy() == int(ShapeFrictionMode.SLIDING)):
+        return None
+    return wp.clone(modes)
+
+
 def convert_geometries(
     model: Model | ModelView,
     model_size: SizeKamino,
@@ -2049,6 +2059,7 @@ def convert_geometries(
         damping=model.shape_material_kd,
         torsional_friction=model.shape_material_mu_torsional,
         rolling_friction=model.shape_material_mu_rolling,
+        friction_mode=_restricting_friction_modes(model),
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,

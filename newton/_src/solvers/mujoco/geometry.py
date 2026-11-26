@@ -14,6 +14,7 @@ from .collision_masks import (
     CollisionGraphCompileResult,
     compile_newton_collision_graph,
 )
+from .condim import resolve_shape_condim
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ def build_shape_layout(
     local_bodies = bodies.copy()
     local_bodies[bodies >= 0] %= body_count
     attrs = model.mujoco
-    condim = attrs.condim.numpy() if hasattr(attrs, "condim") else np.full(model.shape_count, 3)
+    condim = resolve_shape_condim(model)
     priority = (
         attrs.geom_priority.numpy() if hasattr(attrs, "geom_priority") else np.zeros(model.shape_count, dtype=int)
     )
@@ -127,7 +128,7 @@ def build_shape_layout(
             raise ValueError(
                 f"SolverMuJoCo shape types mismatch at position {column}: "
                 f"world {missing_world} has no matching shape for {model.shape_label[shape]!r}. "
-                "Only mesh geoms support differing counts; body, type, condim and priority must match for other shapes"
+                "Only mesh geoms support differing counts; body, type, friction mode (condim) and priority must match for other shapes"
                 + (", as must collision flags with native MuJoCo contacts." if match_collision_flags else ".")
             )
     return ShapeLayout(representatives, mapping, local_bodies[representatives], slot_colliders)

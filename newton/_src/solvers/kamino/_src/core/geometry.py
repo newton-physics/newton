@@ -148,6 +148,13 @@ class GeometriesModel:
     rolling_friction: wp.array[wp.float32] | None = None
     """Per-geometry rolling friction coefficient [m]; ``None`` means zero."""
 
+    friction_mode: wp.array[wp.int32] | None = None
+    """
+    Per-geometry :class:`~newton.ShapeFrictionMode`. ``None`` when no contact
+    needs its friction components restricted.
+    Shape of ``(num_geoms,)``.
+    """
+
     group: wp.array[wp.int32] | None = None
     """
     Collision group assigned to each collision geometry. These groups are based

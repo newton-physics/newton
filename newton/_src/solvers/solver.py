@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import copy
@@ -12,11 +13,26 @@ from enum import IntEnum
 from types import MappingProxyType
 from typing import Any, ClassVar
 
+import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
+from ..exceptions import NewtonWarning
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, CollisionPipeline, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ..sim import (
+    BodyFlags,
+    CollisionPipeline,
+    Contacts,
+    Control,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    ShapeFrictionMode,
+    State,
+    StateFlags,
+)
+from ..sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
+from ..utils.deprecation import external_stacklevel
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -236,6 +252,41 @@ _CONTACT_FREQUENCIES = frozenset(
         Model.AttributeFrequency.CONTACT_SOFT,
     )
 )
+
+
+@wp.func
+def contact_friction_mode(shape_material_friction_mode: wp.array[wp.int32], shape_a: int, shape_b: int) -> int:
+    """Return the :class:`~newton.ShapeFrictionMode` bits of a rigid contact, the union of its shapes' modes."""
+    if not shape_material_friction_mode:
+        return int(ShapeFrictionMode.SLIDING)
+    if shape_a < 0 and shape_b < 0:
+        return int(ShapeFrictionMode.SLIDING)
+    mode = int(0)
+    if shape_a >= 0:
+        mode = shape_material_friction_mode[shape_a]
+    if shape_b >= 0:
+        mode = mode | shape_material_friction_mode[shape_b]
+    return mode
+
+
+def warn_unsupported_friction_modes(model: Model, solver_name: str) -> None:
+    """Warn once when shapes enable torsional or rolling friction, for solvers that apply neither."""
+    if not model.shape_count or model.shape_material_friction_mode is None:
+        return
+    enabled = int(np.bitwise_or.reduce(model.shape_material_friction_mode.numpy()))
+    components = [
+        name
+        for name, bit in (("torsional", FRICTION_TORSIONAL_BIT), ("rolling", FRICTION_ROLLING_BIT))
+        if enabled & bit
+    ]
+    if not components:
+        return
+    warnings.warn(
+        f"{solver_name} does not support {' and '.join(components)} friction; contacts of the shapes that "
+        "enable it use sliding friction only.",
+        NewtonWarning,
+        stacklevel=external_stacklevel(),
+    )
 
 
 def _contact_row_count(frequency: Model.AttributeFrequency, contacts: Contacts) -> int:

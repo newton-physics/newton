@@ -303,7 +303,9 @@ repository examples spend tuning effort, not a shared solver API.
        Experimental contact torsion adds spin friction to the contacts of
        articulated bodies whose shapes carry a positive
        ``steel:min_torsional_patch_radius`` (imported from
-       ``physxCollision:minTorsionalPatchRadius``), bounded by the shared
+       ``physxCollision:minTorsionalPatchRadius``) and a
+       :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` with torsional
+       friction, bounded by the shared
        Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
        a uniformly loaded disk of radius ``R``). ``contact_torsion_device``
        prepares these rows on the device, which CUDA graph capture requires.
