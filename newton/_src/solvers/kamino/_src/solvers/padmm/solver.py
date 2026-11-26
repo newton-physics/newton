@@ -384,7 +384,7 @@ class PADMMSolver:
                 num_worlds=self._size.num_worlds,
                 max_rows=self._size.max_of_num_kinematic_joint_cts,
                 threshold=self._config[0].redundant_kinematics_pivot_threshold,
-                check=True,
+                check=self._reuse_redundant_joints,
                 sparse=problem.sparse,
                 device=self._device,
             )
