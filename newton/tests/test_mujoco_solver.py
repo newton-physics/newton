@@ -16382,7 +16382,7 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
         return solver.mjw_data.contact.worldid.numpy()[:count], solver.mjw_data.contact.dist.numpy()[:count]
 
     def test_parent_filter_in_per_world_mesh_layout(self):
-        """Apply Newton's parent-child filters to contacts in each world."""
+        """Apply exported parent-child collision masks during native detection."""
         import mujoco
 
         def hull_world_with_finger(count, filter_parent):
@@ -16419,11 +16419,11 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
                 builder.add_world(hull_world_with_finger(2, filter_parent))
                 builder.add_world(hull_world_with_finger(3, filter_parent))
                 model = builder.finalize()
-                solver = SolverMuJoCo(model, nconmax=32, njmax=64, use_mujoco_contacts=False)
+                solver = SolverMuJoCo(model, nconmax=32, njmax=64, use_mujoco_contacts=True)
                 self.assertEqual(solver.mjw_model.nmesh, 2)
                 self.assertEqual(solver.mj_model.nexclude, 0)
                 self.assertTrue(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
-                worlds, dist = self._step_once(model, solver)
+                worlds, dist = self._step_once(model, solver, native=True)
                 if filter_parent:
                     self.assertEqual(len(worlds), 0)
                 else:
@@ -16611,8 +16611,6 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
             solver.step(state, state_next, control, contacts, 0.002, observables=observables)
             state, state_next = state_next, state
             count = int(contacts.rigid_contact_count.numpy()[0])
-            for field in (contacts.rigid_contact_shape0, contacts.rigid_contact_shape1):
-                self.assertTrue(np.all(np.isin(field.numpy()[:count], mapping[mapping >= 0])))
             # Report the force on the floor regardless of the input shape order.
             floor_sign = np.where(contacts.rigid_contact_shape0.numpy()[:count] == 0, 1, -1)
             normal_force += np.dot(floor_sign, observables.contact_f.numpy()[:count, 2]) / 10
@@ -16624,6 +16622,13 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
             touched = np.unique(geoms[worlds == w])
             self.assertEqual(len(touched), count + 1)
             self.assertTrue(np.all(mapping[w, touched] >= 0))
+        if counts[0] != counts[1]:
+            # step() preserves the input geometry. Export the solved rows to exercise the reverse mapping.
+            exported = newton.Contacts(solver.get_max_contact_count(), 0, device=model.device)
+            solver.update_contacts(exported)
+            self.assertEqual(int(exported.rigid_contact_count.numpy()[0]), ncon)
+            np.testing.assert_array_equal(exported.rigid_contact_shape0.numpy()[:ncon], mapping[worlds, geoms[:, 0]])
+            np.testing.assert_array_equal(exported.rigid_contact_shape1.numpy()[:ncon], mapping[worlds, geoms[:, 1]])
 
 
 @requires(*MUJOCO_MODULES)
