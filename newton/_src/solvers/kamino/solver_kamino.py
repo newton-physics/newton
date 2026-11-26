@@ -121,18 +121,12 @@ class _PipelineDetector:
         self._state = solver.model.state()
         self._body_q_in = wp.clone(self._state.body_q)
         self._horizon = 0.0
-        self._detect = True
 
-    def prepare(self, state_in: State, horizon: float, detect: bool = True):
-        """Capture the input poses, speculative horizon, and detection toggle for the next :meth:`collide` call.
-
-        Without detection, the existing contacts in :attr:`SolverKamino.contacts` are evaluated at the intermediate
-        poses, since their points are body-local.
-        """
+    def prepare(self, state_in: State, horizon: float):
+        """Capture the input poses and speculative horizon for the next :meth:`collide` call."""
         if self._body_q_in is not None:
             wp.copy(self._body_q_in, state_in.body_q)
         self._horizon = horizon
-        self._detect = detect
 
     def collide(self, data, contacts):
         solver = self._solver
@@ -149,13 +143,12 @@ class _PipelineDetector:
             wp.copy(self._state.body_qd, data.bodies.u_i)
 
         # Detect with Newton and convert to Kamino contacts
-        if self._detect:
-            solver._run_rigid_collision(self._state, self._horizon)
+        solver._run_rigid_collision(self._state, self._horizon)
         solver._convert_newton_contacts(self._state, solver.contacts, contacts)
 
     def rebase_to_input(self):
         """Express the contacts detected at the intermediate poses in the input body frames."""
-        if self._detect and self._body_q_in is not None:
+        if self._body_q_in is not None:
             self._solver._kamino.rebase_contacts_newton(
                 self._solver.model, self._solver.contacts, self._state.body_q, self._body_q_in
             )
@@ -1343,10 +1336,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
         generates contacts on every step and ``contacts`` is not used as input. When the solver owns
         a collision pipeline, ``contacts`` must be ``None`` and the pipeline detects into
-        :attr:`contacts` during the step. With the rigid collision frequency set to
-        ``CollisionFrequencyType.NONE``, contacts detected externally into :attr:`contacts` are
-        evaluated at the mid-point under ``"moreau"``, but miss contacts closing within the first
-        half-step, so prefer the default ``PRE_INIT``. Otherwise, non-``None`` contacts (for example, populated
+        :attr:`contacts` during the step. Under ``"moreau"``, it detects at the mid-point of every
+        step, so the rigid collision frequency must remain ``CollisionFrequencyType.PRE_INIT``; under
+        ``"euler"``, ``NONE`` lets the user detect into :attr:`contacts` instead. Otherwise, non-``None`` contacts (for example, populated
         by :meth:`~newton.CollisionPipeline.collide`) are converted to Kamino's internal format and
         used directly.
 
@@ -1390,6 +1382,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             rigid_mode = self._resolved_collision_frequency_type(SolverBase.CollisionSlot.RIGID)
             if rigid_mode not in (SolverBase.CollisionFrequencyType.NONE, SolverBase.CollisionFrequencyType.PRE_INIT):
                 raise NotImplementedError(f"SolverKamino does not support collision_frequency_type {rigid_mode.name}.")
+            if self._pipeline_detector is not None and rigid_mode == SolverBase.CollisionFrequencyType.NONE:
+                raise NotImplementedError(
+                    "SolverKamino with the 'moreau' integrator detects contacts at the mid-point of every step and "
+                    "does not support collision_frequency_type NONE; use PRE_INIT."
+                )
         # Internal detection is authoritative when enabled for this solver.
         midpoint_detector = None
         if self._config.use_collision_detector:
@@ -1398,7 +1395,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._detector = None
             midpoint_detector = self._pipeline_detector
             # NOTE: A full-step horizon from the midpoint also covers the first half of the next step.
-            midpoint_detector.prepare(state_in, dt, detect=rigid_mode == SolverBase.CollisionFrequencyType.PRE_INIT)
+            midpoint_detector.prepare(state_in, dt)
         elif contacts is not None:
             self._detector = None
             if rigid_mode == SolverBase.CollisionFrequencyType.PRE_INIT:

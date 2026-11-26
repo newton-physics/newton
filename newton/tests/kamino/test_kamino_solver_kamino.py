@@ -1020,14 +1020,19 @@ class TestSolverKaminoOwnedPipeline(NewtonTestCase):
                 solver = self._make_solver(model, integrator, pipeline)
                 state_in, state_out = model.state(), model.state()
 
-                # Detect into the solver's buffer from outside the step.
+                # Detect into the solver's buffer from outside the step; Moreau-Jean must detect at the mid-point.
                 solver.set_collision_frequency(collision_frequency_type={rigid: Frequency.NONE})
-                for _ in range(200):
-                    pipeline.collide(state_in, solver.contacts)
-                    solver.step(state_in, state_out, None, None, 0.005)
-                    state_in, state_out = state_out, state_in
-                self.assertAlmostEqual(float(state_in.body_q.numpy()[0, 2]), 0.1, delta=1e-3)
+                if integrator == "euler":
+                    for _ in range(200):
+                        pipeline.collide(state_in, solver.contacts)
+                        solver.step(state_in, state_out, None, None, 0.005)
+                        state_in, state_out = state_out, state_in
+                    self.assertAlmostEqual(float(state_in.body_q.numpy()[0, 2]), 0.1, delta=1e-4)
+                else:
+                    with self.assertRaisesRegex(NotImplementedError, "PRE_INIT"):
+                        solver.step(state_in, state_out, None, None, 0.005)
 
+                solver.set_collision_frequency(collision_frequency_type={rigid: Frequency.PRE_INIT})
                 with self.assertRaisesRegex(ValueError, "must be None"):
                     solver.step(state_in, state_out, None, solver.contacts, 0.005)
                 for ftype in (Frequency.PRE_POST_INIT, Frequency.ITERATIONS):
@@ -1041,42 +1046,47 @@ class TestSolverKaminoOwnedPipeline(NewtonTestCase):
             SolverKamino(model, config=config, collision_pipeline=newton.CollisionPipeline(model))
 
     def test_graph_capture_with_toggled_detection(self):
-        """Match uncaptured steps when alternating graphs that do and do not detect."""
+        """Match uncaptured steps when replaying graphs, alternating ones that do and do not detect under Euler."""
         if not self.default_device.is_cuda or wp.config.verify_cuda:
             self.skipTest("Requires CUDA graph capture")
         Frequency = newton.solvers.SolverBase.CollisionFrequencyType
         rigid = newton.solvers.SolverBase.CollisionSlot.RIGID
-        results = {}
-        for captured in (False, True):
-            model = self._make_model()
-            solver = self._make_solver(model, "moreau", newton.CollisionPipeline(model))
-            state_in, state_out = model.state(), model.state()
+        for integrator, schedule in (
+            ("euler", (Frequency.PRE_INIT, Frequency.NONE)),
+            ("moreau", (Frequency.PRE_INIT,)),
+        ):
+            results = {}
+            for captured in (False, True):
+                model = self._make_model()
+                solver = self._make_solver(model, integrator, newton.CollisionPipeline(model))
+                state_in, state_out = model.state(), model.state()
 
-            def step(ftype, solver=solver, state_in=state_in, state_out=state_out):
-                solver.set_collision_frequency(collision_frequency_type={rigid: ftype})
-                solver.step(state_in, state_out, None, None, 0.005)
-                wp.copy(state_in.body_q, state_out.body_q)
-                wp.copy(state_in.body_qd, state_out.body_qd)
+                def step(ftype, solver=solver, state_in=state_in, state_out=state_out):
+                    solver.set_collision_frequency(collision_frequency_type={rigid: ftype})
+                    solver.step(state_in, state_out, None, None, 0.005)
+                    wp.copy(state_in.body_q, state_out.body_q)
+                    wp.copy(state_in.body_qd, state_out.body_qd)
 
-            # Load kernels with one step per schedule, then restart from the initial poses.
-            q0, qd0 = state_in.body_q.numpy(), state_in.body_qd.numpy()
-            graphs = {}
-            for ftype in (Frequency.PRE_INIT, Frequency.NONE):
-                step(ftype)
-                if captured:
-                    with wp.ScopedCapture() as capture:
-                        step(ftype)
-                    graphs[ftype] = capture.graph
-            state_in.body_q.assign(q0)
-            state_in.body_qd.assign(qd0)
-            for i in range(100):
-                ftype = Frequency.PRE_INIT if i % 2 == 0 else Frequency.NONE
-                if captured:
-                    wp.capture_launch(graphs[ftype])
-                else:
+                # Load kernels with one step per schedule, then restart from the initial poses.
+                q0, qd0 = state_in.body_q.numpy(), state_in.body_qd.numpy()
+                graphs = {}
+                for ftype in schedule:
                     step(ftype)
-            results[captured] = state_in.body_q.numpy()
-        np.testing.assert_allclose(results[True], results[False], atol=1e-6)
+                    if captured:
+                        with wp.ScopedCapture() as capture:
+                            step(ftype)
+                        graphs[ftype] = capture.graph
+                state_in.body_q.assign(q0)
+                state_in.body_qd.assign(qd0)
+                for i in range(100):
+                    ftype = schedule[i % len(schedule)]
+                    if captured:
+                        wp.capture_launch(graphs[ftype])
+                    else:
+                        step(ftype)
+                results[captured] = state_in.body_q.numpy()
+            with self.subTest(integrator=integrator):
+                np.testing.assert_allclose(results[True], results[False], atol=1e-6)
 
     def test_contact_observables(self):
         """Report contact forces that match the momentum change when the solver owns the pipeline."""
