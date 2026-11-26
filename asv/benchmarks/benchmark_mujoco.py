@@ -358,8 +358,9 @@ def _setup_allegro(articulation_builder):
 
     # set joint targets and joint drive gains
     for i in range(articulation_builder.joint_dof_count):
-        articulation_builder.joint_target_ke[i] = 150
-        articulation_builder.joint_target_kd[i] = 20
+        articulation_builder.joint_target_ke[i] = 3.0
+        articulation_builder.joint_target_kd[i] = 0.1
+        articulation_builder.joint_effort_limit[i] = 0.5
     if hasattr(articulation_builder, "joint_target_q"):
         articulation_builder.joint_target_q[:] = articulation_builder.joint_q
     else:

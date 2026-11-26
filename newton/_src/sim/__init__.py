@@ -13,6 +13,7 @@ from .enums import (
     JointTargetMode,
     JointType,
     ModelFlags,
+    ShapeFrictionMode,
     StateFlags,
 )
 from .inverse_dynamics import eval_inverse_dynamics_passive
@@ -34,6 +35,7 @@ __all__ = [
     "ModelBuilder",
     "ModelFlags",
     "Rod",
+    "ShapeFrictionMode",
     "State",
     "StateFlags",
     "TendonGuide",

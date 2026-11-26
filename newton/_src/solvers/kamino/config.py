@@ -593,6 +593,18 @@ class PADMMSolverConfig:
     Must be greater than zero. Defaults to `1e-6`.
     """
 
+    dual_residual_mode: Literal["standard", "delassus"] = field(default="delassus", kw_only=True)
+    """
+    The definition of the dual residual `r_dual` between consecutive iterates.
+
+    - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`, with the penalty `rho` of each row.
+    - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, which ignores the drift of
+      the impulses along the null space of the Delassus matrix, e.g. due to redundant constraints.
+
+    Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
+    The `"standard"` residual is always used with iterative linear solvers. Defaults to `"delassus"`.
+    """
+
     compl_tolerance: float = 1e-6
     """
     The target tolerance on the complementarity residual `r_compl`.\n
@@ -708,7 +720,9 @@ class PADMMSolverConfig:
 
     PADMM converges to a minimum-norm deviation from its initial guess. Scaling
     the warm-start forces makes null-space forces converge to the overall
-    minimum-norm solution.
+    minimum-norm solution. This does not apply to the redundant kinematic joint
+    rows dropped by `detect_redundant_kinematics`, whose internal stress is
+    carried by the kept rows.
     """
 
     contact_warmstart_method: Literal[
@@ -722,6 +736,49 @@ class PADMMSolverConfig:
     Method to be used for warm-starting contacts.\n
     See :class:`WarmstarterContacts.Method` for available options.\n
     Defaults to `key_and_position`.
+    """
+
+    detect_redundant_kinematics: bool = field(default=True, kw_only=True)
+    """
+    Whether to drop the numerically redundant kinematic joint constraints, e.g. of closed kinematic loops,
+    which make the Delassus matrix singular and can prevent convergence.
+
+    The dropped rows carry no impulse, while the kept rows still enforce all joint constraints, so the motion
+    is unchanged. The detection only runs for models with closed kinematic loops, and is turned off with
+    iterative linear solvers. See :class:`RedundantRowShift` for details.
+
+    The setting of the first world applies to all worlds. Defaults to `True`.
+    """
+
+    redundant_kinematics_pivot_threshold: float = field(default=1e-5, kw_only=True)
+    """
+    The relative pivot below which `detect_redundant_kinematics` drops a kinematic joint constraint.
+
+    The relative pivot does not depend on the units or the scaling of the rows, and the default should not
+    need to be changed. The setting of the first world applies to all worlds. Must be in the range (0, 1).
+    Defaults to `1e-5`.
+    """
+
+    reuse_redundant_kinematics_set: bool = field(default=True, kw_only=True)
+    """
+    Whether to keep the kinematic joint constraints dropped at the previous step while they remain valid.
+
+    The dropped rows are checked at every step, and only the worlds that fail the check repeat the detection,
+    which avoids most of its cost. Disabling the reuse is mostly useful for debugging. With the `LLTB` and
+    `LLTBRCM` linear solvers, the check reads the Cholesky factor of the Delassus matrix, which can keep a row
+    dropped for a few steps after it became independent. See :class:`RedundantRowShift` for details.
+
+    The setting of the first world applies to all worlds. Defaults to `True`.
+    """
+
+    unpenalized_bilateral_rows: bool = field(default=True, kw_only=True)
+    """
+    Whether to remove the ALM penalty from the bilateral joint constraints, i.e. the joint dynamics and
+    kinematic rows, which are then solved exactly at each iteration up to the proximal regularization `eta`.
+
+    This speeds up convergence, but requires a Delassus matrix that is well-conditioned on the joint
+    constraints, i.e. a system without redundant kinematic constraints, or `detect_redundant_kinematics`.
+    Turned off with iterative linear solvers. Defaults to `True`.
     """
 
     @override
@@ -889,6 +946,15 @@ class PADMMSolverConfig:
             )
         if not 0.0 <= self.warmstart_scale <= 1.0:
             raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
+        if not 0.0 < self.redundant_kinematics_pivot_threshold < 1.0:
+            raise ValueError(
+                f"Invalid redundant kinematics pivot threshold: {self.redundant_kinematics_pivot_threshold}. "
+                "Must be in the range (0, 1)."
+            )
+        if self.dual_residual_mode not in ("standard", "delassus"):
+            raise ValueError(
+                f"Invalid dual residual mode: {self.dual_residual_mode}. Must be either 'standard' or 'delassus'."
+            )
 
         # Ensure that the enum-valued parameters are valid options
         # Conversion to enum-type configs will raise an error
@@ -1278,22 +1344,25 @@ class LOXSolverConfig:
     impulses.
     """
 
-    projection_acceleration: Literal["none", "apgd", "anderson"] = "none"
+    projection_acceleration: Literal["none", "nesterov", "anderson"] = "nesterov"
     """Acceleration applied to the body-space projection map.
 
-    ``"apgd"`` applies restarted Nesterov extrapolation and requires the
-    mass-split Jacobi map, i.e. :attr:`gauss_seidel_max_colors` equal to one.
-    ``"anderson"`` applies one safeguarded Anderson direction to either the
-    Jacobi or the colored Gauss--Seidel map. Anderson acceleration retains one
-    direction and uses a delayed residual-growth safeguard.
+    Both accelerate either the Jacobi or the colored Gauss--Seidel map.
+    ``"nesterov"`` applies restarted Nesterov extrapolation after every sweep but
+    the last. ``"anderson"`` applies one safeguarded Anderson direction after
+    every sweep; it retains one direction and uses a delayed residual-growth
+    safeguard.
     """
 
-    projection_anderson_recycle: bool = True
-    """Whether Anderson retains its direction across LOX splitting iterations.
+    projection_acceleration_recycle: bool = True
+    """Whether the projection acceleration carries its state across LOX splitting iterations.
 
-    Reuse is limited to one frozen LOX solve. Raw samples always restart when
-    the projection right-hand side changes; only secants formed under a single
-    right-hand side are retained.
+    Reuse is limited to one frozen LOX solve. Nesterov keeps its momentum and
+    reaction history, and applies the extrapolation of the last sweep of a
+    splitting iteration at the start of the next projection. Anderson
+    keeps its direction: raw samples always restart when the projection
+    right-hand side changes, and only secants formed under a single right-hand
+    side are retained.
     """
 
     inertial_warmstart_fraction: float = 0.0
@@ -1413,6 +1482,36 @@ class LOXSolverConfig:
     ``constraints.contact_compliance``, which also falls back to shape materials.
     """
 
+    contact_proximal_regularization: float = 0.01
+    """Relative proximal regularization of the local contact solves [dimensionless].
+
+    The local solve of each rigid and spatial contact uses its Delassus block with the
+    diagonal scaled by ``1 + contact_proximal_regularization``, so each local update moves by the
+    least weighted change. The contact law keeps the mechanical response, so converged solutions
+    satisfy the hard contact law. Zero disables the proximal terms, including the proximal warm start.
+    """
+
+    contact_proximal_warmstart_scale: float = 0.9
+    """Scale of the warm-start contact reactions that the first iterations are pulled toward, in [0, 1].
+
+    Applies to the rigid contacts without spatial friction, which carry a per-contact warm start.
+    The iterations start from the full contact warm start. During the first splitting iterations,
+    set by :attr:`contact_proximal_warmstart_window`, the local contact solves center their
+    proximal term on this scale times the warm-start reaction, which steers the impulses of
+    redundant contacts toward a smaller, more even distribution. The later iterations keep the
+    proximal term of :attr:`contact_proximal_regularization` centered on the current iterate, so
+    converged solutions satisfy the hard contact law.
+    """
+
+    contact_proximal_warmstart_window: float = 0.1
+    """Fraction of :attr:`max_iterations` that pulls toward the scaled warm start, in [0, 1].
+
+    The first ``ceil(contact_proximal_warmstart_window * max_iterations)`` splitting iterations
+    center the proximal term of the rigid contacts without spatial friction on
+    :attr:`contact_proximal_warmstart_scale` times their warm-start reaction. Zero disables the
+    proximal warm start.
+    """
+
     contact_implicit_restitution: bool = False
     """Whether each local contact solve decides the restitution of a speculative impact implicitly.
 
@@ -1424,7 +1523,14 @@ class LOXSolverConfig:
     """
 
     contact_spatial_friction: bool = False
-    """Enable coupled sliding, torsional, and rolling friction.
+    """Enable coupled sliding, torsional, and rolling friction for every contact.
+
+    .. deprecated:: 1.9
+        Set :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` to a
+        :class:`~newton.ShapeFrictionMode` with torsional or rolling friction
+        on the shapes that need spatial friction instead; the solver then enables it
+        automatically. When set, every contact keeps its torsional and rolling coefficients
+        regardless of the shapes' friction modes.
 
     Uses shape ``mu_torsional`` and ``mu_rolling`` coefficients [m], mixed between the two
     shapes like the sliding friction for Newton contacts, and averaged for Kamino's unified pipeline.
@@ -1564,16 +1670,14 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid joint_penalty_seed_time_step: {self.joint_penalty_seed_time_step}. Must be positive."
             )
-        if self.projection_acceleration not in ("none", "apgd", "anderson"):
+        if self.projection_acceleration not in ("none", "nesterov", "anderson"):
             raise ValueError(
                 f"Invalid projection_acceleration: {self.projection_acceleration}. "
-                "Must be 'none', 'apgd', or 'anderson'."
+                "Must be 'none', 'nesterov', or 'anderson'."
             )
-        if self.projection_acceleration == "apgd" and self.gauss_seidel_max_colors != 1:
-            raise ValueError("projection_acceleration='apgd' requires gauss_seidel_max_colors=1.")
-        if not isinstance(self.projection_anderson_recycle, bool):
+        if not isinstance(self.projection_acceleration_recycle, bool):
             raise ValueError(
-                f"Invalid projection_anderson_recycle: {self.projection_anderson_recycle}. Must be a boolean."
+                f"Invalid projection_acceleration_recycle: {self.projection_acceleration_recycle}. Must be a boolean."
             )
         if (
             not np.isfinite(self.inertial_warmstart_fraction)
@@ -1599,6 +1703,28 @@ class LOXSolverConfig:
         ):
             raise ValueError(
                 f"Invalid projected_twist_fraction: {self.projected_twist_fraction}. Must be in range [0, 1]."
+            )
+        if not np.isfinite(self.contact_proximal_regularization) or self.contact_proximal_regularization < 0.0:
+            raise ValueError(
+                f"Invalid contact_proximal_regularization: {self.contact_proximal_regularization}. Must be non-negative."
+            )
+        if (
+            not np.isfinite(self.contact_proximal_warmstart_scale)
+            or self.contact_proximal_warmstart_scale < 0.0
+            or self.contact_proximal_warmstart_scale > 1.0
+        ):
+            raise ValueError(
+                f"Invalid contact_proximal_warmstart_scale: {self.contact_proximal_warmstart_scale}. "
+                "Must be in range [0, 1]."
+            )
+        if (
+            not np.isfinite(self.contact_proximal_warmstart_window)
+            or self.contact_proximal_warmstart_window < 0.0
+            or self.contact_proximal_warmstart_window > 1.0
+        ):
+            raise ValueError(
+                f"Invalid contact_proximal_warmstart_window: {self.contact_proximal_warmstart_window}. "
+                "Must be in range [0, 1]."
             )
         if (
             not np.isfinite(self.joint_warmstart_scale)

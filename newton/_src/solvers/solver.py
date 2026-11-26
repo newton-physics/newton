@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import copy
@@ -12,11 +13,26 @@ from enum import IntEnum
 from types import MappingProxyType
 from typing import Any, ClassVar
 
+import numpy as np
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
+from ..exceptions import NewtonWarning
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, CollisionPipeline, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ..sim import (
+    BodyFlags,
+    CollisionPipeline,
+    Contacts,
+    Control,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    ShapeFrictionMode,
+    State,
+    StateFlags,
+)
+from ..sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
+from ..utils.deprecation import external_stacklevel
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -25,6 +41,12 @@ def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool
         wp.set_module_options(options, module=module)
         return True
     return False
+
+
+@wp.func
+def particle_is_kinematic(flags: wp.int32) -> bool:
+    k = wp.int32(ParticleFlags.ACTIVE) | wp.int32(ParticleFlags.KINEMATIC)
+    return (flags & k) == k
 
 
 @wp.kernel
@@ -38,6 +60,7 @@ def integrate_particles(
     gravity: wp.array[wp.vec3],
     dt: float,
     v_max: float,
+    target_q: wp.array[wp.vec3],
     x_new: wp.array[wp.vec3],
     v_new: wp.array[wp.vec3],
 ):
@@ -46,6 +69,13 @@ def integrate_particles(
 
     if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
         x_new[tid] = x0
+        return
+    if particle_flags[tid] & ParticleFlags.KINEMATIC:
+        x1 = x0
+        if target_q:
+            x1 = target_q[tid]
+        x_new[tid] = x1
+        v_new[tid] = (x1 - x0) / dt
         return
 
     v0 = v[tid]
@@ -222,6 +252,41 @@ _CONTACT_FREQUENCIES = frozenset(
         Model.AttributeFrequency.CONTACT_SOFT,
     )
 )
+
+
+@wp.func
+def contact_friction_mode(shape_material_friction_mode: wp.array[wp.int32], shape_a: int, shape_b: int) -> int:
+    """Return the :class:`~newton.ShapeFrictionMode` bits of a rigid contact, the union of its shapes' modes."""
+    if not shape_material_friction_mode:
+        return int(ShapeFrictionMode.SLIDING)
+    if shape_a < 0 and shape_b < 0:
+        return int(ShapeFrictionMode.SLIDING)
+    mode = int(0)
+    if shape_a >= 0:
+        mode = shape_material_friction_mode[shape_a]
+    if shape_b >= 0:
+        mode = mode | shape_material_friction_mode[shape_b]
+    return mode
+
+
+def warn_unsupported_friction_modes(model: Model, solver_name: str) -> None:
+    """Warn once when shapes enable torsional or rolling friction, for solvers that apply neither."""
+    if not model.shape_count or model.shape_material_friction_mode is None:
+        return
+    enabled = int(np.bitwise_or.reduce(model.shape_material_friction_mode.numpy()))
+    components = [
+        name
+        for name, bit in (("torsional", FRICTION_TORSIONAL_BIT), ("rolling", FRICTION_ROLLING_BIT))
+        if enabled & bit
+    ]
+    if not components:
+        return
+    warnings.warn(
+        f"{solver_name} does not support {' and '.join(components)} friction; contacts of the shapes that "
+        "enable it use sliding friction only.",
+        NewtonWarning,
+        stacklevel=external_stacklevel(),
+    )
 
 
 def _contact_row_count(frequency: Model.AttributeFrequency, contacts: Contacts) -> int:
@@ -633,7 +698,7 @@ class SolverBase:
         if collision_pipeline is not None and not self.supports_collision_pipeline:
             raise ValueError(
                 f"{type(self).__name__} cannot own a collision pipeline; "
-                "drive detection externally via model.collide()."
+                "drive detection externally via CollisionPipeline.collide()."
             )
         if collision_pipeline is not None and collision_pipeline.model is not model:
             raise ValueError("collision_pipeline and solver must use the same model")
@@ -664,8 +729,8 @@ class SolverBase:
     def contacts(self) -> Contacts | None:
         """The solver-owned contacts buffer, or ``None`` when no pipeline is owned.
 
-        Unlike :meth:`Model.contacts`, this property does not allocate; it
-        returns the buffer created from the owned pipeline at construction.
+        This property does not allocate; it returns the buffer created from
+        the owned pipeline at construction.
         With a slot set to ``CollisionFrequencyType.NONE`` the user may fill
         this buffer externally, e.g. ``pipeline.collide(state, solver.contacts)``.
         """
@@ -728,7 +793,7 @@ class SolverBase:
             ):
                 raise ValueError(
                     "an active rigid collision_frequency_type requires a solver-owned pipeline; "
-                    "pass collision_pipeline=... at construction or drive model.collide() externally."
+                    "pass collision_pipeline=... at construction or drive CollisionPipeline.collide() externally."
                 )
             if ftype[Slot.RIGID] == Frequency.ITERATIONS and self.collision_pipeline.contact_matching == "disabled":
                 raise ValueError(
@@ -1043,6 +1108,8 @@ class SolverBase:
         state_out: State,
         dt: float,
         angular_damping: float = 0.0,
+        *,
+        body_f: wp.array[wp.spatial_vector] | None = None,
     ) -> None:
         """
         Integrate the rigid bodies of the model.
@@ -1054,6 +1121,10 @@ class SolverBase:
             dt: The time step (typically in seconds).
             angular_damping: The angular damping factor.
                 Defaults to 0.0.
+            body_f: Total body wrenches [N, N·m] to integrate, shape (body_count,).
+                Solvers pass a scratch buffer here when they add internal forces to the
+                external :attr:`State.body_f <newton.State.body_f>` input. Defaults to
+                ``None``, which uses ``state_in.body_f``.
         """
         if model.body_count:
             wp.launch(
@@ -1062,7 +1133,7 @@ class SolverBase:
                 inputs=[
                     state_in.body_q,
                     state_in.body_qd,
-                    state_in.body_f,
+                    state_in.body_f if body_f is None else body_f,
                     model.body_com,
                     model.body_mass,
                     model.body_inertia,
@@ -1084,34 +1155,57 @@ class SolverBase:
         state_in: State,
         state_out: State,
         dt: float,
+        *,
+        control: Control | None = None,
+        particle_f: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
         Integrate the particles of the model.
+
+        Particles flagged :attr:`~newton.ParticleFlags.KINEMATIC` move to
+        :attr:`Control.particle_target_q <newton.Control.particle_target_q>`, or hold
+        their position if no target is given.
 
         Args:
             model: The model to integrate.
             state_in: The input state.
             state_out: The output state.
             dt: The time step (typically in seconds).
+            control: Optional control providing kinematic particle targets.
+            particle_f: Total particle forces [N] to integrate, shape (particle_count,).
+                Solvers pass a scratch buffer here when they add internal forces to the
+                external :attr:`State.particle_f <newton.State.particle_f>` input. Defaults to
+                ``None``, which uses ``state_in.particle_f``.
         """
         if model.particle_count:
+            target_q = None if control is None else control.particle_target_q
             wp.launch(
                 kernel=integrate_particles,
                 dim=model.particle_count,
                 inputs=[
                     state_in.particle_q,
                     state_in.particle_qd,
-                    state_in.particle_f,
+                    state_in.particle_f if particle_f is None else particle_f,
                     model.particle_inv_mass,
                     model.particle_flags,
                     model.particle_world,
                     model.gravity,
                     dt,
                     model.particle_max_velocity,
+                    target_q,
                 ],
                 outputs=[state_out.particle_q, state_out.particle_qd],
                 device=model.device,
             )
+
+    def _raise_if_kinematic_particles(self) -> None:
+        """Raise ``NotImplementedError`` if any active particle sets :attr:`~newton.ParticleFlags.KINEMATIC`."""
+        model = self.model
+        if not model.particle_count or model.particle_flags is None:
+            return
+        kinematic = int(ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC)
+        if ((model.particle_flags.numpy() & kinematic) == kinematic).any():
+            raise NotImplementedError(f"{type(self).__name__} does not support ParticleFlags.KINEMATIC particles.")
 
     def reset(
         self,
@@ -1199,6 +1293,14 @@ class SolverBase:
         """
         Simulate the model for a given time step using the given control input.
 
+        :attr:`State.body_f <newton.State.body_f>` and
+        :attr:`State.particle_f <newton.State.particle_f>` are external force inputs.
+        Solvers read them from ``state_in`` and never write them in ``state_in`` or
+        ``state_out``; internal forces such as contact, joint, and elastic forces are
+        accumulated in solver-owned scratch buffers. Forces written once before a
+        sequence of substeps therefore act on every substep, and double-buffered states
+        may share the same force arrays.
+
         Args:
             state_in: The input state.
             state_out: The output state.
@@ -1264,12 +1366,68 @@ class SolverBase:
         * ``ModelFlags.ACTUATOR_PROPERTIES``: Actuator gains, biases, limits,
           or force properties have changed.
 
+        :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>`
+        returns the flags that cover an edited attribute, and
+        :meth:`is_notify_model_changed_graphable` tells whether a notification
+        can be captured in a CUDA graph.
+
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int``
                 bits indicating which model properties changed.
 
         """
         pass
+
+    def is_notify_model_changed_graphable(self, flags: ModelFlags | int) -> bool:
+        """Check whether :meth:`notify_model_changed` can be captured in a CUDA graph for ``flags``.
+
+        Returns ``True`` when, for this solver as configured and for any model data, handling
+        ``flags`` neither synchronizes with the host nor allocates memory outside Warp's
+        stream-ordered memory pool, which capturing :meth:`step` requires as well. The call can then
+        be captured with :class:`warp.ScopedCapture` and replayed with :func:`warp.capture_launch`,
+        for example in a reset graph after a captured domain randomization. Flags the solver ignores
+        are graphable.
+
+        The answer is conservative: it is ``False`` when handling a flag can break capture under some
+        configurations or model contents, such as models with rod joints or tendons. A replay
+        repeats the captured notification: it reads the model arrays that were current at capture,
+        so edit them in place instead of replacing them. It also skips host-side validation that eager
+        calls perform, so an edit that an eager call would reject, such as resizing a mesh compiled into
+        :class:`~newton.solvers.SolverMuJoCo`, has no effect on replay.
+
+        Example:
+
+            .. code-block:: python
+
+                flags = newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                if solver.is_notify_model_changed_graphable(flags):
+                    with wp.ScopedCapture() as capture:
+                        randomize_masses(model)  # a kernel writing model.body_mass in place
+                        solver.notify_model_changed(flags)
+                    randomize_graph = capture.graph
+
+        .. experimental::
+
+            Notifications may become capturable whenever :meth:`step` is, which would make this
+            query unnecessary. It may change or be removed without a deprecation period.
+
+        Args:
+            flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int`` bits to notify.
+
+        Returns:
+            Whether ``notify_model_changed(flags)`` can be captured in a CUDA graph.
+        """
+        return not int(flags) & self._non_graphable_model_flags()
+
+    def _non_graphable_model_flags(self) -> int:
+        """Bit-mask of the flags whose :meth:`notify_model_changed` handling cannot be captured.
+
+        Solvers that override :meth:`notify_model_changed` override this as well; otherwise every
+        flag is reported as not graphable.
+        """
+        if type(self).notify_model_changed is SolverBase.notify_model_changed:
+            return 0
+        return ~0
 
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Update a legacy Contacts object with forces from the solver state.

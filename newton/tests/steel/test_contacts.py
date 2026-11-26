@@ -136,6 +136,7 @@ def _launch_contact_allocator(
             0,
             wp.zeros((1,), dtype=wp.float32, device=device),
             0,
+            None,
         ],
         outputs=[
             outputs["world"],
@@ -211,6 +212,7 @@ def _launch_articulation_pair_contact_allocator(
             0,
             wp.zeros((1,), dtype=wp.float32, device=device),
             0,
+            None,
         ],
         outputs=[
             wp.full((1,), -9, dtype=wp.int32, device=device),
@@ -496,10 +498,12 @@ def _launch_dense_contact_builders(
             wp.zeros((1,), dtype=wp.int32, device=device),
             articulation_origin,
             wp.array([0.6, 0.8], dtype=wp.float32, device=device),
+            None,
             wp.array([0.2, 0.4], dtype=wp.float32, device=device),
             patches,
             *anchors,
             0.5,  # restitution_velocity_threshold
+            None,
         ],
         outputs=list(metadata.values()),
         device=device,

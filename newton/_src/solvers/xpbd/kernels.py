@@ -4,18 +4,20 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
+from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
 from ...math import (
     vec_abs,
-    vec_leaky_max,
-    vec_leaky_min,
     vec_max,
     vec_min,
     velocity_at_point,
 )
-from ...sim import BodyFlags, JointType, Model
+from ...sim import BodyFlags, JointType, Model, ShapeFrictionMode
 from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
+from ..contact_gather import contact_side_body
+from ..solver import contact_friction_mode, particle_is_kinematic
 
 
 @wp.kernel
@@ -71,7 +73,7 @@ def apply_particle_shape_restitution(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+    if (particle_flags[particle_index] & (ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC)) != ParticleFlags.ACTIVE:
         return
 
     v_new = particle_v_new[particle_index]
@@ -133,6 +135,7 @@ def solve_particle_shape_contacts(
     body_flags: wp.array[wp.int32],
     shape_body: wp.array[int],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     particle_mu: float,
     particle_ka: float,
     contact_count: wp.array[int],
@@ -191,6 +194,8 @@ def solve_particle_shape_contacts(
 
     # take average material properties of shape and particle parameters
     mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
+    if contact_friction_mode(shape_material_friction_mode, shape_index, -1) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     # body velocity
     body_v_s = wp.spatial_vector()
@@ -703,144 +708,16 @@ def solve_tetrahedra(
 
 
 @wp.kernel
-def solve_tetrahedra2(
-    x: wp.array[wp.vec3],
-    v: wp.array[wp.vec3],
-    inv_mass: wp.array[float],
-    indices: wp.array2d[int],
-    pose: wp.array[wp.mat33],
-    activation: wp.array[float],
-    materials: wp.array2d[float],
-    dt: float,
-    relaxation: float,
-    delta: wp.array[wp.vec3],
+def update_particle_inv_mass_effective(
+    particle_flags: wp.array[wp.int32],
+    particle_inv_mass: wp.array[float],
+    particle_inv_mass_effective: wp.array[float],
 ):
     tid = wp.tid()
-
-    i = indices[tid, 0]
-    j = indices[tid, 1]
-    k = indices[tid, 2]
-    l = indices[tid, 3]
-
-    # act = activation[tid]
-
-    k_mu = materials[tid, 0]
-    k_lambda = materials[tid, 1]
-    # k_damp = materials[tid, 2]
-
-    x0 = x[i]
-    x1 = x[j]
-    x2 = x[k]
-    x3 = x[l]
-
-    w0 = inv_mass[i]
-    w1 = inv_mass[j]
-    w2 = inv_mass[k]
-    w3 = inv_mass[l]
-
-    x10 = x1 - x0
-    x20 = x2 - x0
-    x30 = x3 - x0
-
-    Ds = wp.matrix_from_cols(x10, x20, x30)
-    Dm = pose[tid]
-
-    inv_rest_volume = wp.determinant(Dm) * 6.0
-    rest_volume = 1.0 / inv_rest_volume
-
-    # F = Xs*Xm^-1
-    F = Ds * Dm
-
-    f1 = wp.vec3(F[0, 0], F[1, 0], F[2, 0])
-    f2 = wp.vec3(F[0, 1], F[1, 1], F[2, 1])
-    f3 = wp.vec3(F[0, 2], F[1, 2], F[2, 2])
-
-    # C_sqrt
-    # tr = wp.dot(f1, f1) + wp.dot(f2, f2) + wp.dot(f3, f3)
-    # r_s = wp.sqrt(abs(tr - 3.0))
-    # C = r_s
-
-    # if (r_s == 0.0):
-    #     return
-
-    # if (tr < 3.0):
-    #     r_s = 0.0 - r_s
-
-    # dCdx = F*wp.transpose(Dm)*(1.0/r_s)
-    # alpha = 1.0 + k_mu / k_lambda
-
-    # C_Neo
-    r_s = wp.sqrt(wp.dot(f1, f1) + wp.dot(f2, f2) + wp.dot(f3, f3))
-    if r_s == 0.0:
-        return
-    # tr = wp.dot(f1, f1) + wp.dot(f2, f2) + wp.dot(f3, f3)
-    # if (tr < 3.0):
-    #     r_s = -r_s
-    r_s_inv = 1.0 / r_s
-    C = r_s
-    dCdx = F * wp.transpose(Dm) * r_s_inv
-    alpha = 1.0 + k_mu / k_lambda
-
-    # C_Spherical
-    # r_s = wp.sqrt(wp.dot(f1, f1) + wp.dot(f2, f2) + wp.dot(f3, f3))
-    # r_s_inv = 1.0/r_s
-    # C = r_s - wp.sqrt(3.0)
-    # dCdx = F*wp.transpose(Dm)*r_s_inv
-    # alpha = 1.0
-
-    # C_D
-    # r_s = wp.sqrt(wp.dot(f1, f1) + wp.dot(f2, f2) + wp.dot(f3, f3))
-    # C = r_s*r_s - 3.0
-    # dCdx = F*wp.transpose(Dm)*2.0
-    # alpha = 1.0
-
-    grad1 = wp.vec3(dCdx[0, 0], dCdx[1, 0], dCdx[2, 0])
-    grad2 = wp.vec3(dCdx[0, 1], dCdx[1, 1], dCdx[2, 1])
-    grad3 = wp.vec3(dCdx[0, 2], dCdx[1, 2], dCdx[2, 2])
-    grad0 = (grad1 + grad2 + grad3) * (0.0 - 1.0)
-
-    denom = (
-        wp.dot(grad0, grad0) * w0 + wp.dot(grad1, grad1) * w1 + wp.dot(grad2, grad2) * w2 + wp.dot(grad3, grad3) * w3
-    )
-    multiplier = C / (denom + 1.0 / (k_mu * dt * dt * rest_volume))
-
-    delta0 = grad0 * multiplier
-    delta1 = grad1 * multiplier
-    delta2 = grad2 * multiplier
-    delta3 = grad3 * multiplier
-
-    # hydrostatic part
-    J = wp.determinant(F)
-
-    C_vol = J - alpha
-    # dCdx = wp.matrix_from_cols(wp.cross(f2, f3), wp.cross(f3, f1), wp.cross(f1, f2))*wp.transpose(Dm)
-
-    # grad1 = wp.vec3(dCdx[0,0], dCdx[1,0], dCdx[2,0])
-    # grad2 = wp.vec3(dCdx[0,1], dCdx[1,1], dCdx[2,1])
-    # grad3 = wp.vec3(dCdx[0,2], dCdx[1,2], dCdx[2,2])
-    # grad0 = (grad1 + grad2 + grad3)*(0.0 - 1.0)
-
-    s = inv_rest_volume / 6.0
-    grad1 = wp.cross(x20, x30) * s
-    grad2 = wp.cross(x30, x10) * s
-    grad3 = wp.cross(x10, x20) * s
-    grad0 = -(grad1 + grad2 + grad3)
-
-    denom = (
-        wp.dot(grad0, grad0) * w0 + wp.dot(grad1, grad1) * w1 + wp.dot(grad2, grad2) * w2 + wp.dot(grad3, grad3) * w3
-    )
-    multiplier = C_vol / (denom + 1.0 / (k_lambda * dt * dt * rest_volume))
-
-    delta0 += grad0 * multiplier
-    delta1 += grad1 * multiplier
-    delta2 += grad2 * multiplier
-    delta3 += grad3 * multiplier
-
-    # apply forces
-    wp.atomic_sub(delta, i, delta0 * w0 * relaxation)
-    wp.atomic_sub(delta, j, delta1 * w1 * relaxation)
-    wp.atomic_sub(delta, k, delta2 * w2 * relaxation)
-    wp.atomic_sub(delta, l, delta3 * w3 * relaxation)
+    if particle_is_kinematic(particle_flags[tid]):
+        particle_inv_mass_effective[tid] = 0.0
+    else:
+        particle_inv_mass_effective[tid] = particle_inv_mass[tid]
 
 
 @wp.kernel
@@ -855,11 +732,17 @@ def apply_particle_deltas(
     v_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
-    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+    flags = particle_flags[tid]
+    if (flags & ParticleFlags.ACTIVE) == 0:
         return
 
     x0 = x_orig[tid]
     xp = x_pred[tid]
+
+    if flags & ParticleFlags.KINEMATIC:
+        x_out[tid] = xp
+        v_out[tid] = (xp - x0) / dt
+        return
 
     # constraint deltas
     d = delta[tid]
@@ -940,46 +823,7 @@ def apply_body_deltas(
     v1 = v0 + dp
     w1 = w0 + dw1
 
-    # XXX this improves gradient stability
-    if wp.length(v1) < 1e-4:
-        v1 = wp.vec3(0.0)
-    if wp.length(w1) < 1e-4:
-        w1 = wp.vec3(0.0)
-
     qd_out[tid] = wp.spatial_vector(v1, w1)
-
-
-@wp.kernel
-def update_body_velocities(
-    poses: wp.array[wp.transform],
-    poses_prev: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
-    dt: float,
-    qd_out: wp.array[wp.spatial_vector],
-):
-    """Reconstruct body velocities from a full-step pose change for legacy compatibility."""
-    tid = wp.tid()
-
-    pose = poses[tid]
-    pose_prev = poses_prev[tid]
-
-    x = wp.transform_get_translation(pose)
-    x_prev = wp.transform_get_translation(pose_prev)
-
-    q = wp.transform_get_rotation(pose)
-    q_prev = wp.transform_get_rotation(pose_prev)
-
-    x_com = x + wp.quat_rotate(q, body_com[tid])
-    x_com_prev = x_prev + wp.quat_rotate(q_prev, body_com[tid])
-
-    v = (x_com - x_com_prev) / dt
-    dq = q * wp.quat_inverse(q_prev)
-
-    omega = 2.0 / dt * wp.vec3(dq[0], dq[1], dq[2])
-    if dq[3] < 0.0:
-        omega = -omega
-
-    qd_out[tid] = wp.spatial_vector(v, omega)
 
 
 @wp.kernel
@@ -1155,413 +999,6 @@ def update_joint_axis_weighted_target(
     axis_weights += vec_abs(weighted_axis)
 
     return wp.spatial_vector(axis_targets, axis_weights)
-
-
-@wp.func
-def compute_linear_correction_3d(
-    dx: wp.vec3,
-    r1: wp.vec3,
-    r2: wp.vec3,
-    tf1: wp.transform,
-    tf2: wp.transform,
-    m_inv1: float,
-    m_inv2: float,
-    I_inv1: wp.mat33,
-    I_inv2: wp.mat33,
-    lambda_in: float,
-    compliance: float,
-    damping: float,
-    dt: float,
-) -> float:
-    c = wp.length(dx)
-    if c == 0.0:
-        # print("c == 0.0 in positional correction")
-        return 0.0
-
-    n = wp.normalize(dx)
-
-    q1 = wp.transform_get_rotation(tf1)
-    q2 = wp.transform_get_rotation(tf2)
-
-    # Eq. 2-3 (make sure to project into the frame of the body)
-    r1xn = wp.quat_rotate_inv(q1, wp.cross(r1, n))
-    r2xn = wp.quat_rotate_inv(q2, wp.cross(r2, n))
-
-    w1 = m_inv1 + wp.dot(r1xn, I_inv1 * r1xn)
-    w2 = m_inv2 + wp.dot(r2xn, I_inv2 * r2xn)
-    w = w1 + w2
-    if w == 0.0:
-        return 0.0
-    alpha = compliance
-    gamma = compliance * damping
-
-    # Eq. 4-5
-    d_lambda = -c - alpha * lambda_in
-    # TODO consider damping for velocity correction?
-    # delta_lambda = -(err + alpha * lambda_in + gamma * derr)
-    if w + alpha > 0.0:
-        d_lambda /= w * (dt + gamma) + alpha / dt
-
-    return d_lambda
-
-
-@wp.func
-def compute_angular_correction_3d(
-    corr: wp.vec3,
-    q1: wp.quat,
-    q2: wp.quat,
-    m_inv1: float,
-    m_inv2: float,
-    I_inv1: wp.mat33,
-    I_inv2: wp.mat33,
-    alpha_tilde: float,
-    # lambda_prev: float,
-    relaxation: float,
-    dt: float,
-):
-    # compute and apply the correction impulse for an angular constraint
-    theta = wp.length(corr)
-    if theta == 0.0:
-        return 0.0
-
-    n = wp.normalize(corr)
-
-    # project variables to body rest frame as they are in local matrix
-    n1 = wp.quat_rotate_inv(q1, n)
-    n2 = wp.quat_rotate_inv(q2, n)
-
-    # Eq. 11-12
-    w1 = wp.dot(n1, I_inv1 * n1)
-    w2 = wp.dot(n2, I_inv2 * n2)
-    w = w1 + w2
-    if w == 0.0:
-        return 0.0
-
-    # Eq. 13-14
-    lambda_prev = 0.0
-    d_lambda = (-theta - alpha_tilde * lambda_prev) / (w * dt + alpha_tilde / dt)
-    # TODO consider lambda_prev?
-    # p = d_lambda * n * relaxation
-
-    # Eq. 15-16
-    return d_lambda
-
-
-@wp.kernel
-def solve_simple_body_joints(
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-    body_inv_m: wp.array[float],
-    body_inv_I: wp.array[wp.mat33],
-    joint_type: wp.array[int],
-    joint_enabled: wp.array[bool],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    joint_limit_lower: wp.array[float],
-    joint_limit_upper: wp.array[float],
-    joint_qd_start: wp.array[int],
-    joint_dof_dim: wp.array2d[int],
-    joint_axis: wp.array[wp.vec3],
-    joint_target: wp.array[float],
-    joint_target_ke: wp.array[float],
-    joint_target_kd: wp.array[float],
-    joint_linear_compliance: float,
-    joint_angular_compliance: float,
-    angular_relaxation: float,
-    linear_relaxation: float,
-    dt: float,
-    deltas: wp.array[wp.spatial_vector],
-):
-    tid = wp.tid()
-    type = joint_type[tid]
-
-    if not joint_enabled[tid]:
-        return
-    if type == JointType.FREE or type == JointType.ROD:
-        return
-    if type == JointType.DISTANCE:
-        return
-    if type == JointType.D6:
-        return
-
-    # rigid body indices of the child and parent
-    id_c = joint_child[tid]
-    id_p = joint_parent[tid]
-
-    X_pj = joint_X_p[tid]
-    X_cj = joint_X_c[tid]
-
-    X_wp = X_pj
-    m_inv_p = 0.0
-    I_inv_p = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    pose_p = X_pj
-    com_p = wp.vec3(0.0)
-    # parent transform and moment arm
-    if id_p >= 0:
-        pose_p = body_q[id_p]
-        X_wp = pose_p * X_wp
-        com_p = body_com[id_p]
-        m_inv_p = body_inv_m[id_p]
-        I_inv_p = body_inv_I[id_p]
-    r_p = wp.transform_get_translation(X_wp) - wp.transform_point(pose_p, com_p)
-
-    # child transform and moment arm
-    pose_c = body_q[id_c]
-    X_wc = pose_c * X_cj
-    com_c = body_com[id_c]
-    m_inv_c = body_inv_m[id_c]
-    I_inv_c = body_inv_I[id_c]
-    r_c = wp.transform_get_translation(X_wc) - wp.transform_point(pose_c, com_c)
-
-    if m_inv_p == 0.0 and m_inv_c == 0.0:
-        # connection between two immovable bodies
-        return
-
-    # accumulate constraint deltas
-    lin_delta_p = wp.vec3(0.0)
-    ang_delta_p = wp.vec3(0.0)
-    lin_delta_c = wp.vec3(0.0)
-    ang_delta_c = wp.vec3(0.0)
-
-    # rel_pose = wp.transform_inverse(X_wp) * X_wc
-    # rel_p = wp.transform_get_translation(rel_pose)
-
-    # joint connection points
-    # x_p = wp.transform_get_translation(X_wp)
-    x_c = wp.transform_get_translation(X_wc)
-
-    # linear_compliance = joint_linear_compliance
-    angular_compliance = joint_angular_compliance
-    damping = 0.0
-
-    axis_start = joint_qd_start[tid]
-    # mode = joint_dof_mode[axis_start]
-
-    # local joint rotations
-    q_p = wp.transform_get_rotation(X_wp)
-    q_c = wp.transform_get_rotation(X_wc)
-    inertial_q_p = wp.transform_get_rotation(pose_p)
-    inertial_q_c = wp.transform_get_rotation(pose_c)
-
-    # joint properties (for 1D joints)
-    axis = joint_axis[axis_start]
-
-    if type == JointType.FIXED:
-        limit_lower = 0.0
-        limit_upper = 0.0
-    else:
-        limit_lower = joint_limit_lower[axis_start]
-        limit_upper = joint_limit_upper[axis_start]
-
-    # linear_alpha_tilde = linear_compliance / dt / dt
-    angular_alpha_tilde = angular_compliance / dt / dt
-
-    # prevent division by zero
-    # linear_alpha_tilde = wp.max(linear_alpha_tilde, 1e-6)
-    # angular_alpha_tilde = wp.max(angular_alpha_tilde, 1e-6)
-
-    # accumulate constraint deltas
-    lin_delta_p = wp.vec3(0.0)
-    ang_delta_p = wp.vec3(0.0)
-    lin_delta_c = wp.vec3(0.0)
-    ang_delta_c = wp.vec3(0.0)
-
-    # handle angular constraints
-    if type == JointType.REVOLUTE:
-        # align joint axes
-        a_p = wp.quat_rotate(q_p, axis)
-        a_c = wp.quat_rotate(q_c, axis)
-        # Eq. 20
-        corr = wp.cross(a_p, a_c)
-        ncorr = wp.normalize(corr)
-
-        angular_relaxation = 0.2
-        # angular_correction(
-        #     corr, inertial_q_p, inertial_q_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c,
-        #     angular_alpha_tilde, angular_relaxation, deltas, id_p, id_c)
-        lambda_n = compute_angular_correction_3d(
-            corr, inertial_q_p, inertial_q_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c, angular_alpha_tilde, damping, dt
-        )
-        lambda_n *= angular_relaxation
-        ang_delta_p -= lambda_n * ncorr
-        ang_delta_c += lambda_n * ncorr
-
-        # limit joint angles (Alg. 3)
-        pi = 3.14159265359
-        two_pi = 2.0 * pi
-        if limit_lower > -two_pi or limit_upper < two_pi:
-            # find a perpendicular vector to joint axis
-            a = axis
-            # https://math.stackexchange.com/a/3582461
-            g = wp.sign(a[2])
-            h = a[2] + g
-            b = wp.vec3(g - a[0] * a[0] / h, -a[0] * a[1] / h, -a[0])
-            c = wp.normalize(wp.cross(a, b))
-            # b = c  # TODO verify
-
-            # joint axis
-            n = wp.quat_rotate(q_p, a)
-            # the axes n1 and n2 are aligned with the two bodies
-            n1 = wp.quat_rotate(q_p, b)
-            n2 = wp.quat_rotate(q_c, b)
-
-            phi = wp.asin(wp.dot(wp.cross(n1, n2), n))
-            # print("phi")
-            # print(phi)
-            if wp.dot(n1, n2) < 0.0:
-                phi = pi - phi
-            if phi > pi:
-                phi -= two_pi
-            if phi < -pi:
-                phi += two_pi
-            if phi < limit_lower or phi > limit_upper:
-                phi = wp.clamp(phi, limit_lower, limit_upper)
-                # print("clamped phi")
-                # print(phi)
-                # rot = wp.quat(phi, n[0], n[1], n[2])
-                # rot = wp.quat(n, phi)
-                rot = wp.quat_from_axis_angle(n, phi)
-                n1 = wp.quat_rotate(rot, n1)
-                corr = wp.cross(n1, n2)
-                # print("corr")
-                # print(corr)
-                # TODO expose
-                # angular_alpha_tilde = 0.0001 / dt / dt
-                # angular_relaxation = 0.5
-                # TODO fix this constraint
-                # angular_correction(
-                #     corr, inertial_q_p, inertial_q_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c,
-                #     angular_alpha_tilde, angular_relaxation, deltas, id_p, id_c)
-                lambda_n = compute_angular_correction_3d(
-                    corr,
-                    inertial_q_p,
-                    inertial_q_c,
-                    m_inv_p,
-                    m_inv_c,
-                    I_inv_p,
-                    I_inv_c,
-                    angular_alpha_tilde,
-                    damping,
-                    dt,
-                )
-                lambda_n *= angular_relaxation
-                ncorr = wp.normalize(corr)
-                ang_delta_p -= lambda_n * ncorr
-                ang_delta_c += lambda_n * ncorr
-
-        # handle joint targets
-        target_ke = joint_target_ke[axis_start]
-        # target_kd = joint_target_kd[axis_start]
-        target = joint_target[axis_start]
-        if target_ke > 0.0:
-            # find a perpendicular vector to joint axis
-            a = axis
-            # https://math.stackexchange.com/a/3582461
-            g = wp.sign(a[2])
-            h = a[2] + g
-            b = wp.vec3(g - a[0] * a[0] / h, -a[0] * a[1] / h, -a[0])
-            c = wp.normalize(wp.cross(a, b))
-            b = c
-
-            q = wp.quat_from_axis_angle(a_p, target)
-            b_target = wp.quat_rotate(q, wp.quat_rotate(q_p, b))
-            b2 = wp.quat_rotate(q_c, b)
-            # Eq. 21
-            d_target = wp.cross(b_target, b2)
-
-            target_compliance = 1.0 / target_ke  # / dt / dt
-            # angular_correction(
-            #     d_target, inertial_q_p, inertial_q_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c,
-            #     target_compliance, angular_relaxation, deltas, id_p, id_c)
-            lambda_n = compute_angular_correction_3d(
-                d_target, inertial_q_p, inertial_q_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c, target_compliance, damping, dt
-            )
-            lambda_n *= angular_relaxation
-            ncorr = wp.normalize(d_target)
-            # TODO fix
-            ang_delta_p -= lambda_n * ncorr
-            ang_delta_c += lambda_n * ncorr
-
-    if (type == JointType.FIXED) or (type == JointType.PRISMATIC):
-        # align the mutual orientations of the two bodies
-        # Eq. 18-19
-        q = q_p * wp.quat_inverse(q_c)
-        corr = -2.0 * wp.vec3(q[0], q[1], q[2])
-        # angular_correction(
-        #     -corr, inertial_q_p, inertial_q_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c,
-        #     angular_alpha_tilde, angular_relaxation, deltas, id_p, id_c)
-        lambda_n = compute_angular_correction_3d(
-            corr, inertial_q_p, inertial_q_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c, angular_alpha_tilde, damping, dt
-        )
-        lambda_n *= angular_relaxation
-        ncorr = wp.normalize(corr)
-        ang_delta_p -= lambda_n * ncorr
-        ang_delta_c += lambda_n * ncorr
-
-    # handle positional constraints
-
-    # joint connection points
-    x_p = wp.transform_get_translation(X_wp)
-    x_c = wp.transform_get_translation(X_wc)
-
-    # compute error between the joint attachment points on both bodies
-    # delta x is the difference of point r_2 minus point r_1 (Fig. 3)
-    dx = x_c - x_p
-
-    # rotate the error vector into the joint frame
-    q_dx = q_p
-    # q_dx = q_c
-    # q_dx = wp.transform_get_rotation(pose_p)
-    dx = wp.quat_rotate_inv(q_dx, dx)
-
-    lower_pos_limits = wp.vec3(0.0)
-    upper_pos_limits = wp.vec3(0.0)
-    if type == JointType.PRISMATIC:
-        lower_pos_limits = axis * limit_lower
-        upper_pos_limits = axis * limit_upper
-
-    # compute linear constraint violations
-    corr = wp.vec3(0.0)
-    zero = wp.vec3(0.0)
-    corr -= vec_leaky_min(zero, upper_pos_limits - dx)
-    corr -= vec_leaky_max(zero, lower_pos_limits - dx)
-
-    # if (type == JointType.PRISMATIC):
-    #     if mode == JointMode.TARGET_POSITION:
-    #         target = wp.clamp(target, limit_lower, limit_upper)
-    #         if target_ke > 0.0:
-    #             err = dx - target * axis
-    #             compliance = 1.0 / target_ke
-    #         damping = axis_damping[dim]
-    #     elif mode == JointMode.TARGET_VELOCITY:
-    #         if target_ke > 0.0:
-    #             err = (derr - target) * dt
-    #             compliance = 1.0 / target_ke
-    #         damping = axis_damping[dim]
-
-    # rotate correction vector into world frame
-    corr = wp.quat_rotate(q_dx, corr)
-
-    lambda_in = 0.0
-    linear_alpha = joint_linear_compliance
-    lambda_n = compute_linear_correction_3d(
-        corr, r_p, r_c, pose_p, pose_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c, lambda_in, linear_alpha, damping, dt
-    )
-    lambda_n *= linear_relaxation
-    n = wp.normalize(corr)
-
-    lin_delta_p -= n * lambda_n
-    lin_delta_c += n * lambda_n
-    ang_delta_p -= wp.cross(r_p, n) * lambda_n
-    ang_delta_c += wp.cross(r_c, n) * lambda_n
-
-    if id_p >= 0:
-        wp.atomic_add(deltas, id_p, wp.spatial_vector(lin_delta_p, ang_delta_p))
-    if id_c >= 0:
-        wp.atomic_add(deltas, id_c, wp.spatial_vector(lin_delta_c, ang_delta_c))
 
 
 @wp.kernel
@@ -2553,22 +1990,29 @@ def _solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     relaxation: float,
     dt: float,
-    deltas: wp.array[wp.spatial_vector],
-    contact_inv_weight: wp.array[float],
-    contact_impulse: wp.array[wp.spatial_vector],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     tid: int,
 ):
+    """Solve one rigid contact and return its body corrections.
+
+    Returns:
+        The spatial position corrections for body A and body B, and 1 when the
+        contact is active (it counts toward the per-body contact weighting),
+        otherwise 0 with zero corrections.
+    """
 
     count = contact_count[0]
     if tid >= count:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
     body_a = -1
     if shape_a >= 0:
         body_a = shape_body[shape_a]
@@ -2576,7 +2020,7 @@ def _solve_body_contact_positions(
     if shape_b >= 0:
         body_b = shape_body[shape_b]
     if body_a == body_b:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     # find body to world transform
     X_wb_a = wp.transform_identity()
@@ -2586,15 +2030,26 @@ def _solve_body_contact_positions(
     if body_b >= 0:
         X_wb_b = body_q[body_b]
 
+    recovery_slot = active_recovery_contact(
+        recovery,
+        contact_generation[0],
+        shape_a,
+        shape_b,
+        X_wb_a,
+        X_wb_b,
+        contact_normal[tid],
+    )
+    if recovery_slot < -1:
+        return wp.spatial_vector(), wp.spatial_vector(), 0
+
     # compute body position in world space
+    n = contact_normal[tid]
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
-
-    n = contact_normal[tid]
     d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
 
     if d >= 0.0:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     m_inv_a = 0.0
     m_inv_b = 0.0
@@ -2646,6 +2101,13 @@ def _solve_body_contact_positions(
         mu /= float(mat_nonzero)
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
+    friction_mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
+    if (friction_mode & FRICTION_SLIDING_BIT) == 0:
+        mu = 0.0
+    if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
+        mu_torsional = 0.0
+    if (friction_mode & FRICTION_ROLLING_BIT) == 0:
+        mu_rolling = 0.0
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2653,14 +2115,21 @@ def _solve_body_contact_positions(
     angular_a = -wp.cross(r_a, n)
     angular_b = wp.cross(r_b, n)
 
-    if contact_inv_weight:
+    correction = d
+    if recovery_slot >= 0:
+        va = wp.vec3(0.0)
+        vb = wp.vec3(0.0)
         if body_a >= 0:
-            wp.atomic_add(contact_inv_weight, body_a, 1.0)
+            va = velocity_at_point(body_qd[body_a], r_a)
         if body_b >= 0:
-            wp.atomic_add(contact_inv_weight, body_b, 1.0)
+            vb = velocity_at_point(body_qd[body_b], r_b)
+        target = recovery_step_depth(recovery.contacts[recovery_slot].thickness, -d)
+        correction = wp.max(d, wp.min(0.0, wp.dot(n, vb - va) * dt - target))
+        if correction == 0.0:
+            return wp.spatial_vector(), wp.spatial_vector(), 0
 
     lambda_n = compute_contact_constraint_delta(
-        d, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -n, n, angular_a, angular_b, relaxation, dt
+        correction, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -n, n, angular_a, angular_b, relaxation, dt
     )
 
     lin_delta_a = -n * lambda_n
@@ -2760,13 +2229,7 @@ def _solve_body_contact_positions(
             ang_delta_a -= roll_n * lambda_roll
             ang_delta_b += roll_n * lambda_roll
 
-    if body_a >= 0:
-        wp.atomic_add(deltas, body_a, wp.spatial_vector(lin_delta_a, ang_delta_a))
-    if body_b >= 0:
-        wp.atomic_add(deltas, body_b, wp.spatial_vector(lin_delta_b, ang_delta_b))
-
-    if contact_impulse:
-        wp.atomic_add(contact_impulse, tid, wp.spatial_vector(lin_delta_a, ang_delta_a))
+    return wp.spatial_vector(lin_delta_a, ang_delta_a), wp.spatial_vector(lin_delta_b, ang_delta_b), 1
 
 
 @wp.kernel
@@ -2792,17 +2255,21 @@ def solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     relaxation: float,
     dt: float,
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
     deltas: wp.array[wp.spatial_vector],
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
 ):
+    """Solve rigid contacts and scatter their corrections into per-body deltas with atomics."""
     tid = wp.tid()
     surface_velocity = wp.vec3(0.0)
     if contact_surface_velocity:
         surface_velocity = contact_surface_velocity[tid]
-    _solve_body_contact_positions(
+    delta_a, delta_b, active = _solve_body_contact_positions(
         body_q,
         body_qd,
         body_flags,
@@ -2824,13 +2291,143 @@ def solve_body_contact_positions(
         shape_material_mu,
         shape_material_mu_torsional,
         shape_material_mu_rolling,
+        shape_material_friction_mode,
         relaxation,
         dt,
-        deltas,
-        contact_inv_weight,
-        contact_impulse,
+        recovery,
+        contact_generation,
         tid,
     )
+    if contact_impulse:
+        # Each thread owns its contact slot, so a plain store suffices.
+        contact_impulse[tid] = delta_a
+    if active == 0:
+        return
+
+    body_a = contact_side_body(contact_shape0[tid], shape_body)
+    body_b = contact_side_body(contact_shape1[tid], shape_body)
+    if body_a >= 0:
+        wp.atomic_add(deltas, body_a, delta_a)
+    if body_b >= 0:
+        wp.atomic_add(deltas, body_b, delta_b)
+    if contact_inv_weight:
+        if body_a >= 0:
+            wp.atomic_add(contact_inv_weight, body_a, 1.0)
+        if body_b >= 0:
+            wp.atomic_add(contact_inv_weight, body_b, 1.0)
+
+
+@wp.kernel
+def solve_body_contact_positions_per_contact(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_material_mu: wp.array[float],
+    shape_material_mu_torsional: wp.array[float],
+    shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
+    relaxation: float,
+    dt: float,
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
+    contact_delta: wp.array[wp.spatial_vector],
+    contact_active: wp.array[wp.int32],
+    contact_impulse: wp.array[wp.spatial_vector],
+):
+    """Solve rigid contacts and store each contact's corrections in its own slots.
+
+    Body A's correction goes to ``contact_delta[2 * tid]`` and body B's to
+    ``contact_delta[2 * tid + 1]``. :func:`gather_body_contact_deltas` sums them
+    per body in a fixed order, so this path needs no atomics.
+    """
+    tid = wp.tid()
+    surface_velocity = wp.vec3(0.0)
+    if contact_surface_velocity:
+        surface_velocity = contact_surface_velocity[tid]
+    delta_a, delta_b, active = _solve_body_contact_positions(
+        body_q,
+        body_qd,
+        body_flags,
+        body_com,
+        body_m_inv,
+        body_I_inv,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        surface_velocity,
+        contact_offset0,
+        contact_offset1,
+        contact_normal,
+        contact_thickness0,
+        contact_thickness1,
+        contact_shape0,
+        contact_shape1,
+        shape_material_mu,
+        shape_material_mu_torsional,
+        shape_material_mu_rolling,
+        shape_material_friction_mode,
+        relaxation,
+        dt,
+        recovery,
+        contact_generation,
+        tid,
+    )
+    contact_delta[2 * tid] = delta_a
+    contact_delta[2 * tid + 1] = delta_b
+    contact_active[tid] = active
+    if contact_impulse:
+        contact_impulse[tid] = delta_a
+
+
+# Its own module, outside Warp's deterministic lowering: the forward pass has no atomics, and in the
+# backward pass every gradient element has a single writer (each contact side belongs to one body),
+# while recorded lowering cannot differentiate the read-modify-write of the body output.
+@wp.kernel(module="unique", module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED})
+def gather_body_contact_deltas(
+    body_start: wp.array[wp.int32],
+    body_end: wp.array[wp.int32],
+    sides: wp.array[wp.int32],
+    contact_delta: wp.array[wp.spatial_vector],
+    contact_active: wp.array[wp.int32],
+    # outputs
+    deltas: wp.array[wp.spatial_vector],
+    contact_inv_weight: wp.array[float],
+):
+    """Sum each body's contact corrections and active contacts in ascending contact order.
+
+    The contact sides come from :func:`~newton._src.solvers.contact_gather.sort_contact_sides_by_body`.
+    """
+    body = wp.tid()
+    start = body_start[body]
+    end = body_end[body]
+    if start == end:
+        return
+    delta = wp.spatial_vector()
+    active_count = int(0)
+    for i in range(start, end):
+        side = sides[i]
+        delta += contact_delta[side]
+        active_count += contact_active[side // 2]
+    # Each thread owns its body. Keep particle-contact deltas added earlier in the iteration.
+    deltas[body] = deltas[body] + delta
+    if contact_inv_weight:
+        contact_inv_weight[body] = float(active_count)
 
 
 @wp.kernel
@@ -2892,7 +2489,8 @@ def accumulate_weighted_contact_impulse(
         wp.spatial_top(impulse) * weight,
         wp.spatial_bottom(impulse) * weight,
     )
-    wp.atomic_add(contact_impulse, tid, scaled)
+    # Each thread owns its contact slot, so a plain read-modify-write suffices.
+    contact_impulse[tid] = contact_impulse[tid] + scaled
 
 
 @wp.kernel
