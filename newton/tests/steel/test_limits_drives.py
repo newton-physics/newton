@@ -3060,13 +3060,15 @@ def test_distance_bounds_hold_a_push_through_or_across_the_anchor(test, device):
     """Hold 5 mm bounds when one step carries the weight through the parent anchor or across the bound."""
     cap = 0.005
     # Crossing within the first step, head-on and oblique; a tangential push at the cap, alone and with a lower
-    # bound active in the same step; and a lower bound that stops a crossing on the near side.
+    # bound active in the same step; an inward oblique push with equal bounds; and a lower bound that stops a
+    # crossing on the near side.
     cases = [
         ((0.001, 0.0, 0.0), (-4.0, 0.0, 0.0), -1.0, cap),
         ((0.001, 0.0, 0.0), (-4.0, 1.0, 0.0), -1.0, cap),
         ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), -1.0, cap),
         ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), 0.0049, cap),
         ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), cap, cap),
+        ((cap, 0.0, 0.0), (-1.732, 1.0, 0.0), cap, cap),
         ((0.003, 0.0, 0.0), (-4.0, 0.0, 0.0), 0.002, -1.0),
     ]
     for offset, velocity, lower, upper in cases:
@@ -3079,6 +3081,23 @@ def test_distance_bounds_hold_a_push_through_or_across_the_anchor(test, device):
                 test.assertLess(distances.max(), upper + 1.0e-5)
             if lower > 0.0:
                 test.assertGreater(distances.min(), lower - 1.0e-5)
+
+
+def test_equal_distance_bounds_on_a_step_through_the_anchor(test, device):
+    """Bound the overshoot of equal 5 mm bounds when one step would carry the weight through the parent anchor."""
+    cap = 0.005
+    # The lower bound stops the weight on the near side while the upper bound acts along the far-side direction.
+    model, body = _build_tether(
+        device,
+        start=tuple(_TETHER_ANCHOR + np.array((cap, 0.0, 0.0))),
+        lower=cap,
+        upper=cap,
+        velocity=(-4.0, 4.0, 0.0),
+        gravity=False,
+    )
+    distances = _tether_distances(model, body, 10, enable_joint_limits=True)
+    test.assertLess(distances.max(), 2.0 * cap)
+    test.assertAlmostEqual(distances[-1], cap, delta=1.0e-5)
 
 
 def test_zero_max_distance_drift_with_an_offset_com(test, device):
@@ -3173,6 +3192,10 @@ for _name, _func in (
     (
         "test_distance_bounds_hold_a_push_through_or_across_the_anchor",
         test_distance_bounds_hold_a_push_through_or_across_the_anchor,
+    ),
+    (
+        "test_equal_distance_bounds_on_a_step_through_the_anchor",
+        test_equal_distance_bounds_on_a_step_through_the_anchor,
     ),
     ("test_zero_max_distance_drift_with_an_offset_com", test_zero_max_distance_drift_with_an_offset_com),
     ("test_distance_rows_count_toward_the_capacity_warning", test_distance_rows_count_toward_the_capacity_warning),

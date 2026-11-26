@@ -8189,11 +8189,14 @@ def build_distance_limit_rows(
     joint velocity ``(v, w)`` of the child COM in that frame, the anchor moves at ``u = v + w x r`` for
     ``r = p - p_com``, and a row along a unit ``n`` has the rate ``n . v + (r x n) . w``, so each row spans only the
     joint's own six DOFs. Both bounds act along the predicted end-of-step separation ``p + dt u``, which keeps a
-    centered COM on the bounds when the anchor moves across ``p`` or through the parent anchor. When the step crosses
+    centered COM on the bounds when the anchor moves across ``p`` or through the parent anchor; the lower row's
+    target velocity carries the part of its gap along that direction beyond the distance gap. When the step crosses
     the parent anchor, the lower bound acts along ``p / |p|`` instead, or along ``u`` at coincident anchors, so that
-    it stops the anchor on the near side. With an offset COM, the impulse also changes the anchor's transverse
-    velocity and rotation adds integration error, so the anchor can pass a bound. A zero maximum distance bounds each axis of ``p`` at zero with two opposing rows, which are always
-    active; with an offset COM the anchor drifts from zero the same way.
+    it stops the anchor on the near side; with an upper bound active in the same step, the two rows then act along
+    different directions and the anchor can pass the upper bound. With an offset COM, the impulse also changes the
+    anchor's transverse velocity and rotation adds integration error, so the anchor can pass a bound. A zero maximum
+    distance bounds each axis of ``p`` at zero with two opposing rows, which are always active; with an offset COM the
+    anchor drifts from zero the same way.
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
@@ -8247,23 +8250,28 @@ def build_distance_limit_rows(
             # Coincident anchors separate along the anchor's predicted velocity, so bound that direction.
             n = wp.normalize(u)
         n_lower = n
-        phi_lower = distance - lower
+        target_lower = 0.0
         n_upper = n
         phi_upper = upper - distance
         p_end = p + dt * u
-        if wp.length(p_end) > 1.0e-9:
-            n_upper = wp.normalize(p_end)
+        end_distance = wp.length(p_end)
+        if end_distance > 1.0e-9:
+            n_upper = p_end / end_distance
             phi_upper = upper - wp.dot(n_upper, p)
-            # Both bounds share the predicted direction unless the step crosses the parent anchor.
+            # The lower bound shares the direction unless the step crosses the parent anchor, so it stops the anchor
+            # on the near side.
             if wp.dot(p_end, p) > 0.0:
                 n_lower = n_upper
-                phi_lower = wp.dot(n_upper, p) - lower
+                # phi stays the distance gap, so only a real violation is stabilized; the target adds the rest.
+                target_lower = (distance - wp.dot(n_upper, p)) / dt
         for side in range(2):
-            phi = phi_lower
+            phi = distance - lower
+            target = target_lower
             active = has_lower and distance <= lower + activation_gap
             d = n_lower
             if side == 1:
                 phi = phi_upper
+                target = 0.0
                 active = has_upper and distance >= upper - activation_gap
                 d = -n_upper
             if not active:
@@ -8279,7 +8287,7 @@ def build_distance_limit_rows(
             world_row_parent[world, slot] = -1
             world_row_mu[world, slot] = 0.0
             world_phi[world, slot] = phi
-            world_target_velocity[world, slot] = 0.0
+            world_target_velocity[world, slot] = target
 
 
 @wp.kernel
