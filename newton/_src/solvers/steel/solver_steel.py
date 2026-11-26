@@ -370,8 +370,8 @@ def _validate_solve_mode(solve_mode, articulated_contact_response) -> None:
 def _validate_supported_model(model: Model) -> None:
     """Reject model features this solver does not simulate instead of ignoring them.
 
-    Joint-owned and legacy mimic relationships and loop-closing joints are validated
-    when the solver builds their constraint rows.
+    Joint-owned mimic relationships and loop-closing joints are validated when the
+    solver builds their constraint rows.
     """
     if model.particle_count:
         raise NotImplementedError("SolverSteel does not simulate particles.")
