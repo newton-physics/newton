@@ -213,6 +213,8 @@ subsolver selection and iteration controls.
 Configuring Kamino from USD
 ---------------------------
 
+SCC scene settings require ``newton-usd-schemas`` 0.8.0 or newer.
+
 Call :meth:`~newton.solvers.SolverKamino.register_custom_attributes` on the
 :class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
 the ``NewtonKaminoSceneAPI`` and ``NewtonKaminoSccSceneAPI`` settings from a USD
