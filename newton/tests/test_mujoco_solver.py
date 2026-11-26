@@ -10160,6 +10160,7 @@ class TestMuJoCoSolverUpdateFlags(unittest.TestCase):
             "shape_material_restitution",
             # Particles, particle-body attachments, and Newton tendons are not converted.
             "particle_mass",
+            "particle_inv_mass",
             "particle_radius",
             "particle_flags",
             "attachment_particle_body_stiffness",
