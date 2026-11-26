@@ -1003,8 +1003,10 @@ def geometry_conversion_kernel(
 
     # Determine if this shape is collidable and update collidable geom count
     # for the world. If not collidable, also ensure no material is assigned.
+    # Negative collision groups collide with every group except their own, so
+    # only group 0 disables shape-shape collisions.
     shape_flags = model_shape_flags[shape_id]
-    if (shape_flags & ShapeFlags.COLLIDE_SHAPES) != 0 and model_shape_collision_groups[shape_id] > 0:
+    if (shape_flags & ShapeFlags.COLLIDE_SHAPES) != 0 and model_shape_collision_groups[shape_id] != 0:
         wp.atomic_add(model_num_collidable_geoms, 0, 1)
     else:
         geom_material[shape_id] = -1
