@@ -2382,11 +2382,6 @@ class ModelBuilder:
         self._custom_schema_epoch: int = 0
         """Bumped whenever the custom attribute/frequency registry changes; keys the merge-validation cache."""
 
-        self._requested_contact_attributes: set[str] = set()
-        """Optional contact attributes requested via :meth:`request_contact_attributes`."""
-        self._requested_state_attributes: set[str] = set()
-        """Optional state attributes requested via :meth:`request_state_attributes`."""
-
         # particle-body attachments
         self.attachment_particle_body_body: list[int] = []
         """Rigid body indices accumulated for :attr:`Model.attachment_particle_body_body`."""
@@ -4501,9 +4496,6 @@ class ModelBuilder:
             offsets = np.repeat(starts(kind), len(source)).reshape(offset_shape)
             translated = np.where(tiled >= 0, tiled + offsets, tiled)
             dst.extend(translated.tolist())
-
-        self._requested_contact_attributes.update(builder._requested_contact_attributes)
-        self._requested_state_attributes.update(builder._requested_state_attributes)
 
         attribute_specs.pop("particle_q")
         if counts["particle"]:
@@ -14244,54 +14236,6 @@ class ModelBuilder:
             # FIXED joint (floating=False or floating=None with parent body)
             return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
 
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional contact attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .contacts import Contacts  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .state import State  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
-
     def set_coloring(self, particle_color_groups: Iterable[Iterable[int] | np.ndarray]) -> None:
         """
         Sets coloring information with user-provided coloring.
@@ -16111,10 +16055,6 @@ class ModelBuilder:
             m._deformable_visual_meshes, m._deformable_visual_skin_batches = self._finalize_deformable_visual_meshes()
             m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
-            # Preserve deprecated extended-attribute requests without emitting a
-            # second warning after the builder request already warned the caller.
-            m._requested_contact_attributes.update(self._requested_contact_attributes)
-            m._requested_state_attributes.update(self._requested_state_attributes)
             m.requires_grad = requires_grad
 
             m.world_count = self.world_count
