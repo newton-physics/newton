@@ -3075,18 +3075,25 @@ def test_multi_world_distance_limits_match_single_worlds(test, device):
         solver = SolverSteel(model, **options)
         state_0, state_1, control = model.state(), model.state(), model.control()
         newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        distances = []
         for _ in range(120):
             solver.step(state_0, state_1, control, None, _TETHER_DT)
             state_0, state_1 = state_1, state_0
-        return state_0.body_q.numpy()
+            distances.append(np.linalg.norm(state_0.body_q.numpy()[:, :3] - _TETHER_ANCHOR, axis=1))
+        return state_0.body_q.numpy(), np.array(distances)
 
-    batched = run()
-    np.testing.assert_array_equal(run(), batched)
+    batched, distances = run()
+    np.testing.assert_array_equal(run()[0], batched)
+    # Each bounded world holds its bounds over the whole run; the unbounded one falls past the other worlds' cap.
+    test.assertLess(distances[:, 0].max(), 0.4 + 1.0e-3)
+    test.assertGreater(distances[:, 1].min(), 0.2 - 1.0e-3)
+    np.testing.assert_allclose(distances[:, 2], 0.4, atol=1.0e-3)
+    test.assertGreater(distances[-1, 3], 0.4 + 0.05)
     for i, world in enumerate(worlds):
         with test.subTest(world=i):
             single, body = _build_tether(device, **world)
             expected = _tether_distances(single, body, 120, **options)[-1]
-            test.assertAlmostEqual(float(np.linalg.norm(batched[i, :3] - _TETHER_ANCHOR)), expected, delta=1.0e-6)
+            test.assertAlmostEqual(float(distances[-1, i]), expected, delta=1.0e-6)
 
 
 class TestSteelDistanceJointLimits(unittest.TestCase):
