@@ -53,6 +53,52 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 class TestImportUsdPhysics(unittest.TestCase):
     @requires("pxr.Usd")
+    def test_authored_drive_targets_are_independent_of_joint_limits(self):
+        """Preserve USD drive targets and angular units without changing limits or pose."""
+        import pxr.Usd as usd_stage
+        import pxr.UsdGeom as usd_geom
+        import pxr.UsdPhysics as usd_physics
+
+        stage = usd_stage.Stage.CreateInMemory()
+        usd_geom.SetStageMetersPerUnit(stage, 1.0)
+        usd_geom.SetStageUpAxis(stage, usd_geom.Tokens.z)
+        expected = {}
+        for kind, joint_type, axis, scale in (
+            ("revolute", usd_physics.RevoluteJoint, "angular", math.pi / 180),
+            ("prismatic", usd_physics.PrismaticJoint, "linear", 1.0),
+        ):
+            for index, target in enumerate((-0.08, 0.2, 0.6)):
+                path = f"/{kind}_{index}"
+                body = usd_geom.Cube.Define(stage, path + "/body")
+                usd_physics.RigidBodyAPI.Apply(body.GetPrim())
+                usd_physics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(1.0)
+                usd_physics.CollisionAPI.Apply(body.GetPrim())
+                joint = joint_type.Define(stage, path + "/joint")
+                joint.CreateBody1Rel().SetTargets([body.GetPath()])
+                joint.CreateAxisAttr("Z")
+                joint.CreateLowerLimitAttr(0.0)
+                joint.CreateUpperLimitAttr(0.45 / scale)
+                usd_physics.ArticulationRootAPI.Apply(joint.GetPrim())
+                drive = usd_physics.DriveAPI.Apply(joint.GetPrim(), axis)
+                drive.CreateStiffnessAttr(10.0 * scale)
+                drive.CreateTargetPositionAttr(target / scale)
+                expected[str(joint.GetPath())] = target
+        builder = newton.ModelBuilder()
+        mapping = builder.add_usd(stage, load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+        targets = model.joint_target_q.numpy()
+        positions = model.joint_q.numpy()
+        lower, upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
+        for path, target in expected.items():
+            with self.subTest(path=path):
+                joint = mapping["path_joint_map"][path]
+                q_start, qd_start = builder.joint_q_start[joint], builder.joint_qd_start[joint]
+                self.assertAlmostEqual(float(targets[q_start]), target, places=6)
+                self.assertAlmostEqual(float(positions[q_start]), 0.0)
+                self.assertAlmostEqual(float(lower[qd_start]), 0.0)
+                self.assertAlmostEqual(float(upper[qd_start]), 0.45, places=6)
+
+    @requires("pxr.Usd")
     def test_nonfinite_contact_materials_rejected_at_finalize(self):
         """Reject imported non-finite contact materials while preserving finite values and shape labels."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
