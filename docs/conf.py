@@ -173,19 +173,21 @@ if pandoc_path is None:
         "build the complete documentation."
     )
 
+_USD_INVENTORY_URL = "https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest"
+
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp/stable", None),
-    "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
+    "usd": (_USD_INVENTORY_URL, None),
 }
 
 
 def _tolerate_usd_inventory_failure(record: logging.LogRecord) -> bool:
     """Report a failed fetch of the USD inventory as info: the host is unreliable and ``-W`` would fail the build."""
-    if record.levelno == logging.WARNING and intersphinx_mapping["usd"][0] in record.getMessage():
+    if record.levelno == logging.WARNING and _USD_INVENTORY_URL in record.getMessage():
         record.levelno, record.levelname = logging.INFO, "INFO"
     return True
 
