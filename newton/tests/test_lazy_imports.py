@@ -79,7 +79,7 @@ class TestLazySolverImports(unittest.TestCase):
 
     def test_import_newton_defers_submodules(self):
         """Verify that importing newton defers its submodules until first access."""
-        # The core imports the implementation of the other submodules itself.
+        # The core imports newton.config and the implementation of the other submodules itself.
         deferred = {
             "actuators": "newton._src.actuators",
             "controllers": "newton._src.controllers",
@@ -92,7 +92,7 @@ class TestLazySolverImports(unittest.TestCase):
         code = (
             "import sys; import newton; "
             f"deferred = {deferred!r}; submodules = {submodules!r}; "
-            "prefixes = tuple(f'newton.{name}' for name in deferred) + tuple(deferred.values()); "
+            "prefixes = tuple(f'newton.{name}' for name in submodules if name != 'config') + tuple(deferred.values()); "
             "print(','.join(m for m in sys.modules if m.startswith(prefixes))); "
             "print(set(submodules) <= set(dir(newton))); "
             "import newton.viewer; print('newton.selection' in sys.modules); "
