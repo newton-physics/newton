@@ -2919,21 +2919,20 @@ def test_taut_distance_joint_swings_like_a_pendulum(test, device):
     """Swing a taut tether released horizontally to the bottom at the speed ``sqrt(2 g L)`` of a pendulum."""
     length = 0.4
     model, body = _build_tether(device, start=(length, 0.0, 1.0), upper=length)
-    solver_kwargs = {"enable_joint_limits": True}
-    # A quarter period of a 0.4 m pendulum released at 90 degrees is about 0.37 s.
-    distances = _tether_distances(model, body, 240, **solver_kwargs)
-    test.assertLess(np.abs(distances - length).max(), 1.0e-3)
-    solver = SolverSteel(model, **solver_kwargs)
+    solver = SolverSteel(model, enable_joint_limits=True)
     state_0, state_1, control = model.state(), model.state(), model.control()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    lowest_z, bottom_speed = np.inf, 0.0
+    lowest_z, bottom_speed, max_length_error = np.inf, 0.0, 0.0
+    # A quarter period of a 0.4 m pendulum released at 90 degrees is about 0.37 s.
     for _ in range(240):
         solver.step(state_0, state_1, control, None, _TETHER_DT)
         state_0, state_1 = state_1, state_0
-        z = float(state_0.body_q.numpy()[body, 2])
-        if z < lowest_z:
-            lowest_z = z
+        position = state_0.body_q.numpy()[body, :3]
+        max_length_error = max(max_length_error, abs(float(np.linalg.norm(position - _TETHER_ANCHOR)) - length))
+        if position[2] < lowest_z:
+            lowest_z = float(position[2])
             bottom_speed = float(np.linalg.norm(state_0.body_qd.numpy()[body, :3]))
+    test.assertLess(max_length_error, 1.0e-3)
     test.assertAlmostEqual(lowest_z, 1.0 - length, delta=1.0e-3)
     test.assertAlmostEqual(bottom_speed, np.sqrt(2.0 * 9.81 * length), delta=0.03 * np.sqrt(2.0 * 9.81 * length))
 
@@ -3003,10 +3002,13 @@ def test_distance_row_is_the_anchor_distance_rate(test, device):
 
 
 def test_captured_distance_joint_limit_matches_eager_steps(test, device):
-    """Replay a captured graph of DISTANCE limit rows like eager steps."""
+    """Replay a captured graph of DISTANCE limit rows like eager steps, through the fall onto the cap."""
     model, body = _build_tether(device, start=(0.3, 0.0, 0.9), upper=0.4)
-    eager = _tether_distances(model, body, 60, enable_joint_limits=True)
-    captured = _tether_distances(model, body, 60, capture=True, enable_joint_limits=True)
+    # The weight falls taut after about 0.18 s.
+    eager = _tether_distances(model, body, 240, enable_joint_limits=True)
+    captured = _tether_distances(model, body, 240, capture=True, enable_joint_limits=True)
+    test.assertLess(captured.max(), 0.4 + 1.0e-3)
+    test.assertGreater(captured.max(), 0.4 - 1.0e-3)
     np.testing.assert_allclose(captured, eager[1::2], atol=1.0e-6)
 
 
