@@ -2654,11 +2654,15 @@ class TestSteelFrictionAnchorSelection(unittest.TestCase):
             contacts.rigid_contact_count.assign([3])
             contacts.rigid_contact_shape0.assign([box] * 3)
             contacts.rigid_contact_shape1.assign([ground] * 3)
-            contacts.rigid_contact_point0.assign([[-0.08, 0, 0.0003], [0, 0, 0.004], [0.08, 0, 0.0003]])
             contacts.rigid_contact_point1.assign([[-0.08, 0, 0], [0, 0, 0], [0.08, 0, 0]])
             contacts.rigid_contact_normal.assign([[0, 0, -1]] * 3)
-            solver.step(model.state(), model.state(), model.control(), contacts, 0.005)
-            np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], [0.5, 0, 0.5])
+            # The touching tolerance of this box is about 1.7 mm: the nearest contacts lie beyond
+            # it and keep friction, and contacts beyond it from the nearest lose it.
+            for gaps, weights in (([0.0003, 0.004, 0.0003], [0.5, 0, 0.5]), ([0.0049, 0.003, 0.0049], [0, 1, 0])):
+                with self.subTest(gaps=gaps):
+                    contacts.rigid_contact_point0.assign([[-0.08, 0, gaps[0]], [0, 0, gaps[1]], [0.08, 0, gaps[2]]])
+                    solver.step(model.state(), model.state(), model.control(), contacts, 0.005)
+                    np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], weights)
 
     def test_cuda_planar_patch_reduces_friction_rows(self):
         """Retain a box face's four normals while using only two friction anchors."""
