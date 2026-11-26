@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import atexit
 import copy
 import gc
 import importlib
@@ -573,6 +574,19 @@ def _throttle_render_fps(
     return sleep_time
 
 
+def _freeze_at_exit() -> None:
+    """Spare interpreter shutdown its collections of the objects alive at exit.
+
+    Shutdown runs full collections over every tracked object, which delays the
+    exit to release memory that the end of the process releases anyway.
+    Freezing from an exit handler, rather than when an example ends, leaves
+    collections working while the process runs: the example browser and the
+    tests' batch runner rely on them to release one example before the next.
+    """
+    atexit.unregister(gc.freeze)
+    atexit.register(gc.freeze)
+
+
 def run(example, args):
     """Run an example, enabling browser recovery in interactive viewers.
 
@@ -583,7 +597,15 @@ def run(example, args):
 
     Test, headless, benchmark, and noninteractive runs propagate failures to
     the caller so automated jobs retain their normal failure exit status.
+
+    The process then skips garbage collection when it exits, which makes it
+    exit sooner. Objects still alive at that point are not finalized: their
+    ``__del__`` isn't called, and a file left open loses the data it hasn't
+    written yet. Close outputs, such as a recording file, before the run
+    ends, for example in the viewer's ``close()``.
     """
+    _freeze_at_exit()
+
     viewer = example.viewer
     example_class = type(example)
     render_fps = getattr(args, "render_fps", None)
@@ -1065,6 +1087,7 @@ def main():
     import sys  # noqa: PLC0415
 
     _enable_example_deprecation_warnings()
+    _freeze_at_exit()
 
     examples = get_examples()
 
