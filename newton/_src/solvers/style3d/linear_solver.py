@@ -6,6 +6,27 @@ from typing import Any
 
 import warp as wp
 
+_DOT_BLOCK_SIZE = 256
+
+
+@wp.kernel
+def _dot_blocks(a: wp.array[wp.vec3], b: wp.array[wp.vec3], sums: wp.array[float]):
+    block, lane = wp.tid()
+    i = block * wp.block_dim() + lane
+    value = float(0.0)
+    if i < a.shape[0]:
+        value = wp.dot(a[i], b[i])
+    wp.tile_store(sums, wp.tile_sum(wp.tile(value)), offset=block)
+
+
+@wp.kernel
+def _sum_dot_blocks(sums: wp.array[float], out: wp.array[float]):
+    _, lane = wp.tid()
+    value = float(0.0)
+    for i in range(lane, sums.shape[0], wp.block_dim()):
+        value += sums[i]
+    wp.tile_store(out, wp.tile_sum(wp.tile(value)))
+
 
 @wp.struct
 class NonZeroEntry:
@@ -227,7 +248,7 @@ class PcgSolver:
 
     def __init__(self, dim: int, device, maxIter: int = 999):
         self.dim = dim  # pre-allocation
-        self.device = device
+        self.device = wp.get_device(device)
         self.maxIter = maxIter
         self.r = wp.array(shape=dim, dtype=wp.vec3, device=device)
         self.z = wp.array(shape=dim, dtype=wp.vec3, device=device)
@@ -235,6 +256,36 @@ class PcgSolver:
         self.Ap = wp.array(shape=dim, dtype=wp.vec3, device=device)
         self.pTAp = wp.array(shape=maxIter, dtype=float, device=device)
         self.rTz = wp.array(shape=maxIter, dtype=float, device=device)
+        self._dot_partials = None
+        if self.device.is_cuda and dim > _DOT_BLOCK_SIZE:
+            block_count = (dim + _DOT_BLOCK_SIZE - 1) // _DOT_BLOCK_SIZE
+            self._dot_partials = wp.empty(block_count, dtype=float, device=device)
+
+    def dot(self, a: wp.array[wp.vec3], b: wp.array[wp.vec3], out: wp.array[float]) -> None:
+        """Compute a PCG inner product without allocating inside CUDA conditional graphs."""
+        if self.device.is_cpu:
+            wp.utils.array_inner(a, b, out=out)
+            return
+
+        sums = out if self._dot_partials is None else self._dot_partials
+        block_size = 32 if self.dim <= 32 else _DOT_BLOCK_SIZE
+        wp.launch_tiled(
+            _dot_blocks,
+            dim=sums.size,
+            inputs=[a, b],
+            outputs=[sums],
+            block_dim=block_size,
+            device=self.device,
+        )
+        if self._dot_partials is not None:
+            wp.launch_tiled(
+                _sum_dot_blocks,
+                dim=1,
+                inputs=[sums],
+                outputs=[out],
+                block_dim=_DOT_BLOCK_SIZE,
+                device=self.device,
+            )
 
     def step1_update_r(
         self,
@@ -267,8 +318,8 @@ class PcgSolver:
     def step2_update_z(self, inv_M: wp.array[Any]):
         wp.launch(array_mul_kernel, dim=self.dim, inputs=[inv_M, self.r], outputs=[self.z], device=self.device)
 
-    def step3_update_rTz(self, iter: int):
-        wp.utils.array_inner(self.r, self.z, out=self.rTz[iter : iter + 1])
+    def step3_update_rTz(self, iter: int, dot: Callable = wp.utils.array_inner):
+        dot(self.r, self.z, out=self.rTz[iter : iter + 1])
 
     def step4_update_p(self, iter: int):
         wp.launch(
@@ -302,8 +353,8 @@ class PcgSolver:
                 device=self.device,
             )
 
-    def step6_update_pTAp(self, iter: int):
-        wp.utils.array_inner(self.p, self.Ap, out=self.pTAp[iter : iter + 1])
+    def step6_update_pTAp(self, iter: int, dot: Callable = wp.utils.array_inner):
+        dot(self.p, self.Ap, out=self.pTAp[iter : iter + 1])
 
     def step7_update_x_r(self, x: wp.array[wp.vec3], iter: int):
         wp.launch(
@@ -324,7 +375,10 @@ class PcgSolver:
         x1: wp.array[wp.vec3],
         iterations: int,
         additional_multiplier: Callable | None = None,
+        *,
+        dot: Callable = wp.utils.array_inner,
     ):
+        """Use the original reduction order unless a capture-safe dot product is supplied."""
         # Prevent out-of-bounds in rTz/pTAp when iterations > maxIter.
         iterations = wp.min(iterations, self.maxIter)
 
@@ -341,7 +395,7 @@ class PcgSolver:
 
         for iter in range(iterations):
             self.step2_update_z(inv_M)
-            self.step3_update_rTz(iter)
+            self.step3_update_rTz(iter, dot)
             self.step4_update_p(iter)
 
             if additional_multiplier is None:
@@ -350,7 +404,7 @@ class PcgSolver:
                 additional_Ap = additional_multiplier(self.p)
                 self.step5_update_Ap(A_off_diag, A_diag, additional_Ap)
 
-            self.step6_update_pTAp(iter)
+            self.step6_update_pTAp(iter, dot)
             self.step7_update_x_r(x1, iter)
 
 

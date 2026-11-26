@@ -664,6 +664,15 @@ class SolverStyle3D(SolverBase):
             and contacts.rigid_contact_max > 0
             and self.config.linear_iterations > 0
         )
+        primary_dot = wp.utils.array_inner
+        conditional_correction = True
+        if correct_rigid_friction and self.device.is_cuda and self.device.stream.is_capturing:
+            if self.device.stream in self.device.captures:
+                conditional_correction = wp.is_conditional_graph_supported()
+            else:
+                # Warp cannot insert a conditional or manage reduction scratch in a foreign capture.
+                conditional_correction = False
+                primary_dot = self._linear_solver.dot
         for _iter in range(self.config.iterations):
             wp.launch(
                 init_rhs_kernel,
@@ -786,13 +795,13 @@ class SolverStyle3D(SolverBase):
                 self._dx,
                 self.config.linear_iterations,
                 self._matrix_free_multiply,
+                dot=primary_dot,
             )
 
             if correct_rigid_friction:
-                if self.device.is_cpu:
+                if conditional_correction:
                     wp.capture_if(self._contact.has_friction_coupling, on_true=self._solve_friction_correction)
                 else:
-                    # CUDA reductions allocate scratch storage, which conditional graph nodes cannot capture.
                     self._solve_friction_correction()
 
             if self.collision is not None:
@@ -835,6 +844,7 @@ class SolverStyle3D(SolverBase):
             candidate,
             self.config.linear_iterations,
             self._matrix_free_multiply,
+            dot=linear_solver.dot,
         )
         wp.launch(
             form_friction_correction_candidate,
@@ -859,7 +869,7 @@ class SolverStyle3D(SolverBase):
         linear_solver.step1_update_r(self._pd_off_diag, self._A_diag, self._rhs, dx, product)
         # The preconditioner scales different coordinate blocks and masks prescribed rows.
         linear_solver.step2_update_z(self._inv_A_diag)
-        wp.utils.array_inner(linear_solver.r, linear_solver.z, out=norm_sq)
+        linear_solver.dot(linear_solver.r, linear_solver.z, norm_sq)
 
     def _matrix_free_multiply(self, x: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
         """Return the matrix-free contribution to A x, excluding the assembled base matrix."""

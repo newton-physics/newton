@@ -12,6 +12,7 @@ import newton
 from newton import NewtonDeprecationWarning
 from newton._src.solvers.style3d.affine_body import AffineBody
 from newton._src.solvers.style3d.builder import PDMatrixBuilder, _compute_max_neighbors
+from newton._src.solvers.style3d.linear_solver import PcgSolver
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -1371,6 +1372,23 @@ def test_rigid_contact_friction_stability(test, device):
     test.assertLess(float(poses[-1, 2]), 0.12)
 
 
+def test_captured_pcg_dot(test, device):
+    """Reduce multiple blocks and a partial final block inside a conditional CUDA graph."""
+    if not wp.is_conditional_graph_supported():
+        test.skipTest("CUDA conditional nodes require CUDA 12.4 or newer")
+    size = 65_537
+    solver = PcgSolver(size, device, maxIter=2)
+    solver.r.fill_(wp.vec3(1.0, -2.0, 3.0))
+    solver.rTz.fill_(-1.0)
+    enabled = wp.ones(1, dtype=int, device=device)
+    with wp.ScopedCapture(device=device) as capture:
+        wp.capture_if(enabled, on_true=lambda: solver.step3_update_rTz(1, solver.dot))
+    for scale in (1.0, -2.0):
+        solver.z.fill_(wp.vec3(3.0 * scale, 4.0 * scale, 2.0 * scale))
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(solver.rTz.numpy(), [-1.0, size * scale])
+
+
 def test_rigid_contact_sliding_box(test, device):
     """Match the Coulomb stopping distance and impulse bound for a stiff four-point contact."""
     gravity, mu, initial_speed, dt = 9.81, 0.5, 2.0, 0.005
@@ -1415,6 +1433,42 @@ def test_rigid_contact_sliding_box(test, device):
     test.assertAlmostEqual(float(vx[-1]), 0.0, delta=0.03)
     test.assertLess(float(np.max(initial_speed - vx - mu * (gravity * times + vz))), 0.01)
     test.assertAlmostEqual(float(-np.polyfit(times[4:34], vx[4:34], 1)[0]), mu * gravity, delta=0.03)
+
+    # Replay one nonlinear iteration with a sliding box and a prescribed belt speed.
+    # A negative sentinel detects a correction solve even if its result is discarded.
+    solver.config.iterations = 1
+    state_in.body_q.fill_(wp.transform((0.0, 0.0, 0.099998), wp.quat_identity()))
+    state_in.body_qd.fill_(wp.spatial_vector(initial_speed, 0.0, 0.0, 0.0, 0.0, 0.0))
+    pipeline.collide(state_in, contacts)
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+    contacts.rigid_contact_surface_velocity = wp.zeros(contacts.rigid_contact_max, dtype=wp.vec3, device=device)
+    graph = None
+    if wp.get_device(device).is_cuda and wp.is_conditional_graph_supported():
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(state_in, state_out, None, contacts, dt)
+        graph = capture.graph
+    for count, friction, belt_speed in (
+        (contact_count, mu, 0.0),
+        (contact_count, mu, 2.0),
+        (0, mu, 2.0),
+        (contact_count, 0.0, 2.0),
+    ):
+        with test.subTest(count=count, friction=friction, belt_speed=belt_speed):
+            contacts.rigid_contact_count.fill_(count)
+            model.shape_material_mu.fill_(friction)
+            contacts.rigid_contact_surface_velocity.fill_(wp.vec3(belt_speed, 0.0, 0.0))
+            solver._friction_residual_norms_sq.fill_(-1.0)
+            if graph is None:
+                solver.step(state_in, state_out, None, contacts, dt)
+            else:
+                wp.capture_launch(graph)
+            norms = solver._friction_residual_norms_sq.numpy()
+            if count and friction and belt_speed:
+                test.assertGreater(norms[0], norms[1])
+                test.assertGreaterEqual(norms[1], 0.0)
+            else:
+                np.testing.assert_array_equal(norms, -1.0)
 
 
 def test_affine_body_state_conversion(test, device):
@@ -1592,6 +1646,13 @@ add_function_test(
     "test_rigid_contact_friction_stability",
     test_rigid_contact_friction_stability,
     devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestSolverStyle3D,
+    "test_captured_pcg_dot",
+    test_captured_pcg_dot,
+    devices=[device for device in devices if device.is_cuda],
     check_output=False,
 )
 add_function_test(
