@@ -2974,12 +2974,15 @@ def test_distance_joint_bounds_are_read_every_step(test, device):
 
 
 def test_distance_row_is_the_anchor_distance_rate(test, device):
-    """Give the upper-bound row ``J qd`` minus the anchor-distance rate from forward kinematics, with offset frames."""
+    """Give the lower-bound row ``J qd`` the anchor-distance rate and the upper-bound row the rate along the predicted
+    end-of-step separation, both from forward kinematics with offset frames."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link(mass=0.7, com=wp.vec3(-0.1, 0.05, 0.03), inertia=wp.mat33(np.eye(3) * 0.1))
     parent_xform = wp.transform((0.4, -0.1, 1.2), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6))
     child_xform = wp.transform((0.12, 0.08, -0.04), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.4))
-    joint = builder.add_joint_distance(-1, child, parent_xform=parent_xform, child_xform=child_xform, max_distance=0.2)
+    joint = builder.add_joint_distance(
+        -1, child, parent_xform=parent_xform, child_xform=child_xform, min_distance=0.1, max_distance=0.2
+    )
     builder.add_articulation([joint])
     builder.joint_q[0:3] = [0.3, -0.2, 0.1]
     builder.joint_q[3:7] = list(wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7))
@@ -2994,11 +2997,16 @@ def test_distance_row_is_the_anchor_distance_rate(test, device):
     p_c = np.array(wp.transform_point(pose, wp.transform_get_translation(child_xform)))
     center = np.array(wp.transform_point(pose, wp.vec3(*model.body_com.numpy()[child])))
     v_c = body_qd[:3] + np.cross(body_qd[3:], p_c - center)
+    dt = 0.01
     n = (p_c - p_a) / np.linalg.norm(p_c - p_a)
-    solver.step(state_0, state_1, model.control(), None, 1.0e-4)
-    test.assertEqual(int(solver._constraint_count.numpy()[0]), 1)
-    J = solver._J_by_size[6].numpy()[0, 0]
-    test.assertAlmostEqual(float(J @ state_0.joint_qd.numpy()), -float(n @ v_c), delta=1.0e-5)
+    n_end = (p_c - p_a + dt * v_c) / np.linalg.norm(p_c - p_a + dt * v_c)
+    solver.step(state_0, state_1, model.control(), None, dt)
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), 2)
+    J = solver._J_by_size[6].numpy()[0, :2]
+    qd = state_0.joint_qd.numpy()
+    test.assertAlmostEqual(float(J[0] @ qd), float(n @ v_c), delta=1.0e-5)
+    test.assertAlmostEqual(float(J[1] @ qd), -float(n_end @ v_c), delta=1.0e-5)
+    test.assertGreater(float(np.linalg.norm(n_end - n)), 1.0e-3)
 
 
 def test_captured_distance_joint_limit_matches_eager_steps(test, device):
@@ -3046,6 +3054,48 @@ def test_positive_max_distance_caps_any_push_from_coincident_anchors(test, devic
             )
             distances = _tether_distances(model, body, 10, enable_joint_limits=True)
             test.assertLess(distances.max(), cap + 1.0e-5)
+
+
+def test_positive_max_distance_caps_a_push_through_or_across_the_anchor(test, device):
+    """Hold a 5 mm ``max_distance`` when one step carries the weight through the parent anchor or across the bound."""
+    cap = 0.005
+    # Crossing within the first step, head-on and oblique, and a tangential push at the bound.
+    cases = [
+        ((0.001, 0.0, 0.0), (-4.0, 0.0, 0.0)),
+        ((0.001, 0.0, 0.0), (-4.0, 1.0, 0.0)),
+        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0)),
+    ]
+    for offset, velocity in cases:
+        with test.subTest(offset=offset, velocity=velocity):
+            model, body = _build_tether(
+                device, start=tuple(_TETHER_ANCHOR + offset), upper=cap, velocity=velocity, gravity=False
+            )
+            distances = _tether_distances(model, body, 10, enable_joint_limits=True)
+            test.assertLess(distances.max(), cap + 1.0e-5)
+
+
+def test_zero_max_distance_drift_with_an_offset_com(test, device):
+    """Keep the drift of an offset-COM body from a zero ``max_distance`` small, and smaller at a shorter timestep."""
+
+    def peak_distance(hz, steps):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, com=wp.vec3(0.1, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3))
+        builder.add_articulation([builder.add_joint_distance(-1, body, max_distance=0.0)])
+        builder.joint_qd[0:3] = list(4.0 * np.ones(3) / np.sqrt(3.0))
+        model = builder.finalize(device=device)
+        solver = SolverSteel(model, enable_joint_limits=True)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        peak = 0.0
+        for _ in range(steps):
+            solver.step(state_0, state_1, control, None, 1.0 / hz)
+            state_0, state_1 = state_1, state_0
+            peak = max(peak, float(np.linalg.norm(state_0.joint_q.numpy()[0:3])))
+        return peak
+
+    # The anchor is offset 0.1 m from the COM and pushed at 4 m/s; the six axis rows bound it to about a millimeter.
+    test.assertLess(peak_distance(480, 120), 1.5e-3)
+    test.assertLess(peak_distance(1920, 80), 0.25 * peak_distance(480, 20))
 
 
 def test_distance_rows_count_toward_the_capacity_warning(test, device):
@@ -3113,6 +3163,11 @@ for _name, _func in (
         "test_positive_max_distance_caps_any_push_from_coincident_anchors",
         test_positive_max_distance_caps_any_push_from_coincident_anchors,
     ),
+    (
+        "test_positive_max_distance_caps_a_push_through_or_across_the_anchor",
+        test_positive_max_distance_caps_a_push_through_or_across_the_anchor,
+    ),
+    ("test_zero_max_distance_drift_with_an_offset_com", test_zero_max_distance_drift_with_an_offset_com),
     ("test_distance_rows_count_toward_the_capacity_warning", test_distance_rows_count_toward_the_capacity_warning),
     ("test_multi_world_distance_limits_match_single_worlds", test_multi_world_distance_limits_match_single_worlds),
 ):

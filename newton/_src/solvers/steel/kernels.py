@@ -8168,6 +8168,7 @@ def build_distance_limit_rows(
     joint_q: wp.array[float],
     activation_gap: float,
     joint_qd: wp.array[float],
+    dt: float,
     max_constraints: int,
     # outputs
     world_slot_counter: wp.array[int],
@@ -8185,11 +8186,14 @@ def build_distance_limit_rows(
     A lower bound is active when positive and an upper bound when non-negative, both finite, as in
     :class:`~newton.solvers.SolverXPBD`; a zero minimum distance is no bound. The distance is
     ``|p|``, the child anchor's position in the parent anchor frame (the joint's linear coordinates). With the
-    joint velocity ``(v, w)`` of the child COM in that frame, its rate is ``n . v + (r x n) . w`` for ``n = p / |p|``
-    and ``r = p - p_com``, so each row spans only the joint's own six DOFs. At coincident anchors ``n`` follows the
-    anchor's predicted velocity. The row bounds a velocity projection, not the next distance, so with an offset COM
-    the transverse anchor velocity and rotation within the step can carry the anchor past a positive bound. A zero
-    maximum distance holds ``p`` at zero with two opposing rows per axis, which are always active.
+    joint velocity ``(v, w)`` of the child COM in that frame, the anchor moves at ``u = v + w x r`` for
+    ``r = p - p_com``, and a row along a unit ``n`` has the rate ``n . v + (r x n) . w``, so each row spans only the
+    joint's own six DOFs. The lower bound acts along ``n = p / |p|``, or along the predicted ``u`` at coincident
+    anchors. The upper bound acts along the predicted end-of-step separation ``p + dt u``, which keeps a centered COM
+    on the bound when the anchor moves across ``n`` or through the parent anchor. With an offset COM, the impulse
+    also changes the anchor's transverse velocity and rotation adds integration error, so the anchor can pass a
+    positive bound. A zero maximum distance bounds each axis of ``p`` at zero with two opposing rows, which are always
+    active; with an offset COM the anchor drifts from zero the same way.
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
@@ -8233,33 +8237,38 @@ def build_distance_limit_rows(
             continue
         distance = wp.length(p)
         r = p - com
+        v = wp.vec3(joint_qd[dof], joint_qd[dof + 1], joint_qd[dof + 2])
+        w = wp.vec3(joint_qd[dof + 3], joint_qd[dof + 4], joint_qd[dof + 5])
+        u = v + wp.cross(w, r)
         n = wp.vec3(1.0, 0.0, 0.0)
         if distance > 1.0e-9:
             n = p / distance
-        else:
+        elif wp.length(u) > 1.0e-9:
             # Coincident anchors separate along the anchor's predicted velocity, so bound that direction.
-            v = wp.vec3(joint_qd[dof], joint_qd[dof + 1], joint_qd[dof + 2])
-            w = wp.vec3(joint_qd[dof + 3], joint_qd[dof + 4], joint_qd[dof + 5])
-            u = v + wp.cross(w, r)
-            if wp.length(u) > 1.0e-9:
-                n = wp.normalize(u)
-        n_w = wp.cross(r, n)
+            n = wp.normalize(u)
+        n_upper = n
+        phi_upper = upper - distance
+        p_end = p + dt * u
+        if wp.length(p_end) > 1.0e-9:
+            n_upper = wp.normalize(p_end)
+            phi_upper = upper - wp.dot(n_upper, p)
         for side in range(2):
             phi = distance - lower
             active = has_lower and distance <= lower + activation_gap
-            sign = 1.0
+            d = n
             if side == 1:
-                phi = upper - distance
+                phi = phi_upper
                 active = has_upper and distance >= upper - activation_gap
-                sign = -1.0
+                d = -n_upper
             if not active:
                 continue
             slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
             if row_slot_mode == ROW_SLOTS_COUNT or slot >= max_constraints:
                 continue
+            d_w = wp.cross(r, d)
             for i in range(3):
-                J_group[group_idx, slot, local + i] = sign * n[i]
-                J_group[group_idx, slot, local + 3 + i] = sign * n_w[i]
+                J_group[group_idx, slot, local + i] = d[i]
+                J_group[group_idx, slot, local + 3 + i] = d_w[i]
             world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_JOINT_LIMIT
             world_row_parent[world, slot] = -1
             world_row_mu[world, slot] = 0.0

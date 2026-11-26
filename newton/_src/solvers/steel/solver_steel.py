@@ -1436,13 +1436,15 @@ class SolverSteel(SolverBase, CouplingInterface):
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row, and so is each positive
       ``min_distance`` and non-negative ``max_distance`` of a DISTANCE joint that roots its
-      articulation (the limits of its first DOF) on the distance between the joint's two anchors,
-      along the anchors' predicted relative velocity while they coincide; a zero ``max_distance``
-      holds the anchors together on all three axes. The row bounds the anchor's velocity along one
-      direction, not the next anchor distance: when the child anchor is offset from the child's
-      center of mass, its impulse can also change the anchor's transverse velocity, and rotation
-      adds integration error, so the anchor can pass a positive bound. More iterations of the same
-      row do not remove this. Any other DISTANCE joint raises :class:`NotImplementedError` when
+      articulation (the limits of its first DOF) on the distance between the joint's two anchors.
+      The lower bound acts along the current separation, or along the anchors' predicted relative
+      velocity while they coincide, and the upper bound along the predicted end-of-step separation;
+      a zero ``max_distance`` bounds the anchor on all three axes. Each row bounds the anchor's
+      velocity along one direction: when the child anchor is offset from the child's center of
+      mass, its impulse can also change the anchor's transverse velocity, and rotation adds
+      integration error, so the anchor can pass a positive bound and drift from a zero one. A
+      shorter timestep reduces this error; more iterations of the same rows do not remove it. Any
+      other DISTANCE joint raises :class:`NotImplementedError` when
       limits are enabled. Joint limits are not enforced by default. Joint velocity limits
       (:attr:`~newton.Model.joint_velocity_limit`) are enforced as rows when
       ``enable_joint_velocity_limits`` is set.
@@ -9996,6 +9998,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         state_in.joint_q,
                         self._joint_limit_activation_gap,
                         self._v_hat,
+                        dt,
                         max_constraints,
                     ],
                     outputs=[
