@@ -23,7 +23,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
-from ...linalg import IterativeSolver, LLTBlockedRCMSolver, LLTBlockedSolver, RedundantRowShift
+from ...linalg import IterativeSolver, RedundantRowShift
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
@@ -380,20 +380,12 @@ class PADMMSolver:
             self._num_kinematic_cts = model.info.num_joint_kinematic_cts
             self._reuse_redundant_joints = self._config[0].reuse_redundant_kinematics_set
 
-            # Check the reused rows on the factor of the blocked Cholesky solvers, and on the joint block otherwise
-            sparse = problem.sparse
-            self._check_factor = (
-                self._reuse_redundant_joints
-                and not sparse
-                and isinstance(problem.delassus.solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
-            )
             self._redundant_joints = RedundantRowShift(
                 num_worlds=self._size.num_worlds,
                 max_rows=self._size.max_of_num_kinematic_joint_cts,
                 threshold=self._config[0].redundant_kinematics_pivot_threshold,
-                check=self._reuse_redundant_joints and not self._check_factor,
-                sparse=sparse,
-                max_dim=self._size.max_of_max_total_cts if self._check_factor else 0,
+                check=True,
+                sparse=problem.sparse,
                 device=self._device,
             )
 
@@ -765,10 +757,7 @@ class PADMMSolver:
             data = problem.data
             if detection is not None:
                 detection.load(data.dim, self._kinematic_cts_offset, self._num_kinematic_cts, data.D)
-                if self._check_factor:
-                    detection.shift()
-                else:
-                    detection.detect(self._reuse_redundant_joints)
+                detection.detect(self._reuse_redundant_joints)
 
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(
@@ -790,20 +779,6 @@ class PADMMSolver:
 
             # Compute Cholesky/LDLT factorization of the Delassus matrix
             problem._delassus.compute(reset_to_zero=True)
-
-            # Drop the redundant joint constraints again where the reused ones fail the check on the factor
-            if detection is not None and self._check_factor:
-                solver = problem._delassus._solver
-                permuted = isinstance(solver, LLTBlockedRCMSolver)
-                detection.check_factor(
-                    data.vio,
-                    solver.L,
-                    solver.stride,
-                    solver.P if permuted else None,
-                    solver.inv_P if permuted else None,
-                )
-                detection.eliminate()
-                solver.refactorize(data.D, detection.refactor_dim)
 
     def _step(self, problem: DualProblem):
         """

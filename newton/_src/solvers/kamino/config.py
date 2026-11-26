@@ -764,9 +764,8 @@ class PADMMSolverConfig:
     Whether to keep the kinematic joint constraints dropped at the previous step while they remain valid.
 
     The dropped rows are checked at every step, and only the worlds that fail the check repeat the detection,
-    which avoids most of its cost. Disabling the reuse is mostly useful for debugging. With the `LLTB` and
-    `LLTBRCM` linear solvers, the check reads the Cholesky factor of the Delassus matrix, which can keep a row
-    dropped for a few steps after it became independent. See :class:`RedundantRowShift` for details.
+    which avoids most of its cost. Disabling the reuse is mostly useful for debugging. See
+    :class:`RedundantRowShift` for details.
 
     The setting of the first world applies to all worlds. Defaults to `True`.
     """

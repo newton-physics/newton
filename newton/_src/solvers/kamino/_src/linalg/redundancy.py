@@ -63,9 +63,6 @@ _FACTOR_BLOCK_DIM = 128
 _CHECK_TILE = 32
 """Tile size of the triangular solves of the check."""
 
-_CHECK_COLUMNS = 16
-"""Number of right-hand sides of the triangular solves of the check."""
-
 _CHECK_ITERATIONS = 2
 """Number of inverse iterations estimating the smallest eigenvalue of the shifted block."""
 
@@ -294,40 +291,6 @@ def _update_reference(
     wid = wp.tid()
     if pivot_rows[wid] > 0:
         reference[wid] = eigenvalue[wid]
-
-
-@wp.kernel
-def _update_changed_shifts(
-    # Inputs:
-    ld: wp.array[wp.int32],
-    row_offset: wp.array[wp.int32],
-    num_rows: wp.array[wp.int32],
-    pivot_rows: wp.array[wp.int32],
-    shifted: wp.array2d[wp.int32],
-    diagonal: wp.array2d[wp.float32],
-    eigenvalue: wp.array[wp.float32],
-    # Outputs:
-    shifts: wp.array2d[wp.float32],
-    reference: wp.array[wp.float32],
-    A: wp.array2d[wp.float32],
-):
-    """
-    Update the shifts of the eliminated worlds by their change in the diagonal of the matrices, and keep the
-    eigenvalue of the worlds whose shifted rows did not change as the reference of their next checks.
-    """
-    wid = wp.tid()
-    if pivot_rows[wid] == 0:
-        return
-    changed = wp.int32(0)
-    for i in range(num_rows[wid]):
-        value = _row_shift(diagonal[wid, i], shifted[wid, i])
-        change = value - shifts[wid, i]
-        if change != 0.0:
-            row = row_offset[wid] + i
-            A[wid, row * ld[wid] + row] += change
-            changed = 1
-        shifts[wid, i] = value
-    reference[wid] = wp.where(changed == 0, eigenvalue[wid], wp.float32(0.0))
 
 
 @wp.kernel
@@ -739,181 +702,6 @@ def _make_check_kernel():
     return _check_shifted_rows
 
 
-@cache
-def _make_factor_check_kernel(permuted: bool):
-    """
-    Create the kernel checking the shifted rows of each world from the Cholesky factor ``L`` of the shifted
-    and regularized matrix ``K``, stored with the row stride ``ld`` and permuted by ``perm`` if ``permuted``.
-    """
-    tile = _CHECK_TILE
-    columns = _CHECK_COLUMNS
-    forward, backward = _make_triangular_solves(columns)
-
-    @wp.func
-    def original_row(perm: wp.array[wp.int32], vstart: wp.int32, h: wp.int32) -> wp.int32:
-        if wp.static(permuted):
-            return perm[vstart + h]
-        return h
-
-    @wp.func
-    def factor_row(inverse_perm: wp.array[wp.int32], vstart: wp.int32, row: wp.int32) -> wp.int32:
-        if wp.static(permuted):
-            return inverse_perm[vstart + row]
-        return row
-
-    @wp.kernel(module="unique", enable_backward=False)
-    def _check_shifted_rows_on_factor(
-        # Inputs:
-        dim: wp.array[wp.int32],
-        vio: wp.array[wp.int32],
-        row_offset: wp.array[wp.int32],
-        num_rows: wp.array[wp.int32],
-        ld: wp.array[wp.int32],
-        perm: wp.array[wp.int32],
-        inverse_perm: wp.array[wp.int32],
-        D_storage: wp.array2d[wp.float32],
-        L: wp.array2d[wp.float32],
-        diagonal: wp.array2d[wp.float32],
-        shifted: wp.array2d[wp.int32],
-        initialized: wp.array[wp.int32],
-        reference: wp.array[wp.float32],
-        threshold: wp.float32,
-        # Scratch:
-        X: wp.array3d[wp.float32],
-        V: wp.array2d[wp.float32],
-        column_rows: wp.array2d[wp.int32],
-        # Outputs:
-        pivot_rows: wp.array[wp.int32],
-        refactor_dim: wp.array[wp.int32],
-        eigenvalue_out: wp.array[wp.float32],
-    ):
-        wid, tid = wp.tid()
-        threads = wp.block_dim()
-        n = dim[wid]
-        rows = num_rows[wid]
-        if rows == 0 or initialized[wid] == 0:
-            if tid == 0:
-                pivot_rows[wid] = rows
-                refactor_dim[wid] = wp.where(rows > 0, n, 0)
-                eigenvalue_out[wid] = 0.0
-            return
-        offset = row_offset[wid]
-        vstart = vio[wid]
-        padded = ((n + tile - 1) // tile) * tile
-        stride = ld[wid]
-        D = D_storage[wid]
-        # NOTE: The rows beyond the dimension are out of bounds, and loaded as zeros by the triangular solves
-        L_i = wp.array(ptr=get_float32_array_offset_ptr(L[wid], 0), shape=(n, stride), dtype=wp.float32)
-        X_i = X[wid]
-        V_i = V[wid]
-
-        # Initialize the iterate with a fixed pseudo-random vector, and count the shifted rows
-        partial = wp.float32(0.0)
-        for h in range(tid, n, threads):
-            value = wp.randf(wp.rand_init(_ITERATE_SEED, h)) - 0.5
-            V_i[h] = value
-            partial += value * value
-        inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(partial))[0])
-        count = wp.int32(0)
-        for i in range(tid, rows, threads):
-            count += shifted[wid, i]
-        num_shifted = wp.tile_sum(wp.tile(count))[0]
-
-        # Solve with the iterate of the inverse iterations in the first column, and the unit vectors of the
-        # shifted rows by chunks in the other columns
-        slots = columns - 1
-        passes = wp.max(_CHECK_ITERATIONS, (num_shifted + slots - 1) // slots)
-        rayleigh = wp.float32(0.0)
-        correction = wp.float32(0.0)
-        failed = wp.int32(0)
-        for p in range(passes):
-            iterate = p < _CHECK_ITERATIONS
-            for k in range(tid, padded * columns, threads):
-                h = k // columns
-                value = wp.float32(0.0)
-                if iterate and k - h * columns == 0 and h < n:
-                    o = original_row(perm, vstart, h)
-                    value = wp.sqrt(wp.max(D[o * (n + 1)], FLOAT32_EPS)) * V_i[h] * inv_norm
-                X_i[h, k - h * columns] = value
-            for c in range(tid, columns, threads):
-                column_rows[wid, c] = -1
-            _sync_threads()
-            if tid == 0:
-                k = wp.int32(0)
-                for i in range(rows):
-                    if shifted[wid, i] != 0:
-                        c = 1 + k - p * slots
-                        if c >= 1 and c < columns:
-                            X_i[factor_row(inverse_perm, vstart, offset + i), c] = 1.0
-                            column_rows[wid, c] = i
-                        k += 1
-            _sync_threads()
-            forward(L_i, X_i, n, tid)
-            backward(L_i, X_i, n, tid)
-            _sync_threads()
-
-            # Accumulate the Rayleigh quotient of the inverse, and the regularization of the block rows
-            if iterate:
-                quotient = wp.float32(0.0)
-                norm = wp.float32(0.0)
-                regularization = wp.float32(0.0)
-                for h in range(tid, n, threads):
-                    o = original_row(perm, vstart, h)
-                    K = wp.max(D[o * (n + 1)], FLOAT32_EPS)
-                    x = V_i[h] * inv_norm
-                    z = wp.sqrt(K) * X_i[h, 0]
-                    quotient += x * z
-                    norm += z * z
-                    i = o - offset
-                    if i >= 0 and i < rows:
-                        d = diagonal[wid, i]
-                        regularization += x * x * (K - d - _row_shift(d, shifted[wid, i])) / K
-                    V_i[h] = z
-                rayleigh = wp.tile_sum(wp.tile(quotient))[0]
-                correction = wp.tile_sum(wp.tile(regularization))[0]
-                inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(norm))[0])
-
-            # A shifted row is independent if its Schur complement exceeds its shift and regularization
-            # NOTE: The Schur complement is the residual of a ridge regression of the row on the other rows,
-            # with the coefficients -u_o / u_s of the column u of the inverse. The penalty of the coefficients
-            # by the regularization of the other block rows is removed, but not by the shifts.
-            independent = wp.int32(0)
-            for c in range(1 + tid, columns, threads):
-                i = column_rows[wid, c]
-                if i >= 0:
-                    u_s = X_i[factor_row(inverse_perm, vstart, offset + i), c]
-                    penalty = wp.float32(0.0)
-                    for h in range(n):
-                        j = original_row(perm, vstart, h) - offset
-                        if j >= 0 and j < rows and j != i:
-                            d = diagonal[wid, j]
-                            u_o = X_i[h, c]
-                            penalty += u_o * u_o * (D[(offset + j) * (n + 1)] - d - _row_shift(d, shifted[wid, j]))
-                    o = offset + i
-                    d = diagonal[wid, i]
-                    schur = 1.0 / u_s - penalty / (u_s * u_s)
-                    residual = (schur - (D[o * (n + 1)] - d)) / wp.max(d, FLOAT32_EPS)
-                    if not (residual <= _SHIFTED_ROW_MARGIN * threshold):
-                        independent += 1
-            failed += wp.tile_sum(wp.tile(independent))[0]
-
-        # The kept rows are dependent if the unregularized eigenvalue is small, or much smaller than its reference
-        eigenvalue = 1.0 / rayleigh - correction
-        limit = threshold
-        if reference[wid] > 0.0:
-            limit = wp.min(threshold, _REFERENCE_MARGIN * reference[wid])
-        if not (eigenvalue >= limit):
-            failed += 1
-
-        # Select the world for a new elimination and refactorization
-        if tid == 0:
-            pivot_rows[wid] = wp.where(failed > 0, rows, 0)
-            refactor_dim[wid] = wp.where(failed > 0, n, 0)
-            eigenvalue_out[wid] = eigenvalue
-
-    return _check_shifted_rows_on_factor
-
-
 ###
 # Interfaces
 ###
@@ -929,7 +717,6 @@ class RedundantRowShift:
     the row and the span of the rows eliminated before it, so it does not depend on the row scaling.
     The rows whose relative pivot is below ``threshold`` are numerically redundant. Their pivot is shifted
     by their original diagonal before the elimination proceeds, and the same shift is stored in :attr:`shifts`.
-    In float32, rounding lifts the relative pivots of exactly redundant rows to about ``1e-6``.
 
     The matrix shifted by :attr:`shifts` is positive definite on the block and can be factorized in any order.
     Since each shifted row lies in the span of the other rows of the block, the solutions of consistent systems
@@ -945,20 +732,10 @@ class RedundantRowShift:
     the shifted rows last. The check fails if the smallest eigenvalue of the Jacobi-scaled kept rows is below
     ``threshold``, i.e. if the kept rows became dependent, or if the Schur complement of a shifted row on the
     kept rows exceeds its shift by ten times ``threshold`` relative to its diagonal, i.e. if the shifted row
-    became independent of the kept rows. The elimination is
-    then repeated for the failed worlds only. Since the relative pivots do not bound the smallest eigenvalue,
-    valid shifted rows can fail the check. So, when the elimination of a failed world keeps the same rows, its
-    eigenvalue becomes the reference of its next checks, which only fail below a tenth of it.
-
-    When the loaded matrices are factorized anyway, the shifted rows can instead be checked from the Cholesky
-    factor of the whole shifted and regularized matrix, which saves the factorization of the block: :meth:`shift`
-    adds the shifts of the last elimination to the matrices before their factorization, :meth:`check_factor`
-    checks the factor without the regularization of the block, and :meth:`eliminate` repeats the elimination of
-    the failed worlds, which must then be refactorized. The coupling of the block with the other rows can also
-    lower the eigenvalue, e.g. with hyperstatic contacts, which the elimination of the block cannot fix, and the
-    reference applies in the same way. Conversely, the other rows can span a shifted row that became independent
-    of the block, e.g. when leaving a configuration with more redundant rows, which then remains shifted for a
-    few calls, while the constraint it carries is not enforced.
+    became independent of the kept rows. The elimination is then repeated for the failed worlds only. Since
+    the relative pivots do not bound the smallest eigenvalue, valid shifted rows can fail the check. So, the
+    eigenvalue of the kept rows of each elimination becomes the reference of its next checks, which only fail
+    below a tenth of it.
 
     Args:
         num_worlds: The number of worlds.
@@ -967,7 +744,6 @@ class RedundantRowShift:
         block_dim: The number of threads per world of the elimination. Must be a power of two of at least 32.
         check: Whether to allocate the scratch of :meth:`check`.
         sparse: Whether to allocate the blocks assembled by :meth:`assemble`.
-        max_dim: The largest dimension of the loaded matrices, required by :meth:`check_factor`.
         device: The device on which to allocate the scratch memory.
     """
 
@@ -979,7 +755,6 @@ class RedundantRowShift:
         block_dim: int = 512,
         check: bool = False,
         sparse: bool = False,
-        max_dim: int = 0,
         device: wp.DeviceLike = None,
     ):
         if not 0.0 <= threshold < 1.0:
@@ -1020,8 +795,6 @@ class RedundantRowShift:
         self._recheck_rows = wp.zeros(num_worlds, dtype=wp.int32, device=device)
         self.pivot_rows = wp.zeros(num_worlds, dtype=wp.int32, device=device)
         """The number of block rows of each world to eliminate again after the last check, zero if it passed."""
-        self.refactor_dim = wp.zeros(num_worlds, dtype=wp.int32, device=device)
-        """The dimension of each matrix to refactorize after the last :meth:`check_factor`, zero if it passed."""
 
         # Allocate the dense blocks of each world, with a row stride of ``max_rows``
         self._block = None
@@ -1073,13 +846,9 @@ class RedundantRowShift:
                 self._factor_kernel = make_llt_blocked_rcm_parallel_factorize_kernels(_FACTOR_BLOCK_SIZE)
             else:
                 self._factor_kernel = make_llt_blocked_rcm_factorize_kernel(_FACTOR_BLOCK_SIZE)
-        self._max_dim = max_dim
-        solve_rows = max(rows if check else 0, max_dim)
-        if solve_rows > 0:
-            padded = ((solve_rows + _CHECK_TILE - 1) // _CHECK_TILE) * _CHECK_TILE
-            self._rhs = wp.zeros((num_worlds, padded, _CHECK_COLUMNS), dtype=wp.float32, device=device)
+            padded = ((rows + _CHECK_TILE - 1) // _CHECK_TILE) * _CHECK_TILE
+            self._rhs = wp.zeros((num_worlds, padded, 1), dtype=wp.float32, device=device)
             self._iterate = wp.zeros((num_worlds, padded), dtype=wp.float32, device=device)
-            self._column_rows = wp.zeros((num_worlds, _CHECK_COLUMNS), dtype=wp.int32, device=device)
 
         # The block source of the last call to `load` or `assemble`
         self._source: tuple | None = None
@@ -1231,7 +1000,7 @@ class RedundantRowShift:
 
         # Check the new shifted rows of the eliminated worlds, for the reference eigenvalue of their next checks
         if self._factor is not None:
-            self._check_blocks(num_rows, self._recheck_rows)
+            self._check_blocks(num_rows, self._recheck_rows, self._eigenvalue)
             wp.launch(
                 _update_reference,
                 dim=self.num_worlds,
@@ -1257,10 +1026,13 @@ class RedundantRowShift:
             raise ValueError("Checking the shifted rows requires `check`.")
         if self._source is None:
             raise ValueError("The blocks must be loaded or assembled first.")
-        self._check_blocks(self._num_rows, self.pivot_rows)
+        self._check_blocks(self._num_rows, self.pivot_rows, self._eigenvalue)
 
-    def _check_blocks(self, selected: wp.array, pivot_rows: wp.array):
-        """Checks the shifted rows of the ``selected`` worlds, and writes the worlds failing it to ``pivot_rows``."""
+    def _check_blocks(self, selected: wp.array, pivot_rows: wp.array, eigenvalue: wp.array):
+        """
+        Checks the shifted rows of the ``selected`` worlds, and writes the worlds failing it to ``pivot_rows``
+        and the eigenvalue of their kept rows to ``eigenvalue``.
+        """
         rows = max(self.max_rows, 1)
         device = self._factor.device
 
@@ -1347,118 +1119,7 @@ class RedundantRowShift:
                 self._rhs,
                 self._iterate,
             ],
-            outputs=[pivot_rows, self._eigenvalue],
+            outputs=[pivot_rows, eigenvalue],
             block_dim=_CHECK_BLOCK_DIM,
-            device=device,
-        )
-
-    def shift(self):
-        """
-        Adds the shifts of the rows shifted by the last elimination to the diagonal of the matrices loaded with
-        :meth:`load`, before their factorization and :meth:`check_factor`.
-        """
-        if self._source is None or not self._shift_matrix:
-            raise ValueError("The matrices must be loaded first.")
-        wp.launch(
-            _update_shifts,
-            dim=self.shifted.shape,
-            inputs=[*self._source[:2], self._num_rows, self.shifted, self._diagonal, True],
-            outputs=[self.shifts, self._source[2]],
-            device=self.shifted.device,
-        )
-
-    def check_factor(
-        self,
-        vio: wp.array[wp.int32],
-        L: wp.array2d[wp.float32],
-        ld: wp.array[wp.int32],
-        perm: wp.array[wp.int32] | None = None,
-        inverse_perm: wp.array[wp.int32] | None = None,
-    ):
-        """
-        Checks the rows shifted by :meth:`shift` from the Cholesky factors of the loaded matrices, which may hold
-        a regularization on their diagonal, and selects the worlds that fail the check, or that were never
-        eliminated, in :attr:`pivot_rows` and :attr:`refactor_dim`.
-
-        Args:
-            vio: The index offset of the rows of each matrix in ``perm``, of shape ``(num_worlds,)``.
-            L: The lower Cholesky factors of the matrices, one per row.
-            ld: The row stride of each factor in ``L``, of shape ``(num_worlds,)``.
-            perm: The original row of each row of the factors, if they factorize ``P D P^T``.
-            inverse_perm: The row of the factors of each original row, if ``perm`` is given.
-        """
-        if self._max_dim == 0:
-            raise ValueError("Checking the shifted rows on the factor requires `max_dim`.")
-        if self._source is None or not self._shift_matrix:
-            raise ValueError("The matrices must be loaded first.")
-        dim, row_offset, D = self._source
-        permuted = perm is not None
-
-        # The permutations are not read by the unpermuted kernel
-        wp.launch_tiled(
-            _make_factor_check_kernel(permuted),
-            dim=self.num_worlds,
-            inputs=[
-                dim,
-                vio,
-                row_offset,
-                self._num_rows,
-                ld,
-                perm if permuted else dim,
-                inverse_perm if permuted else dim,
-                D,
-                L,
-                self._diagonal,
-                self.shifted,
-                self._initialized,
-                self._reference,
-                wp.float32(self.threshold),
-                self._rhs,
-                self._iterate,
-                self._column_rows,
-            ],
-            outputs=[self.pivot_rows, self.refactor_dim, self._eigenvalue],
-            block_dim=_CHECK_BLOCK_DIM,
-            device=D.device,
-        )
-
-    def eliminate(self):
-        """
-        Repeats the elimination of the worlds selected by :meth:`check_factor`, and updates their shifts in the
-        diagonal of the loaded matrices, which then need to be refactorized for the dimensions of
-        :attr:`refactor_dim`.
-        """
-        if self._source is None or not self._shift_matrix:
-            raise ValueError("The matrices must be loaded first.")
-        device = self.shifted.device
-        wp.launch_tiled(
-            self._kernel,
-            dim=self.num_worlds,
-            inputs=[
-                *self._source[:2],
-                self.pivot_rows,
-                wp.float32(self.threshold),
-                self._diagonal,
-                self._source[2],
-                self._triangle,
-                self._floats,
-                self._ints,
-            ],
-            outputs=[self.shifted, self._initialized],
-            block_dim=self.block_dim,
-            device=device,
-        )
-        wp.launch(
-            _update_changed_shifts,
-            dim=self.num_worlds,
-            inputs=[
-                *self._source[:2],
-                self._num_rows,
-                self.pivot_rows,
-                self.shifted,
-                self._diagonal,
-                self._eigenvalue,
-            ],
-            outputs=[self.shifts, self._reference, self._source[2]],
             device=device,
         )
