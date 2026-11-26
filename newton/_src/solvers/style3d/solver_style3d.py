@@ -509,6 +509,7 @@ class SolverStyle3D(SolverBase):
         enable_affine_body = bool(dynamics & SolverStyle3D.Dynamics.AFFINE_BODY)
 
         super().__init__(model)
+        self._raise_if_kinematic_particles()
         self._style3d_attr = getattr(model, "style3d", None)
         self.dynamics = dynamics
         self.config = config

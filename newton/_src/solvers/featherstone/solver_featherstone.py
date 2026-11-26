@@ -23,7 +23,7 @@ from ..semi_implicit.kernels_particle import (
     eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
@@ -184,6 +184,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
 
         super().__init__(model)
+        warn_unsupported_friction_modes(model, "SolverFeatherstone")
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
         if self._has_joint_mimics:
             mimic_joints = model.joint_mimic_joint.numpy()
@@ -223,6 +224,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         borrowed_options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in borrowed_modules:
             self._set_module_options(borrowed_options, module=module)
+        # Gather contact wrenches per body instead of recording them as deterministic atomics.
+        self._gather_contact_wrenches = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
@@ -815,7 +818,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         body_qd=state_aug.body_qd_fk,
                     )
 
-                eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f, body_qd=state_aug.body_qd_fk)
+                eval_body_contact_forces(
+                    model,
+                    state_in,
+                    contacts,
+                    body_f_out=body_f,
+                    body_qd=state_aug.body_qd_fk,
+                    deterministic=self._gather_contact_wrenches,
+                )
 
                 if self.has_kinematic_bodies and body_f is not None:
                     wp.launch(
@@ -1263,6 +1273,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
+            self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
 
             self._step += 1

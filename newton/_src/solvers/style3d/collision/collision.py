@@ -224,6 +224,7 @@ class Collision:
                 contacts.soft_contact_count,
                 contacts.soft_contact_max,
                 self.model.shape_material_mu,
+                self.model.shape_material_friction_mode,
                 self.model.shape_body,
                 body_q_1 if self.integrate_with_external_rigid_solver else body_q_0,
                 body_q_0 if self.integrate_with_external_rigid_solver else None,

@@ -28,6 +28,7 @@ from ...sim import (
     Model,
     ModelBuilder,
     ModelFlags,
+    ShapeFrictionMode,
     State,
     StateFlags,
 )
@@ -38,9 +39,10 @@ from ...sim.collide import (
     _RIGID_CONTACTS_PER_PRIMITIVE_PAIR,
     _estimate_rigid_contact_max,
 )
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
 from ...utils.deprecation import warn_deprecation
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 
 if TYPE_CHECKING:
     from .config import (
@@ -824,6 +826,33 @@ class SolverKamino(SolverBase, CouplingInterface):
                 base_velocity=SolverKamino.ResetConfig.FromJointU(),
             )
 
+    @staticmethod
+    def _resolve_spatial_friction(model: Model, config: Config) -> tuple[Config, bool]:
+        """Enable LOX spatial friction for shapes whose friction mode needs it.
+
+        Returns:
+            The configuration to use and whether the deprecated
+            ``contact_spatial_friction`` option requested spatial friction.
+        """
+        if config.dynamics_solver != "lox":
+            warn_unsupported_friction_modes(model, "SolverKamino")
+            return config, False
+        if config.lox.contact_spatial_friction:
+            warn_deprecation(
+                "SolverKamino.Config.lox.contact_spatial_friction is deprecated in Newton 1.9; set "
+                "ModelBuilder.ShapeConfig.friction_mode to a ShapeFrictionMode with torsional or rolling "
+                "friction on the shapes that need spatial friction instead."
+            )
+            return config, True
+        modes = model.shape_material_friction_mode
+        if (
+            model.shape_count
+            and modes is not None
+            and np.any(modes.numpy() & (FRICTION_TORSIONAL_BIT | FRICTION_ROLLING_BIT))
+        ):
+            config = replace(config, lox=replace(config.lox, contact_spatial_friction=True))
+        return config, False
+
     def __init__(
         self,
         model: Model,
@@ -858,6 +887,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         else:
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
+        config, legacy_spatial_friction = self._resolve_spatial_friction(model, config)
         self._config = config
         if config.use_collision_detector and model._has_body_variants:
             raise NotImplementedError(
@@ -883,6 +913,14 @@ class SolverKamino(SolverBase, CouplingInterface):
             include_shape_contact_pairs=include_shape_contact_pairs,
             kinematic_only_immovable=config.dynamics_solver == "lox",
         )
+        geom_friction_mode = self._model_kamino.geoms.friction_mode
+        if legacy_spatial_friction and geom_friction_mode is not None:
+            # The deprecated option enables spatial friction on every contact with friction.
+            modes = geom_friction_mode.numpy()
+            modes[modes > int(ShapeFrictionMode.NONE)] = int(ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING)
+            geom_friction_mode.assign(modes)
+            if not np.any(modes == int(ShapeFrictionMode.NONE)):
+                self._model_kamino.geoms.friction_mode = None
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()
@@ -1286,6 +1324,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
                     kinematic_only_immovable=self._config.dynamics_solver == "lox",
                     contact_dead_zone=self._config.constraints.delta,
+                    geom_friction_mode=self._model_kamino.geoms.friction_mode,
                 )
         else:
             self._detector = None
