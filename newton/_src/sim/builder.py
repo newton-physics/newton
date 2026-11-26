@@ -33,11 +33,13 @@ from ..core.host_transform import (
     pack_transforms,
     pack_warp_values,
     quat_rotate_rows,
+    quat_to_matrix,
     store_transform_rows,
     transform_inverse,
     transform_inverse_rows,
     transform_multiply,
     transform_multiply_rows,
+    transform_point,
     warp_array_from_values,
 )
 from ..core.types import (
@@ -238,6 +240,8 @@ _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
 # dispatch through overload resolution and would initialize the Warp runtime at import.
 _IDENTITY_TRANSFORM = np.asarray(wp.transformf((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), dtype=np.float32)
 _IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
+_IDENTITY3_F32 = np.eye(3, dtype=np.float32)
+_IDENTITY3_F32.setflags(write=False)
 
 
 _MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -10038,6 +10042,9 @@ class ModelBuilder:
         """
         if xform is None:
             xform = wp.transform()
+        elif isinstance(xform, wp.transform):
+            # Copy without unpacking all seven components.
+            xform = wp.transform(xform)
         else:
             xform = wp.transform(*xform)
         if cfg is None:
@@ -10186,7 +10193,7 @@ class ModelBuilder:
 
         if shape_mass_props is not None:
             m, c, inertia = shape_mass_props
-            com_body = wp.transform_point(xform, c)
+            com_body = transform_point(xform, c) if isinstance(c, wp.vec3) else wp.transform_point(xform, c)
             self._update_body_mass(body, m, inertia, com_body, xform.q)
 
         # Process custom attributes
@@ -14121,8 +14128,8 @@ class ModelBuilder:
         new_com = (old_com * np.float32(old_mass) + shape_com * np.float32(m)) / np.float32(new_mass)
         com_offset = new_com - old_com
         shape_offset = new_com - shape_com
-        rotation = np.asarray(wp.quat_to_matrix(q)).reshape(3, 3)
-        identity = np.eye(3, dtype=np.float32)
+        rotation = np.asarray(quat_to_matrix(q) if isinstance(q, wp.quat) else wp.quat_to_matrix(q)).reshape(3, 3)
+        identity = _IDENTITY3_F32
         old_inertia = np.asarray(self.body_inertia[i]).reshape(3, 3)
         shape_inertia = np.asarray(inertia).reshape(3, 3)
         combined = (
@@ -14132,12 +14139,13 @@ class ModelBuilder:
             rotation @ shape_inertia @ rotation.T
             + np.float32(m) * (np.dot(shape_offset, shape_offset) * identity - np.outer(shape_offset, shape_offset))
         )
-        new_inertia = wp.mat33(combined)
+        # Unpacked floats build Warp values several times faster than arrays.
+        new_inertia = wp.mat33(*combined.ravel().tolist())
         self.body_mass[i] = new_mass
         self.body_inertia[i] = new_inertia
-        self.body_com[i] = wp.vec3(new_com)
+        self.body_com[i] = wp.vec3(*new_com.tolist())
         self.body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
-        self.body_inv_inertia[i] = _inverse_inertia(new_inertia) if np.any(combined) else new_inertia
+        self.body_inv_inertia[i] = _inverse_inertia(combined) if np.any(combined) else new_inertia
 
     def _validate_parent_body(self, parent_body: int, child: int) -> None:
         """

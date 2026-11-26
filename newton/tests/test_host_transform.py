@@ -11,6 +11,7 @@ from newton._src.core.host_transform import (
     pack_transforms,
     pack_warp_values,
     quat_rotate_rows,
+    quat_to_matrix,
     store_transform_rows,
     transform_add_translation,
     transform_assign,
@@ -73,6 +74,8 @@ class TestHostTransform(unittest.TestCase):
         )
         np.testing.assert_allclose(transform_point(self.transform, point), wp.transform_point(self.transform, point))
         np.testing.assert_allclose(transform_vector(self.transform, point), wp.transform_vector(self.transform, point))
+        # Both paths call the same native builtin.
+        np.testing.assert_array_equal(quat_to_matrix(self.transform.q), wp.quat_to_matrix(self.transform.q))
 
     def test_non_contiguous_inputs(self):
         """Accept strided matrix and transform inputs."""

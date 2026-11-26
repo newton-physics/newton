@@ -71,6 +71,44 @@ class TestInertia(unittest.TestCase):
                 np.asarray(builder.body_inv_inertia[body]).reshape(3, 3), np.linalg.inv(expected), atol=1e-6, rtol=3e-6
             )
 
+    def test_compound_body_accumulation_is_bit_exact(self):
+        """Keep the float32 accumulation of shape mass into a body bit for bit."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        rng = np.random.default_rng(7)
+        mass, com, inertia = 0.0, np.zeros(3, dtype=np.float32), np.zeros((3, 3), dtype=np.float32)
+        for _ in range(8):
+            half = rng.uniform(0.05, 0.5, size=3)
+            xform = wp.transform(wp.vec3(*rng.uniform(-1.0, 1.0, size=3)), wp.quat_rpy(*rng.uniform(-3.0, 3.0, size=3)))
+            builder.add_shape_box(body, xform=xform, hx=half[0], hy=half[1], hz=half[2])
+            # Reference: the accumulation through Warp's Python-scope builtins.
+            shape_mass, shape_com, shape_inertia = compute_inertia_shape(
+                GeoType.BOX, tuple(float(h) for h in wp.vec3(*half)), None, builder.default_shape_cfg.density
+            )
+            shape_com = np.asarray(wp.transform_point(xform, shape_com), dtype=np.float32)
+            new_mass = mass + shape_mass
+            new_com = (com * np.float32(mass) + shape_com * np.float32(shape_mass)) / np.float32(new_mass)
+            com_offset, shape_offset = new_com - com, new_com - shape_com
+            rotation = np.asarray(wp.quat_to_matrix(xform.q)).reshape(3, 3)
+            identity = np.eye(3, dtype=np.float32)
+            inertia = (
+                inertia
+                + np.float32(mass) * (np.dot(com_offset, com_offset) * identity - np.outer(com_offset, com_offset))
+            ) + (
+                rotation @ np.asarray(shape_inertia).reshape(3, 3) @ rotation.T
+                + np.float32(shape_mass)
+                * (np.dot(shape_offset, shape_offset) * identity - np.outer(shape_offset, shape_offset))
+            )
+            inertia = np.asarray(wp.mat33(inertia)).reshape(3, 3)
+            mass, com = new_mass, new_com
+            np.testing.assert_array_equal(builder.body_mass[body], mass)
+            np.testing.assert_array_equal(np.asarray(builder.body_com[body]), com)
+            np.testing.assert_array_equal(np.asarray(builder.body_inertia[body]).reshape(3, 3), inertia)
+            np.testing.assert_array_equal(
+                np.asarray(builder.body_inv_inertia[body]).reshape(3, 3),
+                np.asarray(wp.mat33(np.linalg.inv(inertia.astype(np.float64)))).reshape(3, 3),
+            )
+
     def test_cube_mesh_inertia(self):
         # Unit cube
         vertices = [

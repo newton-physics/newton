@@ -98,6 +98,13 @@ def transform_point(transform: wp.transform, point: wp.vec3) -> wp.vec3:
     return result
 
 
+def quat_to_matrix(q: wp.quat) -> wp.mat33:
+    """Return the rotation matrix of ``q`` without Python-scope overload resolution."""
+    result = wp.mat33()
+    _builtin("wp_builtin_quat_to_matrix_quatf")(q, ctypes.byref(result))
+    return result
+
+
 def transform_to_matrix(transform: wp.transform) -> np.ndarray:
     """Return ``transform`` as a row-major float32 4x4 matrix."""
     px, py, pz, qx, qy, qz, qw = np.asarray(transform)
