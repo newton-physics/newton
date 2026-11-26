@@ -8188,11 +8188,11 @@ def build_distance_limit_rows(
     ``|p|``, the child anchor's position in the parent anchor frame (the joint's linear coordinates). With the
     joint velocity ``(v, w)`` of the child COM in that frame, the anchor moves at ``u = v + w x r`` for
     ``r = p - p_com``, and a row along a unit ``n`` has the rate ``n . v + (r x n) . w``, so each row spans only the
-    joint's own six DOFs. The lower bound acts along ``n = p / |p|``, or along the predicted ``u`` at coincident
-    anchors. The upper bound acts along the predicted end-of-step separation ``p + dt u``, which keeps a centered COM
-    on the bound when the anchor moves across ``n`` or through the parent anchor. With an offset COM, the impulse
-    also changes the anchor's transverse velocity and rotation adds integration error, so the anchor can pass a
-    positive bound. A zero maximum distance bounds each axis of ``p`` at zero with two opposing rows, which are always
+    joint's own six DOFs. Both bounds act along the predicted end-of-step separation ``p + dt u``, which keeps a
+    centered COM on the bounds when the anchor moves across ``p`` or through the parent anchor. When the step crosses
+    the parent anchor, the lower bound acts along ``p / |p|`` instead, or along ``u`` at coincident anchors, so that
+    it stops the anchor on the near side. With an offset COM, the impulse also changes the anchor's transverse
+    velocity and rotation adds integration error, so the anchor can pass a bound. A zero maximum distance bounds each axis of ``p`` at zero with two opposing rows, which are always
     active; with an offset COM the anchor drifts from zero the same way.
     """
     group_idx = wp.tid()
@@ -8246,16 +8246,22 @@ def build_distance_limit_rows(
         elif wp.length(u) > 1.0e-9:
             # Coincident anchors separate along the anchor's predicted velocity, so bound that direction.
             n = wp.normalize(u)
+        n_lower = n
+        phi_lower = distance - lower
         n_upper = n
         phi_upper = upper - distance
         p_end = p + dt * u
         if wp.length(p_end) > 1.0e-9:
             n_upper = wp.normalize(p_end)
             phi_upper = upper - wp.dot(n_upper, p)
+            # Both bounds share the predicted direction unless the step crosses the parent anchor.
+            if wp.dot(p_end, p) > 0.0:
+                n_lower = n_upper
+                phi_lower = wp.dot(n_upper, p) - lower
         for side in range(2):
-            phi = distance - lower
+            phi = phi_lower
             active = has_lower and distance <= lower + activation_gap
-            d = n
+            d = n_lower
             if side == 1:
                 phi = phi_upper
                 active = has_upper and distance >= upper - activation_gap

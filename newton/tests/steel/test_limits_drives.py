@@ -2974,8 +2974,8 @@ def test_distance_joint_bounds_are_read_every_step(test, device):
 
 
 def test_distance_row_is_the_anchor_distance_rate(test, device):
-    """Give the lower-bound row ``J qd`` the anchor-distance rate and the upper-bound row the rate along the predicted
-    end-of-step separation, both from forward kinematics with offset frames."""
+    """Give both bound rows ``J qd`` the anchor's rate along the predicted end-of-step separation, from forward
+    kinematics with offset frames."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link(mass=0.7, com=wp.vec3(-0.1, 0.05, 0.03), inertia=wp.mat33(np.eye(3) * 0.1))
     parent_xform = wp.transform((0.4, -0.1, 1.2), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6))
@@ -3004,7 +3004,7 @@ def test_distance_row_is_the_anchor_distance_rate(test, device):
     test.assertEqual(int(solver._constraint_count.numpy()[0]), 2)
     J = solver._J_by_size[6].numpy()[0, :2]
     qd = state_0.joint_qd.numpy()
-    test.assertAlmostEqual(float(J[0] @ qd), float(n @ v_c), delta=1.0e-5)
+    test.assertAlmostEqual(float(J[0] @ qd), float(n_end @ v_c), delta=1.0e-5)
     test.assertAlmostEqual(float(J[1] @ qd), -float(n_end @ v_c), delta=1.0e-5)
     test.assertGreater(float(np.linalg.norm(n_end - n)), 1.0e-3)
 
@@ -3056,22 +3056,29 @@ def test_positive_max_distance_caps_any_push_from_coincident_anchors(test, devic
             test.assertLess(distances.max(), cap + 1.0e-5)
 
 
-def test_positive_max_distance_caps_a_push_through_or_across_the_anchor(test, device):
-    """Hold a 5 mm ``max_distance`` when one step carries the weight through the parent anchor or across the bound."""
+def test_distance_bounds_hold_a_push_through_or_across_the_anchor(test, device):
+    """Hold 5 mm bounds when one step carries the weight through the parent anchor or across the bound."""
     cap = 0.005
-    # Crossing within the first step, head-on and oblique, and a tangential push at the bound.
+    # Crossing within the first step, head-on and oblique; a tangential push at the cap, alone and with a lower
+    # bound active in the same step; and a lower bound that stops a crossing on the near side.
     cases = [
-        ((0.001, 0.0, 0.0), (-4.0, 0.0, 0.0)),
-        ((0.001, 0.0, 0.0), (-4.0, 1.0, 0.0)),
-        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0)),
+        ((0.001, 0.0, 0.0), (-4.0, 0.0, 0.0), -1.0, cap),
+        ((0.001, 0.0, 0.0), (-4.0, 1.0, 0.0), -1.0, cap),
+        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), -1.0, cap),
+        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), 0.0049, cap),
+        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), cap, cap),
+        ((0.003, 0.0, 0.0), (-4.0, 0.0, 0.0), 0.002, -1.0),
     ]
-    for offset, velocity in cases:
-        with test.subTest(offset=offset, velocity=velocity):
+    for offset, velocity, lower, upper in cases:
+        with test.subTest(offset=offset, velocity=velocity, lower=lower, upper=upper):
             model, body = _build_tether(
-                device, start=tuple(_TETHER_ANCHOR + offset), upper=cap, velocity=velocity, gravity=False
+                device, start=tuple(_TETHER_ANCHOR + offset), lower=lower, upper=upper, velocity=velocity, gravity=False
             )
             distances = _tether_distances(model, body, 10, enable_joint_limits=True)
-            test.assertLess(distances.max(), cap + 1.0e-5)
+            if upper >= 0.0:
+                test.assertLess(distances.max(), upper + 1.0e-5)
+            if lower > 0.0:
+                test.assertGreater(distances.min(), lower - 1.0e-5)
 
 
 def test_zero_max_distance_drift_with_an_offset_com(test, device):
@@ -3164,8 +3171,8 @@ for _name, _func in (
         test_positive_max_distance_caps_any_push_from_coincident_anchors,
     ),
     (
-        "test_positive_max_distance_caps_a_push_through_or_across_the_anchor",
-        test_positive_max_distance_caps_a_push_through_or_across_the_anchor,
+        "test_distance_bounds_hold_a_push_through_or_across_the_anchor",
+        test_distance_bounds_hold_a_push_through_or_across_the_anchor,
     ),
     ("test_zero_max_distance_drift_with_an_offset_com", test_zero_max_distance_drift_with_an_offset_com),
     ("test_distance_rows_count_toward_the_capacity_warning", test_distance_rows_count_toward_the_capacity_warning),
