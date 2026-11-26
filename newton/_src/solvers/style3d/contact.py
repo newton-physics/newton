@@ -4,8 +4,9 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
-from ...sim import Contacts, Model
+from ...sim import Contacts, Model, ShapeFrictionMode
 from ...sim.contacts import contact_surface_separation
+from ..solver import contact_friction_mode
 
 
 @wp.struct
@@ -122,6 +123,7 @@ def eval_contact_kernel(
     shape_kd: wp.array[float],
     shape_kf: wp.array[float],
     shape_mu: wp.array[float],
+    shape_friction_mode: wp.array[wp.int32],
     contact_count: wp.array[int],
     shape0: wp.array[int],
     shape1: wp.array[int],
@@ -184,6 +186,8 @@ def eval_contact_kernel(
         ke = contact_ke[tid] if contact_ke[tid] > 0.0 else ke
         kd = contact_kd[tid] if contact_kd[tid] > 0.0 else kd
         mu *= contact_mu[tid] if contact_mu[tid] > 0.0 else 1.0
+    if contact_friction_mode(shape_friction_mode, s0, s1) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     previous0 = contact_point(b0, w0, point0[tid], x_prev)
     previous1 = contact_point(b1, w1, point1[tid], x_prev)
@@ -306,6 +310,7 @@ def eval_soft_contact_kernel(
     shape_body: wp.array[int],
     shape_margin: wp.array[float],
     shape_mu: wp.array[float],
+    shape_friction_mode: wp.array[wp.int32],
     ke: float,
     kd: float,
     kf: float,
@@ -367,6 +372,9 @@ def eval_soft_contact_kernel(
     velocity = ((x[particle] - x_prev[particle]) - (current - previous)) / dt - surface
     vn = wp.dot(n, velocity)
     vt = velocity - vn * n
+    contact_mu = wp.sqrt(wp.max(0.0, mu * shape_mu[shape]))
+    if contact_friction_mode(shape_friction_mode, shape, -1) == int(ShapeFrictionMode.NONE):
+        contact_mu = 0.0
     gn, Hn, gt, Ht, _ = contact_response(
         gap,
         n,
@@ -375,7 +383,7 @@ def eval_soft_contact_kernel(
         wp.max(ke, 0.0),
         wp.max(kd, 0.0),
         wp.max(kf, 0.0),
-        wp.sqrt(wp.max(0.0, mu * shape_mu[shape])),
+        contact_mu,
         dt,
     )
     gradient = gn + gt
@@ -478,6 +486,7 @@ class Contact:
                     self.model.shape_material_kd,
                     self.model.shape_material_kf,
                     self.model.shape_material_mu,
+                    self.model.shape_material_friction_mode,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -519,6 +528,7 @@ class Contact:
                     self.model.shape_body,
                     self.model.shape_margin,
                     self.model.shape_material_mu,
+                    self.model.shape_material_friction_mode,
                     self.model.soft_contact_ke,
                     self.model.soft_contact_kd,
                     self.model.soft_contact_kf,

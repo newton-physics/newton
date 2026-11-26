@@ -926,6 +926,8 @@ def test_rigid_contact_linear_system(test, device):
     """Match contact forces and the split tangent against a dense affine Jacobian."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.4)
+    sliding = newton.ModelBuilder.ShapeConfig(density=0.0, ke=200.0, kd=4.0, kf=40.0, mu=0.5)
+    frictionless = replace(sliding, friction_mode=newton.ShapeFrictionMode.NONE)
     for i in range(2):
         body = builder.add_link(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.8 * i), rotation),
@@ -933,9 +935,9 @@ def test_rigid_contact_linear_system(test, device):
             mass=2.0,
             inertia=wp.mat33(np.eye(3) * 0.4),
         )
-        builder.add_shape_sphere(
-            body, radius=0.5, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, ke=200.0, kd=4.0, kf=40.0, mu=0.5)
-        )
+        builder.add_shape_sphere(body, radius=0.5, cfg=frictionless if i == 0 else sliding)
+    # Select either material on the second body using the same contact geometry.
+    frictionless_shape = builder.add_shape_sphere(1, radius=0.5, cfg=frictionless)
     model = builder.finalize(device=device)
     config = newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=0, affine_rigidity_ratio=0.0)
     solver = newton.solvers.SolverStyle3D(
@@ -947,7 +949,6 @@ def test_rigid_contact_linear_system(test, device):
     )
     contacts.rigid_contact_count.fill_(2)
     contacts.rigid_contact_shape0.fill_(0)
-    contacts.rigid_contact_shape1.fill_(1)
     contacts.rigid_contact_normal.fill_(wp.vec3(0.0, 0.0, 1.0))
     contacts.rigid_contact_margin0.fill_(0.03)
     contacts.rigid_contact_margin1.fill_(0.02)
@@ -974,17 +975,18 @@ def test_rigid_contact_linear_system(test, device):
     projector = np.eye(3) - np.outer(n, n)
 
     # Exercise both stationary and rotating kinematic boundaries under applied loads.
-    for mode in ("normal", "stick", "slip", "prescribed_rest", "prescribed", "prescribed_slip"):
+    for mode in ("normal", "none", "stick", "slip", "prescribed_rest", "prescribed", "prescribed_slip"):
         with test.subTest(mode=mode):
             prescribed = mode.startswith("prescribed")
-            slipping = mode.endswith("slip")
+            slipping = mode.endswith("slip") or mode == "none"
+            contacts.rigid_contact_shape1.fill_(frictionless_shape if mode == "none" else 1)
             model.shape_material_mu.fill_(0.0 if mode == "normal" else 0.5)
             ke, kd, mu = 200.0, 4.0, 0.0 if mode == "normal" else 0.5
             if slipping:
                 contacts.rigid_contact_stiffness.fill_(320.0)
                 contacts.rigid_contact_damping.fill_(7.0)
                 contacts.rigid_contact_friction.fill_(2.0)
-                ke, kd, mu = 320.0, 7.0, 1.0
+                ke, kd, mu = 320.0, 7.0, 0.0 if mode == "none" else 1.0
             else:
                 contacts.rigid_contact_stiffness.zero_()
                 contacts.rigid_contact_damping.zero_()
@@ -1127,6 +1129,7 @@ def test_soft_contact_linear_system(test, device):
     )
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, margin=0.02, mu=0.8)
     ground = builder.add_ground_plane(cfg=cfg)
+    frictionless_ground = builder.add_ground_plane(cfg=replace(cfg, friction_mode=newton.ShapeFrictionMode.NONE))
     body_free_model = builder.finalize(device=device)
     pose = wp.transform(wp.vec3(0.1, 0.05, -0.1), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4))
     body = builder.add_link(xform=pose, com=(0.03, -0.02, 0.01), mass=2.0, inertia=wp.mat33(np.eye(3) * 0.4))
@@ -1270,22 +1273,28 @@ def test_soft_contact_linear_system(test, device):
     cloth_in, cloth_out = body_free_model.state(), body_free_model.state()
     surface_speed = 0.1
     contacts.soft_contact_count.fill_(1)
-    contacts.soft_contact_shape.fill_(ground)
     contacts.soft_contact_body_pos.fill_(point_world)
     contacts.soft_contact_body_vel.fill_(wp.vec3(surface_speed, 0.0, 0.0))
     initial = cloth_in.particle_q.numpy()
     mass_diag = body_free_model.particle_mass.numpy()[0] / dt**2
     penetration = particle_radius + cfg.margin - initial[0, 2]
     ke = body_free_model.soft_contact_ke
-    for kf in (0.0, model.soft_contact_kf):
-        with test.subTest(mode="body_free_static", kf=kf):
+    for shape, kf in ((ground, 0.0), (ground, model.soft_contact_kf), (frictionless_ground, model.soft_contact_kf)):
+        with test.subTest(mode="body_free_static", shape=shape, kf=kf):
+            contacts.soft_contact_shape.fill_(shape)
             body_free_model.soft_contact_kf = kf
             body_free_solver.step(cloth_in, cloth_out, None, contacts, dt)
             expected = initial.copy()
             # The prescribed surface speed keeps friction below the Coulomb limit.
-            expected[0, 0] += kf * surface_speed / (mass_diag + kf / dt)
+            gain = 0.0 if shape == frictionless_ground else kf
+            expected[0, 0] += gain * surface_speed / (mass_diag + gain / dt)
             expected[0, 2] += ke * penetration / (mass_diag + ke)
             np.testing.assert_allclose(cloth_out.particle_q.numpy(), expected, atol=3e-6)
+            np.testing.assert_allclose(
+                body_free_solver._A_diag.numpy()[0],
+                np.diag([gain / dt, gain / dt, ke]) + mass_diag * np.eye(3),
+                rtol=1e-6,
+            )
 
 
 def test_rigid_contact_stacking(test, device):
