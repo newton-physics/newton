@@ -76,6 +76,8 @@ from .particle_vbd_kernels import (
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
+    friction_anchor_begin,
+    friction_anchor_update,
     CONTACT_HISTORY_NO_BUFFER,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
@@ -462,6 +464,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
+        particle_static_friction: bool = False,
         # Rigid body - constraint formulation and stabilization
         rigid_compliant_alm: bool = _DEPRECATED_RIGID_COMPLIANT_ALM_UNSET,
         rigid_avbd_alpha: float | None = None,  # Shared alpha override; None uses zero
@@ -566,6 +569,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_external_edge_contact_filtering_map: Optional dictionary used to exclude additional edge-edge pairs during contact
                 generation. Keys must be edge primitive ids (integers), and each value must be a `list` or `set`
                 containing the edges to be filtered out. Only used when `particle_enable_self_contact` is `True`.
+            particle_static_friction: Static friction for particle-shape contacts. The regularized Coulomb friction
+                (``friction_epsilon``) measures slip from the step's start, so a contact under a steady tangential
+                load creeps by one regularized slip every step instead of sticking: a soft body pressed by a still
+                collider slowly flows, and where a node creeps against a collider edge it eventually snaps past it,
+                releasing stored elastic energy at once. With this on, each particle in contact keeps a stick anchor in
+                the touching shape's body frame; friction slip is measured from the anchor, which stays put while the
+                slip is within ``friction_epsilon * dt`` (stick) and is dragged to that distance behind the particle
+                beyond it (slide, kinetic friction along the slip). Same force law and stiffness; the anchor is updated
+                once per step, after the iterations. A new contact starts with the step slip; leaving contact or
+                touching another shape drops the anchor. One anchor per particle (a particle touching two shapes keeps
+                whichever updates last). Self-contact and edge/face contacts keep the step slip.
 
             rigid_compliant_alm: Deprecated; omit it. Compliant ALM is always used for
                 body-body contacts, structural joints, drives, and limits. Explicit
@@ -1034,6 +1048,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
             enable_fast_math,
+            particle_static_friction,
         )
 
         # Routed tendon geometry and material state are shared with XPBD; VBD
@@ -1133,8 +1148,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
         enable_fast_math: bool,
+        particle_static_friction: bool = False,
     ):
         """Initialize particle-specific data structures and settings."""
+        self.particle_static_friction = bool(particle_static_friction) and model.particle_count > 0
+        anchor_count = model.particle_count if self.particle_static_friction else 0
+        self.friction_anchor = wp.zeros(anchor_count, dtype=wp.vec3, device=self.device)
+        self.friction_anchor_shape = wp.full(anchor_count, -1, dtype=wp.int32, device=self.device)
+        self.friction_anchor_shape_prev = wp.full(anchor_count, -1, dtype=wp.int32, device=self.device)
         # Early exit if no particles
         if model.particle_count == 0:
             return
@@ -2842,6 +2863,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._update_tendon_segment_diagnostics(state_out, dt)
         if self.iterations == 0 and self.model.particle_count > 0:
             wp.copy(state_out.particle_q, state_in.particle_q)
+        if self.particle_static_friction and contacts is not None and contacts.soft_contact_max > 0:
+            self._update_friction_anchors(state_in, state_out, contacts, dt)
         self._finalize_particles(state_out, dt)
         self._save_tendon_history(state_out)
 
@@ -4213,6 +4236,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self._particle_contact_next,
                             *contact_material_and_body_inputs,
                             contact_filter,
+                            self.friction_anchor,
+                            self.friction_anchor_shape,
                         ],
                         outputs=[
                             self.particle_forces,
@@ -4242,6 +4267,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             contacts.soft_contact_max,
                             self._particle_contact_worker_count,
                             *contact_material_and_body_inputs,
+                            self.friction_anchor,
+                            self.friction_anchor_shape,
                         ],
                         outputs=[
                             self.particle_forces,
@@ -5168,6 +5195,38 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._rigid_contact_point1_world,
             contacts.rigid_contact_force,
             contacts.rigid_contact_count,
+        )
+
+    def _update_friction_anchors(self, state_in: State, state_out: State, contacts: Contacts, dt: float):
+        """Keep, drag or start each touching particle's stick anchor (``particle_static_friction``)."""
+        body_q = state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q
+        wp.launch(
+            kernel=friction_anchor_begin,
+            dim=self.model.particle_count,
+            inputs=[self.friction_anchor_shape, self.friction_anchor_shape_prev],
+            device=self.device,
+        )
+        wp.launch(
+            kernel=friction_anchor_update,
+            dim=contacts.soft_contact_max,
+            inputs=[
+                dt,
+                self.friction_epsilon,
+                state_out.particle_q,
+                self.model.particle_radius,
+                contacts.soft_contact_indices,
+                contacts.soft_contact_count,
+                contacts.soft_contact_max,
+                self.model.shape_body,
+                body_q,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_body_pos,
+                contacts.soft_contact_normal,
+                self.model.shape_margin,
+                self.friction_anchor_shape_prev,
+            ],
+            outputs=[self.friction_anchor, self.friction_anchor_shape],
+            device=self.device,
         )
 
     def _finalize_particles(self, state_out: State, dt: float):
