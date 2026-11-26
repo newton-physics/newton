@@ -528,7 +528,7 @@ def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="ser
             two_substeps(eager_solver, eager_a, eager_b, eager_control)
         if warmup_steps:
             # A deliberate configuration jump makes a permanently stale factorization diverge clearly.
-            joint_q = np.tile(np.asarray(INITIAL_JOINT_Q, dtype=np.float32) + [0.8, -1.0, 0.6], 2)
+            joint_q = np.tile(np.asarray(INITIAL_JOINT_Q, dtype=np.float32) + np.asarray([0.8, -1.0, 0.6]), 2)
             graph_a.joint_q.assign(joint_q)
             eager_a.joint_q.assign(joint_q)
         with wp.ScopedCapture(device) as capture:
