@@ -955,9 +955,9 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(
                 status.iterations, P_i, sigma, solver_v[thread_offset], x, solver_Dx_p, thread_offset, r_d
             )
 
-        # Exclude the dropped redundant rows, whose velocity follows from the kept rows
-        if _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid) > 0.0:
-            r_d = 0.0
+            # Exclude the dropped redundant rows, whose velocity follows from the kept rows
+            if _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, tid) > 0.0:
+                r_d = 0.0
         solver_r_dual[thread_offset] = r_d
 
         # Compute the individual iterate residuals only if acceleration is enabled
@@ -1175,9 +1175,9 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int, delassus_du
                             r_d,
                         )
 
-                    # Exclude the dropped redundant rows, whose velocity follows from the kept rows
-                    if _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, local_id) > 0.0:
-                        r_d = 0.0
+                        # Exclude the dropped redundant rows, whose velocity follows from the kept rows
+                        if _get_row_shift(shift_row_offset, shift_num_rows, shifts, wid, local_id) > 0.0:
+                            r_d = 0.0
                     r_dx = p_i * (x - x_p)
                     r_dy = p_i * (y - y_p)
                     r_dz = (1.0 / p_i) * (z - z_prev)

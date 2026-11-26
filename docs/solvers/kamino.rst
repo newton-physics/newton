@@ -488,7 +488,8 @@ residual definitions are backend-specific:
   [N·s or N·m·s].
   ``r_d = ||P^-1 D (x - x_prev)||_inf`` is the change of constraint velocity
   between iterates [m/s or rad/s], with ``D`` the preconditioned Delassus
-  matrix. With ``dual_residual_mode="standard"`` or an iterative linear solver,
+  matrix, over all rows except the joint rows dropped as redundant, whose
+  velocity follows from the kept rows. With ``dual_residual_mode="standard"`` or an iterative linear solver,
   it is instead the ADMM dual
   residual ``r_d = ||P^-1 (eta (x - x_prev) + rho_i (y - y_prev))||_inf``, with
   ``rho_i`` the penalty of each row, which is zero on unpenalized bilateral

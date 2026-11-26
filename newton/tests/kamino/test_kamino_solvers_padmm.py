@@ -1219,7 +1219,10 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
         self.addCleanup(patcher.stop)
 
     def test_00_delassus_dual_residual(self):
-        """Check that the Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates."""
+        """
+        Check that the Delassus-weighted dual residual matches `P^{-1} D (x - x_p)` between consecutive iterates,
+        with zeros on the dropped redundant rows.
+        """
         builders = {
             "fourbar": lambda sparse: make_redundant_fourbar(self.default_device, sparse),
             "box_on_plane": lambda sparse: TestSetup(
@@ -1315,6 +1318,30 @@ class TestPADMMNullspaceRobustness(NewtonTestCase):
                         np.testing.assert_array_equal(r_dual[1][w][dropped[w]], 0.0)
                         atol = 1e-4 * np.abs(r_dual_ref).max()
                         np.testing.assert_allclose(r_dual[1][w], r_dual_ref, rtol=1e-2, atol=atol)
+
+    def test_00_standard_dual_residual_of_dropped_rows(self):
+        """Check that the standard dual residual keeps its ADMM definition on the dropped redundant rows."""
+        test = make_redundant_fourbar(self.default_device, False)
+        test.build()
+        config = PADMMSolver.Config(dual_residual_mode="standard", max_iterations=5, penalty_update_method="fixed")
+        solver = PADMMSolver(model=test.model, problem=test.problem, config=config, use_acceleration=False)
+        test.build()
+
+        # Load the dropped rows with impulses by a null-space bias
+        add_null_components(test.problem, test.problem.data.v_f, delassus_null_bases(test.problem), 1e-2)
+        solver.coldstart()
+        solver.solve(problem=test.problem)
+
+        # Check that the dropped rows report a non-zero residual
+        shifted = solver._redundant_joints.shifted.numpy()[0].astype(bool)
+        self.assertGreater(int(shifted.sum()), 0)
+        offset = int(solver._kinematic_cts_offset.numpy()[0])
+        count = int(solver._num_kinematic_cts.numpy()[0])
+        r_dual = extract_problem_vector(
+            test.problem.delassus, solver.data.residuals.r_dual.numpy(), only_active_dims=True
+        )[0]
+        dropped = r_dual[offset : offset + count][shifted[:count]]
+        self.assertTrue(np.all(np.abs(dropped) > 0.0))
 
     def test_01_delassus_dual_residual_converges_with_null_leakage(self):
         """Check that the Delassus-weighted dual residual converges with a free velocity leaking into the null space."""

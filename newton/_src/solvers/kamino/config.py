@@ -599,7 +599,8 @@ class PADMMSolverConfig:
 
     - `"standard"`: The ADMM residual `eta * (x - x_p) + rho * (y - y_p)`, with the penalty `rho` of each row.
     - `"delassus"`: The change `D @ (x - x_p)` of the constraint-space velocity, which ignores the drift of
-      the impulses along the null space of the Delassus matrix, e.g. due to redundant constraints.
+      the impulses along the null space of the Delassus matrix, e.g. due to redundant constraints. It is zero
+      on the joint rows dropped by `detect_redundant_kinematics`, whose velocity follows from the kept rows.
 
     Both are scaled by the inverse preconditioner. The setting of the first world applies to all worlds.
     The `"standard"` residual is always used with iterative linear solvers. Defaults to `"delassus"`.
@@ -744,8 +745,9 @@ class PADMMSolverConfig:
     which make the Delassus matrix singular and can prevent convergence.
 
     The dropped rows carry no impulse, while the kept rows still enforce all joint constraints, so the motion
-    is unchanged, and the dual residual excludes them. The detection only runs for models with closed kinematic
-    loops, and is turned off with iterative linear solvers. See :class:`RedundantRowShift` for details.
+    is unchanged, and the `"delassus"` dual residual excludes them. The detection only runs for models with
+    closed kinematic loops, and is turned off with iterative linear solvers. See :class:`RedundantRowShift` for
+    details.
 
     The setting of the first world applies to all worlds. Defaults to `True`.
     """
