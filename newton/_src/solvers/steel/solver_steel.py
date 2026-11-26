@@ -1555,8 +1555,14 @@ class SolverSteel(SolverBase, CouplingInterface):
 
     Treat row and contact-buffer overflow as a sizing error and raise those capacities until no world is flagged.
     The capacities are set at construction and :meth:`reset` clears the flags without restoring the simulation state,
-    so to recover, discard the output of the flagged steps, restore a state from before the overflow, and construct a
-    new solver (and capture new graphs) with larger capacities.
+    so to recover, discard the output of the flagged steps, restore a state from before the overflow, rebuild with
+    larger capacities and capture new graphs. Row capacities are solver arguments, so a row overflow needs a new
+    solver. The contact capacity is the :class:`~newton.Contacts` buffer's ``rigid_contact_max``, and the solver sizes
+    its contact scratch from :attr:`model.rigid_contact_max <newton.Model.rigid_contact_max>` when it is constructed.
+    For a contact-buffer overflow, construct a new :class:`~newton.CollisionPipeline` with a larger
+    ``rigid_contact_max``, which it publishes to the model, allocate a new :class:`~newton.Contacts` from it, and then
+    construct a new solver. For contacts dropped by contact reduction, construct the pipeline with larger reduction
+    capacities, such as ``max_triangle_pairs`` and ``contact_reduction_hashtable_size_factor``.
     The unsolvable cross-world contacts above set the same flag, and no capacity clears them. Which
     contacts keep their rows is described under ``deterministic``. As that set changes, a contact that penetrated
     while it had no rows is pushed out by the position correction when it regains them, which can add energy and
