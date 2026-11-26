@@ -1812,14 +1812,34 @@ def parse_usd(
         for joint_path, joint_desc in joint_descriptions.items()
     )
 
+    articulation_roots = (
+        set(ret_dict[UsdPhysics.ObjectType.Articulation][0]) if override_root_xform and not no_articulations else set()
+    )
+
     # insert remaining bodies that were not part of any articulation so far
     # (root joints for these bodies will be added after mass properties are resolved)
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
+        # A deferred body under an articulation root must use the same root
+        # rebasing as the bodies imported with that articulation.
+        body_root_path = Sdf.Path(path).GetParentPath()
+        while body_root_path != Sdf.Path.emptyPath and body_root_path not in articulation_roots:
+            body_root_path = body_root_path.GetParentPath()
+        root_xform = (
+            usd.get_transform(stage.GetPrimAtPath(body_root_path), local=False, xform_cache=xform_cache)
+            if body_root_path in articulation_roots
+            else None
+        )
+        origin = None
+        if root_xform is not None:
+            body_world = usd.get_transform(stage.GetPrimAtPath(path), local=False, xform_cache=xform_cache)
+            origin = incoming_world_xform * wp.transform_inverse(root_xform) * body_world
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
             rigid_body_desc,
             stage.GetPrimAtPath(path),
             incoming_xform=incoming_world_xform,
+            articulation_root_xform=root_xform,
+            origin=origin,
             add_body_to_builder=True,
         )
 

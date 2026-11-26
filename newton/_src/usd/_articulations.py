@@ -70,7 +70,6 @@ def _parse_articulations(
     from pxr import Sdf, UsdPhysics
 
     parent_prim = None
-    body_data = {}
     for path, desc in articulation_entries:
         if warn_invalid_desc(path, desc):
             continue
@@ -110,17 +109,39 @@ def _parse_articulations(
             articulation_custom_attrs = usd.get_custom_attribute_values(parent_prim, builder_custom_attr_articulation)
         if verbose and articulation_custom_attrs:
             logger.info("Extracted articulation custom attributes: %s", articulation_custom_attrs)
+        body_data = {}
+        # OpenUSD also lists the far endpoint of excluded joints in articulatedBodies;
+        # only bodies reached through a tree joint belong to this articulation.
+        tree_body_paths = set()
+        for joint_path in desc.articulatedJoints:
+            joint_key = str(joint_path)
+            joint_desc = joint_descriptions[joint_key]
+            if joint_key in mjc_equality_connect_or_weld_paths or joint_desc.excludeFromArticulation:
+                continue
+            tree_body_paths.update((str(joint_desc.body0), str(joint_desc.body1)))
+        # A root body can be omitted from articulatedBodies when its only joint
+        # is excluded. Never claim the far endpoint as a substitute.
+        if not tree_body_paths:
+            if articulation_path in body_specs:
+                tree_body_paths.add(articulation_path)
+            else:
+                tree_body_paths.update(str(p) for p in desc.articulatedBodies)
         body_ids = {}
         body_labels = []
         current_body_id = 0
         art_bodies = []
         if verbose:
             logger.info("Bodies under articulation %s:%s", path, "".join(f"\n\t{p!s}" for p in desc.articulatedBodies))
-        for p in desc.articulatedBodies:
+        articulated_bodies = list(desc.articulatedBodies)
+        if articulation_path in tree_body_paths and path not in articulated_bodies:
+            articulated_bodies.append(path)
+        for p in articulated_bodies:
             if p == Sdf.Path.emptyPath:
                 continue
             key = str(p)
             if key in ignored_body_paths:
+                continue
+            if key not in tree_body_paths:
                 continue
 
             usd_prim = stage.GetPrimAtPath(p)
