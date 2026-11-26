@@ -323,6 +323,26 @@ def _carried_displacement(q: wp.array[wp.transform], prev: _PatchFrame, p: int, 
 _FLOOD_CUDA = """
 #if defined(__CUDA_ARCH__)
     const int lane = threadIdx.x & 31;
+    const unsigned full = 0xffffffffu;
+    // Raise separation to the warp's largest distance if it is larger; the earliest lane wins ties.
+    const auto farthest = [&](float distance, int c, float& separation, int& second) {
+        float best = distance;
+        int best_lane = lane;
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            const float other = __shfl_down_sync(full, best, offset);
+            const int other_lane = __shfl_down_sync(full, best_lane, offset);
+            if (other > best || (other == best && other_lane < best_lane)) {
+                best = other;
+                best_lane = other_lane;
+            }
+        }
+        best = __shfl_sync(full, best, 0);
+        const int winner = __shfl_sync(full, c, __shfl_sync(full, best_lane, 0));
+        if (best > separation) {
+            separation = best;
+            second = winner;
+        }
+    };
     int end = count.data[0];
     if (end > capacity) end = capacity;
     const int n_pairs = min(pair_count.data[0], pair_list.shape[0]);
@@ -344,6 +364,7 @@ _FLOOD_CUDA = """
         int first = (eligible.data[seed] != 0) ? seed : -1;
         float nearest = (first >= 0) ? gap.data[seed] : 1.0e30f;
         const wp::vec3 seed_center = center.data[seed];
+        wp::vec3 first_center = seed_center;
         const wp::vec3 seed_normal = normal.data[seed];
         const wp::vec2 seed_mu = mu.data[seed];
         const float r = radius.data[seed];
@@ -360,41 +381,46 @@ _FLOOD_CUDA = """
                     const int j = base + lane;
                     int c = -1;
                     bool accept = false;
+                    int usable = 0;
+                    float candidate_gap = 0.0f;
+                    wp::vec3 position(0.0f);
                     if (j < stop) {
                         c = indices.data[j];
                         if (owner.data[c] < 0) {
-                            const wp::vec3 d = wp::sub(center.data[c], seed_center);
+                            position = center.data[c];
+                            const wp::vec3 d = wp::sub(position, seed_center);
                             const wp::vec2 cmu = mu.data[c];
                             const bool compatible = wp::dot(seed_normal, normal.data[c]) >= 0.995f
                                 && seed_mu[0] == cmu[0] && seed_mu[1] == cmu[1]
                                 && wp::abs(wp::dot(d, seed_normal)) <= 0.02f * r
                                 && wp::length_sq(d) <= 4.0f * r * r;
-                            if (compatible && shapes_adjacent(sa, shape_a.data[c]) && shapes_adjacent(sb, shape_b.data[c]))
+                            if (compatible && shapes_adjacent(sa, shape_a.data[c]) && shapes_adjacent(sb, shape_b.data[c])) {
                                 accept = true;
+                                usable = eligible.data[c];
+                                candidate_gap = gap.data[c];
+                            }
                         }
                     }
-                    unsigned ballot = __ballot_sync(0xffffffffu, accept);
+                    // Each lane loaded its own candidate; the loop below only shuffles registers.
+                    unsigned ballot = __ballot_sync(full, accept);
                     while (ballot) {
                         const int l = __ffs(ballot) - 1;
                         ballot &= ballot - 1u;
-                        const int cc = __shfl_sync(0xffffffffu, c, l);
+                        const int cc = __shfl_sync(full, c, l);
                         if (lane == 0) {
                             owner.data[cc] = seed;
                             next_contact.data[tail] = cc;
                         }
                         tail = cc;
                         remaining -= 1;
-                        if (eligible.data[cc] != 0) {
-                            nearest = fminf(nearest, gap.data[cc]);
-                            if (first < 0) {
+                        const wp::vec3 p(__shfl_sync(full, position[0], l), __shfl_sync(full, position[1], l),
+                                         __shfl_sync(full, position[2], l));
+                        const float g = __shfl_sync(full, candidate_gap, l);
+                        if (__shfl_sync(full, usable, l) != 0) {
+                            nearest = fminf(nearest, g);
+                            if (first < 0 || precedes(p, first_center)) {
                                 first = cc;
-                            } else {
-                                const wp::vec3 position = center.data[cc];
-                                const wp::vec3 p0 = center.data[first];
-                                if (position[0] < p0[0]
-                                    || (position[0] == p0[0]
-                                        && (position[1] < p0[1] || (position[1] == p0[1] && position[2] < p0[2]))))
-                                    first = cc;
+                                first_center = p;
                             }
                         }
                     }
@@ -414,50 +440,61 @@ _FLOOD_CUDA = """
         const bool relocate = !carry_only && gap.data[first] > gate;
         if (relocate) first = -1;
         const int member_start = member_stop;
-        const int anchor = carry_only ? seed : first;
-        const wp::vec3 anchor_center = center.data[relocate ? seed : anchor];
-        int second = anchor;
+        const wp::vec3 anchor_center = carry_only ? seed_center : first_center;
+        int second = carry_only ? seed : first;
         float separation = 0.0f;
         for (int base = index; base < stop; base += 32) {
             const int j = base + lane;
             const int c = (j < stop) ? indices.data[j] : -1;
-            unsigned ballot = __ballot_sync(0xffffffffu, c >= 0 && owner.data[c] == seed);
-            while (ballot) {
-                const int l = __ffs(ballot) - 1;
-                ballot &= ballot - 1u;
-                const int cc = __shfl_sync(0xffffffffu, c, l);
-                if (lane == 0) members.data[member_stop] = cc;
-                member_stop += 1;
-                bool usable = eligible.data[cc] != 0;
-                if (usable && !carry_only && gap.data[cc] > gate) {
+            const bool member = c >= 0 && owner.data[c] == seed;
+            const unsigned ballot = __ballot_sync(full, member);
+            bool usable = false;
+            float distance = -1.0f;
+            wp::vec3 position(0.0f);
+            if (member) {
+                members.data[member_stop + __popc(ballot & ((1u << lane) - 1u))] = c;
+                usable = eligible.data[c] != 0;
+                if (usable && !carry_only && gap.data[c] > gate) {
                     usable = false;
-                    if (lane == 0) eligible.data[cc] = 0;
+                    eligible.data[c] = 0;
                 }
-                if (relocate) {
-                    if (usable && (first < 0 || precedes(center.data[cc], center.data[first]))) first = cc;
-                } else if (carry_only || usable) {
-                    const float distance = wp::length_sq(wp::sub(center.data[cc], anchor_center));
-                    if (distance > separation) {
-                        separation = distance;
-                        second = cc;
+                position = center.data[c];
+                if (!relocate && (carry_only || usable)) {
+                    const float d = wp::length_sq(wp::sub(position, anchor_center));
+                    if (d >= 0.0f) distance = d;
+                }
+            }
+            member_stop += __popc(ballot);
+            if (relocate) {
+                unsigned candidates = __ballot_sync(full, usable);
+                while (candidates) {
+                    const int l = __ffs(candidates) - 1;
+                    candidates &= candidates - 1u;
+                    const wp::vec3 p(__shfl_sync(full, position[0], l), __shfl_sync(full, position[1], l),
+                                     __shfl_sync(full, position[2], l));
+                    const int cc = __shfl_sync(full, c, l);
+                    if (first < 0 || precedes(p, first_center)) {
+                        first = cc;
+                        first_center = p;
                     }
                 }
+            } else {
+                farthest(distance, c, separation, second);
             }
         }
         if (relocate) {
             // The lowest member lay beyond the gate: measure from the new first location.
             __syncwarp();
             second = first;
-            const wp::vec3 first_center = center.data[first];
-            for (int k = member_start; k < member_stop; ++k) {
-                const int cc = members.data[k];
-                if (eligible.data[cc] != 0) {
-                    const float distance = wp::length_sq(wp::sub(center.data[cc], first_center));
-                    if (distance > separation) {
-                        separation = distance;
-                        second = cc;
-                    }
+            for (int base = member_start; base < member_stop; base += 32) {
+                const int k = base + lane;
+                const int c = (k < member_stop) ? members.data[k] : -1;
+                float distance = -1.0f;
+                if (c >= 0 && eligible.data[c] != 0) {
+                    const float d = wp::length_sq(wp::sub(center.data[c], first_center));
+                    if (d >= 0.0f) distance = d;
                 }
+                farthest(distance, c, separation, second);
             }
         }
         if (lane == 0) {
