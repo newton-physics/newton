@@ -671,8 +671,6 @@ class TestModelView(unittest.TestCase):
 
     def test_state_creation_respects_view_count_overrides(self):
         """view.state() should size state arrays from view-local counts."""
-        with self.assertWarns(DeprecationWarning):
-            self.model.request_state_attributes("body_qdd", "body_parent_f")
         view = ModelView(self.model, "test")
         view.body_count = 1
 
@@ -681,8 +679,6 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(state.body_count, 1)
         self.assertEqual(state.body_qd.shape[0], 1)
         self.assertEqual(state.body_f.shape[0], 1)
-        self.assertEqual(state.body_qdd.shape[0], 1)
-        self.assertEqual(state.body_parent_f.shape[0], 1)
 
     def test_state_creation_respects_view_zero_count(self):
         """view.state() should clear state fields hidden by view-local counts."""
@@ -921,8 +917,6 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 builder.add_world(world)
                 builder.add_world(world)
                 model = builder.finalize(device="cpu")
-                with self.assertWarns(DeprecationWarning):
-                    model.request_state_attributes("body_qdd", "body_parent_f")
                 coupled = SolverCoupled(
                     model,
                     [SolverCoupled.Entry("recording", _ResetRecordingCopySolver, bodies=range(3), substeps=2)],
@@ -938,11 +932,8 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 for index, entry_state in enumerate(entry_states, start=1):
                     entry_state.body_qd.assign(spatial((100 * index + 1, 100 * index + 2, 100 * index + 3)))
                     entry_state.body_f.assign(spatial((100 * index + 4, 100 * index + 5, 100 * index + 6)))
-                    entry_state.body_qdd.fill_(100 * index + 7)
-                    entry_state.body_parent_f.fill_(100 * index + 8)
                     before[entry_state] = {
-                        name: getattr(entry_state, name).numpy().copy()
-                        for name in ("body_qd", "body_f", "body_qdd", "body_parent_f")
+                        name: getattr(entry_state, name).numpy().copy() for name in ("body_qd", "body_f")
                     }
                 parent_before = {name: getattr(parent, name).numpy().copy() for name in ("body_qd", "body_f")}
                 coupled._entry_output_state_valid = True
@@ -959,7 +950,7 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                     expected_qd = before[entry_state]["body_qd"].copy()
                     expected_qd[list(selected_rows)] = parent_before["body_qd"][list(selected_rows)]
                     np.testing.assert_array_equal(entry_state.body_qd.numpy(), expected_qd)
-                    for name in ("body_f", "body_qdd", "body_parent_f"):
+                    for name in ("body_f",):
                         expected = before[entry_state][name].copy()
                         expected[list(selected_rows)] = 0.0
                         np.testing.assert_array_equal(getattr(entry_state, name).numpy(), expected)

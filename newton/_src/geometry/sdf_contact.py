@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -1291,6 +1292,7 @@ def compute_mesh_mesh_block_offsets_scan(
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
+@lru_cache
 def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     writer_func: Any,
     enable_heightfields: bool = True,

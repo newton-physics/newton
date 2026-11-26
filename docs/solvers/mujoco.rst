@@ -527,14 +527,26 @@ response. See the implementation in
 :github:`newton/_src/solvers/mujoco/kernels.py` and its force-space contact tests
 in :github:`newton/tests/test_mujoco_solver.py`.
 
-With MuJoCo's default ``refsafe`` guard enabled, MuJoCo-Warp evaluates positive
-``solref`` using ``max(timeconst, 2 * dt)`` for the active constraint without
+With MuJoCo's default ``refsafe`` guard enabled and Euler, RK4, implicit, or
+implicitfast integration, MuJoCo-Warp evaluates positive ``solref`` using
+``max(timeconst, 2 * dt)`` for the active constraint without
 rewriting the stored value. Direct-format negative ``solref`` bypasses this
 clamp. Once a requested positive ``timeconst`` falls below that floor, raising
 the gains at a fixed damping ratio no longer hardens the effective response;
 reduce the step passed to :meth:`~newton.solvers.SolverMuJoCo.step` instead. See
 MuJoCo's `refsafe option
 <https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
+
+For overdamped Newton contacts with per-contact stiffness and damping, the
+adapter caps damping when the requested time constant falls below this floor.
+It adjusts the damping ratio to preserve stiffness. Underdamped contacts keep
+their existing conversion. If the critical-damping time constant is below the
+floor, MuJoCo can still soften the contact. Use a smaller timestep to retain
+the requested gains.
+With ``refsafe`` disabled or ``discrete`` integration, the adapter keeps the
+supplied positive damping.
+If you change the timestep, call :meth:`~newton.CollisionPipeline.collide` again
+to refresh the contact parameters.
 
 These ``SOLREF_MODE_*`` names describe internal mode values; they are not
 public Newton symbols. MJCF/USD import selects the appropriate authored/default
@@ -1327,6 +1339,8 @@ all solvers and content already added to the shared builder. Inside
 ``begin_world()`` / ``end_world()``, only that world's gravity is changed;
 outside a world, the global/default gravity is changed. A later import
 with ``gravity="enable"`` does not restore the previous gravity vector.
+
+.. _mujoco-sleeping:
 
 Sleeping
 --------
