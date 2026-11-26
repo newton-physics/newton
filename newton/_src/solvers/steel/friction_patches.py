@@ -984,13 +984,9 @@ def _build(
                 support_gap = wp.dot(_world_point(q, a, prev.surface_a[p]) - _world_point(q, b, prev.surface_b[p]), n)
                 if not (support_gap <= wp.max(current_gap, frame.support_gap_limit[c]) + 1.0e-5 * r):
                     continue
-                # A separated contact without friction rows keeps only its own history: witnesses
-                # nearer than its gap belong to a nearer contact, which carries them on.
-                if (
-                    frame.eligible[c] == 0
-                    and current_gap > _TOUCH_TOLERANCE * r
-                    and support_gap < current_gap - 1.0e-5 * r
-                ):
+                # A separated contact keeps only its own history: witnesses nearer than its gap by
+                # more than the touching tolerance belong to a nearer contact, which carries them on.
+                if current_gap > _TOUCH_TOLERANCE * r and support_gap < current_gap - _TOUCH_TOLERANCE * r:
                     continue
                 error = _carried_displacement(q, prev, p, n)
                 error += motion
@@ -1049,11 +1045,7 @@ def _build(
                         if (
                             wp.dot(other_normal, n) < 0.995
                             or other_gap > wp.max(current_gap, frame.support_gap_limit[c]) + 1.0e-5 * r
-                            or (
-                                frame.eligible[c] == 0
-                                and current_gap > _TOUCH_TOLERANCE * r
-                                and other_gap < current_gap - 1.0e-5 * r
-                            )
+                            or (current_gap > _TOUCH_TOLERANCE * r and other_gap < current_gap - _TOUCH_TOLERANCE * r)
                         ):
                             break
                         other_center = 0.5 * (
