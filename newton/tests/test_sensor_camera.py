@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import inspect
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -1079,7 +1081,7 @@ class TestSensorCamera(unittest.TestCase):
                         np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
 
             # Ordinary cloth still renders from the State buffer, without a camera-owned copy.
-            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
+            self.assertEqual(camera._render_context._triangle_points.ptr, state.particle_q.ptr)
 
     def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
         """Verify two-sided depth, camera-facing normals, and per-face color under directional light."""
@@ -1462,7 +1464,7 @@ class TestSensorCamera(unittest.TestCase):
                     # Agreement up to fp32 differences introduced by the world translations.
                     np.testing.assert_allclose(depth_np[w], depth_np[0], rtol=0.0, atol=1e-4)
 
-    def test_render_config_toggles_particles_beside_cloth(self) -> None:
+    def test_render_config_toggles_particles_beside_cloth(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify ``enable_particles`` hides standalone particles but keeps cloth rendered as triangles."""
         from newton._src.render.raytrace import (  # noqa: PLC0415
             PARTICLES_SHAPE_ID,
@@ -1482,15 +1484,18 @@ class TestSensorCamera(unittest.TestCase):
             fix_top=True,
         )
         builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device=device)
         state = model.state()
-        camera = SensorCamera(model)
-        rays = self._rays(1, 1, fov=math.radians(30.0))
-        cloth_vertex = model.particle_q.numpy()[0]
+        if backend == "optix":
+            model.bvh_build_shapes(state, backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        rays = self._rays(1, 1, fov=math.radians(30.0), device=device)
+        # Aim inside the first cloth quad: a ray through the boundary corner may miss with OptiX.
+        cloth_point = model.particle_q.numpy()[0] + np.array([0.025, 0.025, 0.0])
         cloth_transforms = wp.array(
-            [wp.transform(wp.vec3(*cloth_vertex[:2], cloth_vertex[2] + 0.5), wp.quat_identity())],
+            [wp.transform(wp.vec3(*cloth_point[:2], cloth_point[2] + 0.5), wp.quat_identity())],
             dtype=wp.transformf,
-            device="cpu",
+            device=device,
         )
 
         def render(transforms, **config):
@@ -1506,15 +1511,15 @@ class TestSensorCamera(unittest.TestCase):
             )
             return float(depth.numpy()[0, 0, 0]), int(shape_index.numpy()[0, 0, 0])
 
-        self.assertEqual(render(self._identity_transforms(1), enable_particles=False)[0], 0.0)
-        depth, shape_index = render(self._identity_transforms(1), enable_particles=True)
+        self.assertEqual(render(self._identity_transforms(1, device), enable_particles=False)[0], 0.0)
+        depth, shape_index = render(self._identity_transforms(1, device), enable_particles=True)
         self.assertGreater(depth, 0.0)
         self.assertEqual(shape_index, int(PARTICLES_SHAPE_ID))
         depth, shape_index = render(cloth_transforms, enable_particles=True, enable_backface_culling=False)
         self.assertGreater(depth, 0.0)
         self.assertEqual(shape_index, int(TRIANGLE_MESH_SHAPE_ID))
 
-    def test_volume_deformable_renders_surface_not_particles(self) -> None:
+    def test_volume_deformable_renders_surface_not_particles(self, device: str = "cpu", backend: str = "warp") -> None:
         """Verify a volume deformable renders its surface triangles instead of its particles."""
         from newton._src.render.raytrace import TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
 
@@ -1535,14 +1540,16 @@ class TestSensorCamera(unittest.TestCase):
             k_damp=0.0,
             particle_radius=0.25,
         )
-        model = builder.finalize(device="cpu")
-        camera = SensorCamera(model)
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
         depth = camera.allocate_image_depth(1, 1, 1)
         shape_index = camera.allocate_image_shape_index(1, 1, 1)
         camera.update(
             model.state(),
-            self._identity_transforms(1),
-            self._rays(1, 1, fov=math.radians(30.0)),
+            self._identity_transforms(1, device),
+            self._rays(1, 1, fov=math.radians(30.0), device=device),
             depth_image=depth,
             shape_index_image=shape_index,
             render_config=SensorCamera.RenderConfig(
@@ -1552,6 +1559,145 @@ class TestSensorCamera(unittest.TestCase):
 
         self.assertGreater(float(depth.numpy()[0, 0, 0]), 0.0)
         self.assertEqual(int(shape_index.numpy()[0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
+
+    def test_scene_matches_across_backends(self, device: str = "cpu", backend: str = "warp") -> None:
+        """Render the shapes, particles and cloth of differing worlds alike with every backend and path, as they move."""
+        from newton._src.render.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
+
+        # Worlds differing in cloth, particles and shapes, plus a global particle and ground.
+        scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for w in range(4):
+            world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            body = world.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()))
+            world.add_shape_box(body, hx=0.15, hy=0.15, hz=0.15)
+            if w % 2 == 0:
+                world.add_cloth_grid(
+                    pos=wp.vec3(-0.4, -0.4, 0.8 + 0.1 * w),
+                    rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.25 * w),
+                    vel=wp.vec3(0.0),
+                    dim_x=6 + w,
+                    dim_y=5,
+                    cell_x=0.12,
+                    cell_y=0.12,
+                    mass=0.1,
+                )
+            for k in range(w + 1):
+                world.add_particle(wp.vec3(0.4 - 0.2 * k, 0.3, 0.2 + 0.1 * k), wp.vec3(0.0), 0.1, radius=0.08)
+            scene.add_world(world)
+        scene.add_ground_plane()
+        scene.add_particle(wp.vec3(0.0, -0.5, 0.25), wp.vec3(0.0), 0.1, radius=0.1)
+        model = scene.finalize(device=device)
+        state = model.state()
+        eye = np.array([1.6, 1.2, 1.4])
+        forward = -eye / np.linalg.norm(eye)
+        right = np.cross(forward, [0.0, 0.0, 1.0])
+        right /= np.linalg.norm(right)
+        rotation = np.stack([right, np.cross(right, forward), -forward], axis=1)
+        transform = wp.transformf(wp.vec3f(*eye), wp.quat_from_matrix(wp.mat33f(rotation.flatten())))
+        transforms = wp.array([transform] * model.world_count, dtype=wp.transformf, device=device)
+        rays = self._rays(32, 32, fov=math.radians(60.0), device=device)
+        rest = state.particle_q.numpy().copy()
+
+        def render(backend):
+            """Two frames from one camera, lifting the cloth and particles between them."""
+            state.particle_q.assign(rest)
+            if backend == "optix":
+                model.bvh_build_shapes(state, backend="optix")
+            camera = SensorCamera(model, backend=backend)
+            camera.create_default_light(enable_shadows=True)
+            depth = camera.allocate_image_depth(model.world_count, 32, 32)
+            shape_index = camera.allocate_image_shape_index(model.world_count, 32, 32)
+            frames = []
+            for lift in (0.0, 0.1):
+                state.particle_q.assign(rest + np.array([0.0, 0.0, lift], dtype=np.float32))
+                camera.update(
+                    state,
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    shape_index_image=shape_index,
+                    render_config=SensorCamera.RenderConfig(enable_shadows=True, enable_backface_culling=False),
+                )
+                frames.append((depth.numpy().copy(), shape_index.numpy().copy()))
+            return frames
+
+        frames = render("warp")
+        shape_index = frames[0][1]
+        # Every world sees its own particles, and only worlds with cloth see cloth.
+        for w in range(model.world_count):
+            self.assertEqual(bool(np.any(shape_index[w] == TRIANGLE_MESH_SHAPE_ID)), w % 2 == 0)
+            self.assertTrue(np.any(shape_index[w] == PARTICLES_SHAPE_ID))
+        self.assertFalse(np.array_equal(frames[1][0], frames[0][0]))
+        if backend == "warp":
+            return
+        from newton._src.render import render_optix  # noqa: PLC0415
+
+        # Trace the deformable surfaces both as refit triangles and, where supported, as clusters.
+        for clustered in {False, render_optix.clusters_supported(wp.get_device(device))}:
+            with (
+                self.subTest(clustered=clustered),
+                mock.patch.object(render_optix, "clusters_supported", return_value=clustered),
+            ):
+                for (optix_depth, optix_index), (depth, index) in zip(render(backend), frames, strict=True):
+                    np.testing.assert_array_equal(optix_index, index)
+                    np.testing.assert_allclose(optix_depth, depth, atol=1.0e-4)
+
+    def test_particles_follow_state_without_particle_bvh_refit(
+        self, device: str = "cpu", backend: str = "warp"
+    ) -> None:
+        """Render moved particles from the camera's own scene, without refitting ``Model.bvh_particles``."""
+        from newton._src.render.raytrace import PARTICLES_SHAPE_ID  # noqa: PLC0415
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
+        model = builder.finalize(device=device)
+        state = model.state()
+        if backend == "optix":
+            model.bvh_build_shapes(state, backend="optix", optix_extent=4.0)
+        camera = SensorCamera(model, backend=backend)
+        rays = self._rays(1, 1, fov=math.radians(10.0), device=device)
+        depth = camera.allocate_image_depth(1, 1, 1)
+        shape_index = camera.allocate_image_shape_index(1, 1, 1)
+        for z in (-2.0, -3.0):
+            state.particle_q.assign(np.array([[0.0, 0.0, z]], dtype=np.float32))
+            camera.update(
+                state, self._identity_transforms(1, device), rays, depth_image=depth, shape_index_image=shape_index
+            )
+            self.assertAlmostEqual(float(depth.numpy()[0, 0, 0]), -z - 0.25, delta=1.0e-3)
+            self.assertEqual(int(shape_index.numpy()[0, 0, 0]), int(PARTICLES_SHAPE_ID))
+        # Without a sync, the camera keeps the particles it last synced rather than mixing in another state's.
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            rays,
+            depth_image=depth,
+            shape_index_image=shape_index,
+            sync_deformables=False,
+        )
+        self.assertAlmostEqual(float(depth.numpy()[0, 0, 0]), 2.75, delta=1.0e-3)
+
+    @requires("warp_optix")
+    def test_clusters_cover_every_face_once_without_spanning_worlds(self) -> None:
+        """Partition triangles into clusters within the device limits that never span worlds."""
+        from newton._src.render.render_optix import cluster_triangles  # noqa: PLC0415
+
+        rng = np.random.default_rng(3)
+        points = rng.uniform(-1.0, 1.0, (900, 3)).astype(np.float32)
+        # Disjoint triangles reference three points each, forcing oversized runs to split.
+        indices = np.arange(900, dtype=np.int32)
+        worlds = np.repeat(np.array([2, -1, 0], dtype=np.int32), 100)
+        clusters, local, sources, faces = cluster_triangles(indices, points, worlds)
+        np.testing.assert_array_equal(np.sort(faces), np.arange(300))
+        self.assertLessEqual(int(clusters[:, 1].max()), 256)
+        self.assertLessEqual(int(clusters[:, 3].max()), 128)
+        tris = indices.reshape(-1, 3)
+        for first_point, point_count, first_triangle, triangle_count in clusters:
+            cluster_faces = faces[first_triangle : first_triangle + triangle_count]
+            self.assertEqual(len(np.unique(worlds[cluster_faces])), 1)
+            # Cluster-local indices address the cluster's points, which are the faces' points.
+            local_tris = local.reshape(-1, 3)[first_triangle : first_triangle + triangle_count]
+            self.assertLess(int(local_tris.max()), point_count)
+            np.testing.assert_array_equal(sources[first_point + local_tris], tris[cluster_faces])
 
     def test_multiple_sensor_cameras_render_same_model(self) -> None:
         """Verify multiple independent SensorCamera instances can render the same model."""
@@ -1902,6 +2048,153 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(abs(expected - per_splat_decode), 0.05)
         np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
 
+    def test_gaussian_shapes_sharing_an_asset_blend_together(self, device: str = "cpu", backend: str = "warp"):
+        """Splats of two shapes instancing one asset on one ray blend into a single result."""
+        # One linear-color splat with alpha 0.5: alone it stays below the opacity threshold, so a
+        # ray hits only when the splats of both shapes blend, and the far shape crosses the threshold.
+        gaussian = newton.Gaussian(
+            positions=np.zeros((1, 3), dtype=np.float32),
+            scales=np.full((1, 3), 0.5, dtype=np.float32),
+            opacities=np.full(1, 0.5, dtype=np.float32),
+            sh_coeffs=np.full((1, 3), (0.8 - 0.5) / SH_C0, dtype=np.float32),
+            sh_color_space=newton.utils.ColorSpace.LINEAR,
+        )
+        builder = newton.ModelBuilder()
+        shapes = [
+            builder.add_shape_gaussian(
+                body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), gaussian=gaussian
+            )
+            for z in (-2.0, -3.0)
+        ]
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        depth = camera.allocate_image_depth(1, 1, 1)
+        shape_index = camera.allocate_image_shape_index(1, 1, 1)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            self._rays(1, 1, device=device),
+            hdr_color_image=hdr,
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+        np.testing.assert_allclose(hdr.numpy().reshape(3), [0.8] * 3, atol=1e-4)
+        self.assertAlmostEqual(float(depth.numpy().reshape(-1)[0]), 3.0, delta=1e-3)
+        self.assertEqual(int(shape_index.numpy().reshape(-1)[0]), shapes[1])
+
+    def test_gaussian_sorting_modes_measure_rotated_off_origin_splats(self, device: str = "cpu", backend: str = "warp"):
+        """Sort an off-origin splat of a rotated shape by its true camera distance and depth."""
+        for mode in (newton.Gaussian.SortingMode.CAMERA_DISTANCE, newton.Gaussian.SortingMode.Z_DEPTH):
+            with self.subTest(mode=mode.name):
+                gaussian = newton.Gaussian(
+                    positions=np.array([[0.0, 1.0, 0.0]], dtype=np.float32),
+                    scales=np.full((1, 3), 0.3, dtype=np.float32),
+                    opacities=np.ones(1, dtype=np.float32),
+                    sh_coeffs=np.zeros((1, 3), dtype=np.float32),
+                    sorting_mode=mode,
+                )
+                builder = newton.ModelBuilder()
+                # The rotation takes the splat's local +Y offset onto the view axis, 2 m ahead.
+                builder.add_shape_gaussian(
+                    body=-1,
+                    xform=wp.transform(
+                        wp.vec3(0.0, 0.0, -3.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * math.pi)
+                    ),
+                    gaussian=gaussian,
+                )
+                model = builder.finalize(device=device)
+                if backend == "optix":
+                    model.bvh_build_shapes(model.state(), backend="optix")
+                camera = SensorCamera(model, backend=backend)
+                depth = camera.allocate_image_depth(1, 1, 1)
+                camera.update(
+                    model.state(),
+                    self._identity_transforms(1, device),
+                    self._rays(1, 1, device=device),
+                    depth_image=depth,
+                )
+                self.assertAlmostEqual(float(depth.numpy().reshape(-1)[0]), 2.0, delta=1e-3)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def test_gaussian_asset_shared_by_two_models_stays_valid(self):
+        """Finalizing a second model with a model's Gaussian asset leaves the first model's splats intact."""
+        rng = np.random.default_rng(0)
+        gaussian = newton.Gaussian(
+            positions=rng.uniform(-0.3, 0.3, (200, 3)).astype(np.float32),
+            scales=np.full((200, 3), 0.05, dtype=np.float32),
+            opacities=np.full(200, 0.9, dtype=np.float32),
+            sh_coeffs=rng.normal(size=(200, 3)).astype(np.float32),
+        )
+
+        def finalize():
+            builder = newton.ModelBuilder()
+            builder.add_shape_gaussian(
+                -1, xform=wp.transform(wp.vec3(0.0, 0.0, -2.0), wp.quat_identity()), gaussian=gaussian
+            )
+            return builder.finalize(device="cuda:0")
+
+        model = finalize()
+        camera = SensorCamera(model)
+        depth = camera.allocate_image_depth(1, 16, 16)
+
+        def render():
+            camera.update(
+                model.state(),
+                self._identity_transforms(1, "cuda:0"),
+                self._rays(16, 16, device="cuda:0"),
+                depth_image=depth,
+            )
+            return depth.numpy()
+
+        before = render()
+        finalize()
+        gc.collect()
+        np.testing.assert_array_equal(render(), before)
+
+    @requires("warp_optix")
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA")
+    def test_body_variants_render_alike_on_both_backends(self):
+        """OptiX follows per-world body variants selected after its shapes were built, as Warp does."""
+        variants = []
+        for kind in ("box", "mesh", "spheres"):
+            variant = newton.ModelBuilder()
+            body = variant.add_body()
+            if kind == "box":
+                variant.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
+            elif kind == "mesh":
+                variant.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.2))
+            else:
+                for x in (-0.15, 0.15):
+                    variant.add_shape_sphere(body, xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()), radius=0.12)
+            variants.append(variant)
+        env = newton.ModelBuilder()
+        env.add_body_variants(env.add_body(xform=wp.transform((0.0, 0.0, -2.0), wp.quat_identity())), variants)
+        scene = newton.ModelBuilder()
+        scene.replicate(env, 3)
+        model = scene.finalize(device="cuda:0")
+        state = model.state()
+        model.bvh_build_shapes(state, backend="optix")
+        cameras = [SensorCamera(model, backend=backend) for backend in ("warp", "optix")]
+        model.select_body_variants(wp.array([2, 0, 1], dtype=wp.int32, device="cuda:0"))
+        model.bvh_refit_shapes(state)
+        model.bvh_refit_shapes(state, backend="optix")
+        images = []
+        for camera in cameras:
+            shape_index = camera.allocate_image_shape_index(3, 16, 16)
+            camera.update(
+                state,
+                self._identity_transforms(3, "cuda:0"),
+                self._rays(16, 16, device="cuda:0"),
+                shape_index_image=shape_index,
+            )
+            images.append(shape_index.numpy())
+        np.testing.assert_array_equal(images[1], images[0])
+        # World 0 holds both spheres, world 1 the box and world 2 the mesh.
+        self.assertEqual([len(np.unique(image)) - 1 for image in images[0]], [2, 1, 1])
+
 
 def _optix_variant(test):
     @requires("warp_optix")
@@ -1916,6 +2209,12 @@ for _name in (
     "test_fully_transparent_shape_does_not_occlude",
     "test_convex_hull_renders_like_its_mesh",
     "test_camera_inside_box_sees_its_walls",
+    "test_render_config_toggles_particles_beside_cloth",
+    "test_volume_deformable_renders_surface_not_particles",
+    "test_scene_matches_across_backends",
+    "test_particles_follow_state_without_particle_bvh_refit",
+    "test_gaussian_shapes_sharing_an_asset_blend_together",
+    "test_gaussian_sorting_modes_measure_rotated_off_origin_splats",
 ):
     setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
 
@@ -2034,7 +2333,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
                     expected = model.tri_color.numpy()[0] * 255 if shown else [255, 255, 255]
                     np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[0, 8, 8], expected, atol=2)
                     if choice == surfaces.SIMULATION_ONLY:
-                        self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
+                        self.assertEqual(camera._render_context._triangle_points.ptr, state.particle_q.ptr)
 
                         moved_state = model.state()
                         moved = moved_state.particle_q.numpy().copy()
@@ -2045,7 +2344,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
                                 current, transforms, rays, world_indices=worlds, depth_image=depth, albedo_image=albedo
                             )
                             np.testing.assert_allclose(depth.numpy()[[0, 3], 8, 8], expected_depth, atol=0.03)
-                            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, current.particle_q.ptr)
+                            self.assertEqual(camera._render_context._triangle_points.ptr, current.particle_q.ptr)
 
     def test_skinning_follows_state_and_capture(self):
         """Render cloth and skins from the state each update or sync uses, and replay captured updates."""

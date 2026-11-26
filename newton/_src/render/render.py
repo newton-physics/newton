@@ -17,15 +17,18 @@ from .types import (
     RenderConfig,
     RenderOrder,
     RenderState,
+    SceneData,
     TextureData,
     WorldRenderFlag,
 )
 
 if TYPE_CHECKING:
-    from ..geometry.optix import OptixShapes
+    from .render_optix import OptixScene
 
 
 _MSAA_SURFACE_SLOTS = 4
+# Register budget of the Warp megakernel: the occupancy it buys outweighs the extra spills.
+_MAX_REGISTERS = 96
 
 
 @wp.struct
@@ -89,7 +92,7 @@ def _unpack_rgba(packed: wp.uint32):
 
 
 def create_kernel(
-    config: RenderConfig, state: RenderState, clear_data: ClearData, optix: OptixShapes | None = None
+    config: RenderConfig, state: RenderState, clear_data: ClearData, optix: OptixScene | None = None
 ) -> wp.Kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state, optix)
     sample_texture = textures.create_sample_texture_function(config)
@@ -149,23 +152,12 @@ def create_kernel(
         forward_axis: wp.vec3f,
         camera_ray_origin: wp.vec3f,
         camera_ray_direction: wp.vec3f,
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
-        shape_enabled: wp.array[wp.uint32],
+        scene: SceneData,
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3f],
         shape_transforms: wp.array[wp.transformf],
         shape_source_ptr: wp.array[wp.uint64],
         shape_mesh_data_ids: wp.array[wp.int32],
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
         mesh_data: wp.array[MeshData],
         gaussians_data: wp.array[Gaussian.Data],
     ) -> TraceResult:
@@ -181,26 +173,15 @@ def create_kernel(
             return result
 
         closest_hit = raytrace_closest_hit(
-            bvh_shapes_size,
-            bvh_shapes_id,
-            bvh_shapes_group_roots,
-            bvh_particles_size,
-            bvh_particles_id,
-            bvh_particles_group_roots,
+            scene,
             world_index,
             wp.static(config.max_distance),
-            shape_enabled,
             shape_types,
             shape_sizes,
             shape_transforms,
             shape_source_ptr,
             shape_mesh_data_ids,
             mesh_data,
-            particles_position,
-            particles_radius,
-            topology_particle_mask,
-            triangle_mesh_id,
-            triangle_mesh_group_roots,
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
@@ -223,10 +204,7 @@ def create_kernel(
         trace: TraceResult,
         world_index: wp.int32,
         light_count: wp.int32,
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
-        shape_enabled: wp.array[wp.uint32],
+        scene: SceneData,
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3f],
         shape_colors: wp.array[wp.vec3f],
@@ -234,14 +212,6 @@ def create_kernel(
         shape_source_ptr: wp.array[wp.uint64],
         shape_texture_ids: wp.array[wp.int32],
         shape_mesh_data_ids: wp.array[wp.int32],
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
         triangle_mesh_uvs: wp.array[wp.vec2f],
         triangle_mesh_texture_ids: wp.array[wp.int32],
@@ -261,7 +231,7 @@ def create_kernel(
 
         closest_hit = trace.closest_hit
         is_gaussian = wp.bool(False)
-        if wp.static(state.num_gaussians > 0):
+        if wp.static(state.gaussian_shapes_per_ray > 0):
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
                     is_gaussian = wp.bool(True)
@@ -301,11 +271,11 @@ def create_kernel(
                 if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_mesh_texture_ids.shape[0]:
                     texture_index = triangle_mesh_texture_ids[closest_hit.face_idx]
                     if texture_index >= 0 and texture_index < texture_data.shape[0] and triangle_mesh_uvs.shape[0] > 0:
-                        tex_color = textures.sample_texture_mesh_uvs(
+                        tex_color = textures.sample_texture_triangle_uvs(
                             closest_hit.bary_u,
                             closest_hit.bary_v,
                             closest_hit.face_idx,
-                            triangle_mesh_id,
+                            scene.triangle_indices,
                             triangle_mesh_uvs,
                             texture_data[texture_index],
                         )
@@ -332,13 +302,7 @@ def create_kernel(
             for light_index in range(light_count):
                 light_contribution = compute_lighting(
                     world_index,
-                    bvh_shapes_size,
-                    bvh_shapes_id,
-                    bvh_shapes_group_roots,
-                    bvh_particles_size,
-                    bvh_particles_id,
-                    bvh_particles_group_roots,
-                    shape_enabled,
+                    scene,
                     shape_types,
                     shape_sizes,
                     shape_transforms,
@@ -348,11 +312,6 @@ def create_kernel(
                     light_cast_shadow[light_index],
                     light_positions[light_index],
                     light_orientations[light_index],
-                    particles_position,
-                    particles_radius,
-                    topology_particle_mask,
-                    triangle_mesh_id,
-                    triangle_mesh_group_roots,
                     closest_hit.normal,
                     hit_point,
                 )
@@ -370,10 +329,7 @@ def create_kernel(
         forward_axis: wp.vec3f,
         camera_ray_origin: wp.vec3f,
         camera_ray_direction: wp.vec3f,
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
-        shape_enabled: wp.array[wp.uint32],
+        scene: SceneData,
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3f],
         shape_colors: wp.array[wp.vec3f],
@@ -381,14 +337,6 @@ def create_kernel(
         shape_source_ptr: wp.array[wp.uint64],
         shape_texture_ids: wp.array[wp.int32],
         shape_mesh_data_ids: wp.array[wp.int32],
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
         triangle_colors: wp.array[wp.vec3f],
         triangle_mesh_uvs: wp.array[wp.vec2f],
         triangle_mesh_texture_ids: wp.array[wp.int32],
@@ -419,23 +367,12 @@ def create_kernel(
             forward_axis,
             camera_ray_origin,
             camera_ray_direction,
-            bvh_shapes_size,
-            bvh_shapes_id,
-            bvh_shapes_group_roots,
-            shape_enabled,
+            scene,
             shape_types,
             shape_sizes,
             shape_transforms,
             shape_source_ptr,
             shape_mesh_data_ids,
-            bvh_particles_size,
-            bvh_particles_id,
-            bvh_particles_group_roots,
-            particles_position,
-            particles_radius,
-            topology_particle_mask,
-            triangle_mesh_id,
-            triangle_mesh_group_roots,
             mesh_data,
             gaussians_data,
         )
@@ -460,10 +397,7 @@ def create_kernel(
             trace,
             world_index,
             light_count,
-            bvh_shapes_size,
-            bvh_shapes_id,
-            bvh_shapes_group_roots,
-            shape_enabled,
+            scene,
             shape_types,
             shape_sizes,
             shape_colors,
@@ -471,14 +405,6 @@ def create_kernel(
             shape_source_ptr,
             shape_texture_ids,
             shape_mesh_data_ids,
-            bvh_particles_size,
-            bvh_particles_id,
-            bvh_particles_group_roots,
-            particles_position,
-            particles_radius,
-            topology_particle_mask,
-            triangle_mesh_id,
-            triangle_mesh_group_roots,
             triangle_colors,
             triangle_mesh_uvs,
             triangle_mesh_texture_ids,
@@ -496,7 +422,12 @@ def create_kernel(
         result.color = shade.color
         return result
 
-    @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
+    @wp.kernel(
+        enable_backward=False,
+        module="unique",
+        module_options={"fast_math": config.enable_fast_math},
+        cuda_max_registers=_MAX_REGISTERS,
+    )
     def render_megakernel(
         # Model and Config
         view_count: wp.int32,
@@ -508,12 +439,9 @@ def create_kernel(
         camera_rays: wp.array4d[wp.vec3f],
         camera_transforms: wp.array[wp.transformf],
         world_indices: wp.array[wp.int32],
-        # Shapes BVH
-        bvh_shapes_size: wp.int32,
-        bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array[wp.int32],
+        # Scene
+        scene: SceneData,
         # Shapes
-        shape_enabled: wp.array[wp.uint32],
         shape_types: wp.array[wp.int32],
         shape_sizes: wp.array[wp.vec3f],
         shape_colors: wp.array[wp.vec3f],
@@ -521,17 +449,7 @@ def create_kernel(
         shape_source_ptr: wp.array[wp.uint64],
         shape_texture_ids: wp.array[wp.int32],
         shape_mesh_data_ids: wp.array[wp.int32],
-        # Particle BVH
-        bvh_particles_size: wp.int32,
-        bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array[wp.int32],
-        # Particles
-        particles_position: wp.array[wp.vec3f],
-        particles_radius: wp.array[wp.float32],
-        topology_particle_mask: wp.array[wp.bool],
-        # Triangle Mesh:
-        triangle_mesh_id: wp.uint64,
-        triangle_mesh_group_roots: wp.array[wp.int32],
+        # Triangle Mesh
         triangle_colors: wp.array[wp.vec3f],
         triangle_mesh_uvs: wp.array[wp.vec2f],
         triangle_mesh_texture_ids: wp.array[wp.int32],
@@ -605,7 +523,7 @@ def create_kernel(
 
         camera_transform = camera_transforms[view_index]
         camera_forward = wp.vec3f(0.0)
-        if wp.static(state.num_gaussians > 0):
+        if wp.static(state.gaussian_shapes_per_ray > 0):
             camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         forward_axis = wp.vec3f(0.0)
@@ -621,10 +539,7 @@ def create_kernel(
                 forward_axis,
                 camera_rays[py, px, 0, 0],
                 camera_rays[py, px, 0, 1],
-                bvh_shapes_size,
-                bvh_shapes_id,
-                bvh_shapes_group_roots,
-                shape_enabled,
+                scene,
                 shape_types,
                 shape_sizes,
                 shape_colors,
@@ -632,14 +547,6 @@ def create_kernel(
                 shape_source_ptr,
                 shape_texture_ids,
                 shape_mesh_data_ids,
-                bvh_particles_size,
-                bvh_particles_id,
-                bvh_particles_group_roots,
-                particles_position,
-                particles_radius,
-                topology_particle_mask,
-                triangle_mesh_id,
-                triangle_mesh_group_roots,
                 triangle_colors,
                 triangle_mesh_uvs,
                 triangle_mesh_texture_ids,
@@ -724,10 +631,7 @@ def create_kernel(
                     forward_axis,
                     camera_rays[py, px, sample_index, 0],
                     camera_rays[py, px, sample_index, 1],
-                    bvh_shapes_size,
-                    bvh_shapes_id,
-                    bvh_shapes_group_roots,
-                    shape_enabled,
+                    scene,
                     shape_types,
                     shape_sizes,
                     shape_colors,
@@ -735,14 +639,6 @@ def create_kernel(
                     shape_source_ptr,
                     shape_texture_ids,
                     shape_mesh_data_ids,
-                    bvh_particles_size,
-                    bvh_particles_id,
-                    bvh_particles_group_roots,
-                    particles_position,
-                    particles_radius,
-                    topology_particle_mask,
-                    triangle_mesh_id,
-                    triangle_mesh_group_roots,
                     triangle_colors,
                     triangle_mesh_uvs,
                     triangle_mesh_texture_ids,
@@ -848,23 +744,12 @@ def create_kernel(
                     forward_axis,
                     camera_rays[py, px, sample_index, 0],
                     camera_rays[py, px, sample_index, 1],
-                    bvh_shapes_size,
-                    bvh_shapes_id,
-                    bvh_shapes_group_roots,
-                    shape_enabled,
+                    scene,
                     shape_types,
                     shape_sizes,
                     shape_transforms,
                     shape_source_ptr,
                     shape_mesh_data_ids,
-                    bvh_particles_size,
-                    bvh_particles_id,
-                    bvh_particles_group_roots,
-                    particles_position,
-                    particles_radius,
-                    topology_particle_mask,
-                    triangle_mesh_id,
-                    triangle_mesh_group_roots,
                     mesh_data,
                     gaussians_data,
                 )
@@ -909,10 +794,7 @@ def create_kernel(
                             trace,
                             world_index,
                             light_count,
-                            bvh_shapes_size,
-                            bvh_shapes_id,
-                            bvh_shapes_group_roots,
-                            shape_enabled,
+                            scene,
                             shape_types,
                             shape_sizes,
                             shape_colors,
@@ -920,14 +802,6 @@ def create_kernel(
                             shape_source_ptr,
                             shape_texture_ids,
                             shape_mesh_data_ids,
-                            bvh_particles_size,
-                            bvh_particles_id,
-                            bvh_particles_group_roots,
-                            particles_position,
-                            particles_radius,
-                            topology_particle_mask,
-                            triangle_mesh_id,
-                            triangle_mesh_group_roots,
                             triangle_colors,
                             triangle_mesh_uvs,
                             triangle_mesh_texture_ids,

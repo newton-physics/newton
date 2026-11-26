@@ -201,8 +201,12 @@ class RenderConfig:
 class RenderState:
     """Mutable flags tracking which render outputs are active."""
 
-    num_gaussians: int = 0
+    gaussian_shapes_per_ray: int = 0
+    """Most Gaussian shapes one ray can cross: those of the world with the most, plus the global ones."""
     has_particles: bool = False
+    """Whether the scene has standalone particle items."""
+    has_triangle_mesh: bool = False
+    """Whether the scene has deformable triangle items."""
     has_world_indices: bool = False
     has_triangle_mesh_textures: bool = False
     render_color: bool = False
@@ -228,6 +232,48 @@ class ClearData:
     """Normal vector written to the normal output."""
     clear_albedo: int = 0
     """Packed RGBA value written to the albedo output."""
+
+
+@wp.struct
+class SceneData:
+    """What a camera ray traverses: one acceleration structure over *scene items*.
+
+    The backends identify a hit differently. With Warp, :attr:`id` is a ``wp.Bvh`` whose leaves are
+    the items, grouped by world, numbered shapes first, then standalone particles, then deformable
+    triangles, so the range of a hit item tells what was hit and its offset in the range which one.
+    With OptiX, :attr:`id` is an instance structure and the instance ID tells what was hit: shape
+    instances report their shape, and one instance each holds every world's particles and deformable
+    triangles, packed into world cells, whose primitive index (cluster-local with clusters) names the
+    particle or face. :attr:`shape_item_count` is Warp-only and stays 0 with OptiX.
+    """
+
+    id: wp.uint64
+    """Warp ``wp.Bvh`` or OptiX instance structure over the items, or 0 without items."""
+    world_roots: wp.array[wp.int32]
+    """Warp: BVH group root of each world, then of the global world. OptiX: the planes of each world,
+    flattened ``[world_count, planes per world]``."""
+    shape_item_count: wp.int32
+    """Warp: items ``[0, shape_item_count)`` are shapes."""
+    item_shapes: wp.array[wp.uint32]
+    """Warp: shape of each shape item, or ``BVH_SHAPE_INACTIVE`` to skip it."""
+    particle_item_count: wp.int32
+    """Warp: the next ``particle_item_count`` items are standalone particles."""
+    item_particles: wp.array[wp.int32]
+    """Particle of each particle item; with OptiX, of each particle primitive."""
+    particle_positions: wp.array[wp.vec3f]
+    """Particle positions [m]."""
+    particle_radii: wp.array[wp.float32]
+    """Particle radii [m]."""
+    triangle_points: wp.array[wp.vec3f]
+    """Points of the deformable triangles [m]; the remaining items are their faces, in order."""
+    triangle_indices: wp.array[wp.int32]
+    """Vertex triplets of the deformable triangles."""
+    cluster_triangle_start: wp.array[wp.int32]
+    """OptiX clusters: first entry of each cluster in :attr:`cluster_triangles`; empty without clusters."""
+    cluster_triangles: wp.array[wp.int32]
+    """OptiX clusters: face of each clustered triangle, in cluster order."""
+    slot_gaussians: wp.array2d[wp.int32]
+    """OptiX: Gaussian shape in each slot of each world's rays, shape ``[world_count, slots]``."""
 
 
 @wp.struct

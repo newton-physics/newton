@@ -1,0 +1,1 @@
+Add particle, deformable surface, Gaussian splat and body variant support to the experimental OptiX `SensorCamera` backend. Particles are traced as OptiX built-in spheres, and on devices that support triangle clusters, deformable surfaces are rebuilt as clusters every frame.
