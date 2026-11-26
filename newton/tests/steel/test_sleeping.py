@@ -241,29 +241,6 @@ def test_sleeping_body_keeps_its_parent_wrench(test, device):
     _assert_resting_wrench(test, model, asleep)
 
 
-def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
-    """Freeze the deprecated State.body_parent_f output of a sleeping body as well."""
-    model, pipeline = _parent_wrench_scene(device)
-    with test.assertWarns(DeprecationWarning):
-        model.request_state_attributes("body_parent_f")
-    solver = SolverSteel(
-        model,
-        enable_sleeping=True,
-        sleep_quiet_time=0.05,
-        friction_anchor_beta=0.0,
-        articulation_constraint_max=128,
-    )
-    states = [model.state(), model.state()]
-    test.assertIsNotNone(states[0].body_parent_f)
-    control = model.control()
-    _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
-    asleep = states[0].body_parent_f.numpy().copy()
-    _advance_boxes(pipeline, solver, states, control, 10)
-    np.testing.assert_array_equal(states[0].body_parent_f.numpy(), asleep)
-    np.testing.assert_array_equal(states[1].body_parent_f.numpy(), asleep)
-
-
 def _sleeping_wrench_solvers(model):
     solver = SolverSteel(
         model,
@@ -409,22 +386,6 @@ def test_unrequested_parent_wrench_history_skips_moving_articulations(test, devi
     np.testing.assert_allclose(observables.body_parent_f.numpy(), 0.5 * resting, rtol=0.0, atol=1.0e-3)
 
 
-def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
-    """Report the same frozen wrench in an observable after sleeping with only the legacy output."""
-    model, pipeline = _parent_wrench_scene(device)
-    with test.assertWarns(DeprecationWarning):
-        model.request_state_attributes("body_parent_f")
-    solver, _reference = _sleeping_wrench_solvers(model)
-    states, control = [model.state(), model.state()], model.control()
-    _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
-    legacy = states[0].body_parent_f.numpy().copy()
-    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
-    _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
-    np.testing.assert_array_equal(observables.body_parent_f.numpy(), legacy)
-    np.testing.assert_array_equal(states[0].body_parent_f.numpy(), legacy)
-
-
 devices = get_cuda_test_devices()
 
 
@@ -443,11 +404,9 @@ for _name in (
     "test_stack_wakes_together",
     "test_cuda_graph_sleep_and_wake",
     "test_sleeping_body_keeps_its_parent_wrench",
-    "test_sleeping_body_keeps_its_legacy_parent_wrench",
     "test_sleeping_parent_wrench_is_independent_of_the_output",
     "test_parent_wrench_first_requested_after_sleep",
     "test_unrequested_parent_wrench_history_skips_moving_articulations",
-    "test_sleeping_parent_wrench_from_legacy_to_observable",
 ):
     add_function_test(TestSteelSleeping, _name, globals()[_name], devices=devices)
 
@@ -1743,23 +1702,6 @@ def test_aliased_states_are_rejected(test, device):
             np.testing.assert_array_equal(state_in.joint_q.numpy(), before)
 
 
-def test_extended_state_outputs_are_accepted(test, device):
-    """Sleep with requested acceleration and joint-wrench outputs, which Steel leaves untouched."""
-    model = _boxes(1, device)
-    with test.assertWarns(DeprecationWarning):
-        model.request_state_attributes("body_qdd", "body_parent_f")
-    pipeline, solver, state_in, state_out, control = _runtime(model)
-    test.assertIsNotNone(state_in.body_parent_f)
-    contacts = pipeline.contacts()
-    states = [state_in, state_out]
-    for _ in range(400):
-        states[0].clear_forces()
-        pipeline.collide(states[0], contacts)
-        solver.step(states[0], states[1], control, contacts, 0.005)
-        states.reverse()
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0])
-
-
 def test_invalid_timestep_is_rejected(test, device):
     """Reject nonpositive and nonfinite timesteps before changing physical state."""
     model = _boxes(1, device)
@@ -1858,7 +1800,6 @@ for _name in (
     "test_wake_crosses_alternating_old_and_current_islands",
     "test_nonfinite_trial_output_is_not_hidden",
     "test_aliased_states_are_rejected",
-    "test_extended_state_outputs_are_accepted",
     "test_invalid_timestep_is_rejected",
     "test_reduction_overflow_cannot_authorize_sleep",
     "test_notifications_reset_quiet_age_and_preserve_state",

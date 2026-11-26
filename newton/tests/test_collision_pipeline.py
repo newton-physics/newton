@@ -511,12 +511,16 @@ class TestCollisionPipeline(unittest.TestCase):
 
 
 def test_collision_pipeline_first_call_capture(test, device):
+    """Capture the first collision call with kernels shared by equivalent pipelines."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
     builder.add_shape_sphere(body, radius=1.0)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model)
+    equivalent = newton.CollisionPipeline(model)
+    test.assertIs(pipeline.narrow_phase.primitive_kernel, equivalent.narrow_phase.primitive_kernel)
+    test.assertNotEqual(pipeline.narrow_phase.gjk_candidate_pairs.ptr, equivalent.narrow_phase.gjk_candidate_pairs.ptr)
     contacts = pipeline.contacts()
     state = model.state()
 

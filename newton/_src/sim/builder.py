@@ -83,7 +83,7 @@ from ..geometry.inertia import (
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
-from ..geometry.types import Heightfield, _normalize_texture_input
+from ..geometry.types import Heightfield, _ConvexSupportData, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
@@ -101,6 +101,7 @@ from .enums import (
     BodyFlags,
     JointTargetMode,
     JointType,
+    ShapeFrictionMode,
 )
 from .graph_coloring import (
     ColoringAlgorithm,
@@ -459,6 +460,33 @@ def _build_convex_support_acceleration(
         neighbors.extend(sorted(values))
         offsets[vertex + 1] = len(neighbors)
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
+
+
+def _build_convex_support_data(source: Mesh) -> _ConvexSupportData | None:
+    """Pack hull certificates and acceleration tables using mesh-local offsets."""
+    topology = _convex_hull_adjacency(source)
+    adjacent = None
+    flags = 0
+    if topology is not None:
+        adjacent, edges = topology
+        flags = _CONVEX_HULL_VALID
+        # Verified hulls lead the neighbor block with their edge count and faces.
+        edge_block = np.empty(1 + edges.size, dtype=np.int32)
+        edge_block[0] = len(edges)
+        edge_block[1:] = edges.ravel()
+
+    acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
+    if acceleration is None:
+        if topology is None:
+            return None
+        empty = np.empty(0, dtype=np.int32)
+        return _ConvexSupportData(flags, empty, empty, edge_block)
+
+    lut, offsets, neighbors = acceleration
+    if topology is not None:
+        offsets += len(edge_block)
+        neighbors = np.concatenate((edge_block, neighbors))
+    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors)
 
 
 def _build_joint_ancestor(
@@ -1192,6 +1220,13 @@ class ModelBuilder:
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
         """The coefficient of rolling friction [m] (resistance to rolling motion)."""
+        friction_mode: ShapeFrictionMode = ShapeFrictionMode.SLIDING
+        """The friction components the shape enables in rigid contacts, see :class:`~newton.ShapeFrictionMode`.
+
+        :attr:`mu_torsional` and :attr:`mu_rolling` only act in contacts whose
+        mode includes them. Solvers and the collision pipeline may read the mode
+        only when they are constructed: in a finalized model, set it before
+        constructing them; changing it afterwards is not supported."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -1339,6 +1374,12 @@ class ModelBuilder:
                         f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
                         "Leave mu_static as None for a single friction coefficient."
                     )
+            try:
+                ShapeFrictionMode(self.friction_mode)
+            except ValueError:
+                raise ValueError(
+                    f"friction_mode must be a ShapeFrictionMode value (got {self.friction_mode!r})."
+                ) from None
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -2301,6 +2342,8 @@ class ModelBuilder:
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
         """Rolling friction coefficients accumulated for :attr:`Model.shape_material_mu_rolling`."""
+        self.shape_material_friction_mode: list[int] = []
+        """Friction modes accumulated for :attr:`Model.shape_material_friction_mode`."""
         self.shape_material_kh: list[float] = []
         """Hydroelastic stiffness values accumulated for :attr:`Model.shape_material_kh`."""
         self.shape_gap: list[float] = []
@@ -2338,11 +2381,6 @@ class ModelBuilder:
         """Cache backing :meth:`_materialized_filter_template`, as ``(source, length, template)``."""
         self._custom_schema_epoch: int = 0
         """Bumped whenever the custom attribute/frequency registry changes; keys the merge-validation cache."""
-
-        self._requested_contact_attributes: set[str] = set()
-        """Optional contact attributes requested via :meth:`request_contact_attributes`."""
-        self._requested_state_attributes: set[str] = set()
-        """Optional state attributes requested via :meth:`request_state_attributes`."""
 
         # particle-body attachments
         self.attachment_particle_body_body: list[int] = []
@@ -4458,9 +4496,6 @@ class ModelBuilder:
             offsets = np.repeat(starts(kind), len(source)).reshape(offset_shape)
             translated = np.where(tiled >= 0, tiled + offsets, tiled)
             dst.extend(translated.tolist())
-
-        self._requested_contact_attributes.update(builder._requested_contact_attributes)
-        self._requested_state_attributes.update(builder._requested_state_attributes)
 
         attribute_specs.pop("particle_q")
         if counts["particle"]:
@@ -6980,8 +7015,9 @@ class ModelBuilder:
 
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
-        collision group, and filter pairs, so the i-th colliders of all variants must share a
-        collision group. An
+        collision group, friction mode, and filter pairs, so the i-th colliders of all variants must
+        share a collision group and a :attr:`~ShapeConfig.friction_mode`, as must shapes that
+        collide with particles only. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
@@ -7007,7 +7043,7 @@ class ModelBuilder:
         Raises:
             IndexError: If ``body`` or ``initial`` is out of range.
             ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
-                colliders held by the same row have different collision groups, a shape custom
+                colliders held by the same row have different collision groups or friction modes, a shape custom
                 attribute is declared differently than here or in another variant, shapes of a later
                 world or trailing global shapes were added after ``body``'s world, or a variant
                 builder is this builder, declares variants itself, uses a different up axis, does
@@ -7072,6 +7108,7 @@ class ModelBuilder:
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
             self.shape_flags[shape] = flags
+            self.shape_material_friction_mode[shape] = row.friction_mode
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)
@@ -10008,6 +10045,7 @@ class ModelBuilder:
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
+        self.shape_material_friction_mode.append(int(cfg.friction_mode))
         self.shape_material_kh.append(cfg.kh)
         self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
         self.shape_collision_group.append(cfg.collision_group)
@@ -11106,6 +11144,7 @@ class ModelBuilder:
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
+                            friction_mode=ShapeFrictionMode(self.shape_material_friction_mode[shape]),
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
@@ -12273,7 +12312,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Returns:
             The index of the particle in the system.
@@ -12319,7 +12360,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Raises:
             ValueError: If a particle input or custom attribute list has a mismatched length.
@@ -13029,10 +13072,10 @@ class ModelBuilder:
             cell_y: The width of each cell in the y-direction
             mass: The mass of each particle
             reverse_winding: Flip the winding of the mesh
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
                 The same name is appended to :attr:`surface_label` for this cloth; if None,
@@ -13440,10 +13483,10 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The viscous damping coefficient [Pa·s].
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
@@ -14192,54 +14235,6 @@ class ModelBuilder:
         else:
             # FIXED joint (floating=False or floating=None with parent body)
             return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
-
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional contact attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .contacts import Contacts  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .state import State  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
 
     def set_coloring(self, particle_color_groups: Iterable[Iterable[int] | np.ndarray]) -> None:
         """
@@ -16060,10 +16055,6 @@ class ModelBuilder:
             m._deformable_visual_meshes, m._deformable_visual_skin_batches = self._finalize_deformable_visual_meshes()
             m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
-            # Preserve deprecated extended-attribute requests without emitting a
-            # second warning after the builder request already warned the caller.
-            m._requested_contact_attributes.update(self._requested_contact_attributes)
-            m._requested_state_attributes.update(self._requested_state_attributes)
             m.requires_grad = requires_grad
 
             m.world_count = self.world_count
@@ -16321,37 +16312,26 @@ class ModelBuilder:
                 if isinstance(source, Mesh):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        topology = _convex_hull_adjacency(source)
-                        adjacent = None
-                        hull_flag = 0
-                        # Verified hulls lead their neighbor block with their edge
-                        # count and faces for exact separating-axis certificates.
-                        edge_block = np.zeros(0, dtype=np.int32)
-                        if topology is not None:
-                            adjacent, edges = topology
-                            hull_flag = _CONVEX_HULL_VALID
-                            edge_block = np.concatenate(([len(edges)], edges.ravel())).astype(np.int32)
-                        cached = (-1, -1, neighbor_offset if len(edge_block) else -1, hull_flag)
-                        acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
-                        neighbors = np.zeros(0, dtype=np.int32)
-                        if acceleration is not None:
-                            lut, offsets, neighbors = acceleration
-                            cached = (
-                                lut_offset,
-                                vertex_offset,
-                                neighbor_offset,
-                                _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
-                            )
-                            # Neighbor offsets are relative to the block start.
-                            offsets = offsets + len(edge_block)
-                            support_lut_chunks.append(lut)
-                            support_offset_chunks.append(offsets)
-                            lut_offset += len(lut)
-                            vertex_offset += len(offsets)
-                        if len(edge_block) or len(neighbors):
-                            support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
-                            neighbor_offset += len(support_neighbor_chunks[-1])
-                        support_cache[source_key] = cached
+                        # A deduplicated collision source can be temporary. Keep
+                        # its tables on the original mesh that owns the geometry.
+                        owner = self.shape_source[shape_idx]
+                        tables = owner._convex_support_data
+                        if tables is None:
+                            tables = _build_convex_support_data(source)
+                            owner._convex_support_data = tables
+
+                        packed = (-1, -1, -1, 0)
+                        if tables is not None:
+                            packed = (-1, -1, neighbor_offset, tables.flags)
+                            if tables.lut.size:
+                                packed = (lut_offset, vertex_offset, neighbor_offset, tables.flags)
+                                support_lut_chunks.append(tables.lut)
+                                support_offset_chunks.append(tables.vertex_offsets)
+                                lut_offset += len(tables.lut)
+                                vertex_offset += len(tables.vertex_offsets)
+                            support_neighbor_chunks.append(tables.neighbors)
+                            neighbor_offset += len(tables.neighbors)
+                        support_cache[source_key] = packed
                     shape_support_data[shape_idx] = support_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
@@ -16402,6 +16382,7 @@ class ModelBuilder:
             m.shape_material_mu_rolling = wp.array(
                 self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_friction_mode = wp.array(self.shape_material_friction_mode, dtype=wp.int32)
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
@@ -17926,6 +17907,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,
+    "shape_material_friction_mode": wp.int32,
     "shape_material_kh": wp.float32,
     "shape_gap": wp.float32,
     "shape_is_solid": wp.bool,

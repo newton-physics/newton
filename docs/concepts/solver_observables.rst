@@ -562,8 +562,7 @@ forces are not frame-averaged forces; averaging or integration requires sampling
 the relevant substeps. Contact rows may change between collision updates.
 
 Selection controls observable writes and optional diagnostic work, not calculations
-needed by the dynamics or other requested fields. Legacy extended attributes
-can still request their own work. MuJoCo currently keeps its post-constraint RNE
+needed by the dynamics or other requested fields. MuJoCo currently keeps its post-constraint RNE
 stage enabled after its first request, so omitting those observables does not
 necessarily avoid that internal computation on subsequent steps.
 
@@ -666,21 +665,22 @@ Pass the container as ``sensor.update(state_out, contacts, observables=observabl
 
    True True 1 True True
 
-Deprecated extended attributes
-------------------------------
+Migrating from extended attributes
+----------------------------------
 
-.. deprecated:: 1.7
+.. versionchanged:: 1.9
 
-   Request solver-produced arrays from the solver instead of extending
-   ``State`` or ``Contacts``.
+   The extended ``State`` and ``Contacts`` attributes deprecated in Newton 1.7
+   were removed.
 
-The following compatibility paths remain available for a deprecation period:
+Solver-produced arrays are no longer allocated on ``State`` or ``Contacts``.
+Replace each removed API as follows:
 
 .. list-table::
    :header-rows: 1
    :widths: 37 63
 
-   * - Deprecated destination
+   * - Removed API
      - Replacement
    * - ``State.body_qdd``
      - ``SolverBase.ObservableKind.BODY_QDD`` and ``observables.body_qdd``
@@ -697,25 +697,16 @@ The following compatibility paths remain available for a deprecation period:
    * - ``Model.request_contact_attributes()`` and
        ``ModelBuilder.request_contact_attributes()``
      - ``solver.observables(kinds={...}, contacts=contacts)``
-   * - ``solver.update_contacts()``
+   * - Force export through ``solver.update_contacts()``
      - Pass contact observables to ``solver.step(..., observables=observables)``
+   * - ``SensorIMU(request_state_attributes=...)`` and
+       ``SensorContact(request_contact_attributes=...)``
+     - Omit the argument and pass ``observables=`` to the sensor's ``update()``
 
-The request methods and legacy force export via ``update_contacts()`` emit
-:class:`DeprecationWarning`. MuJoCo and Kamino keep geometry-only ``update_contacts()``
-supported without a warning when ``contacts.force`` is ``None``.
-``SensorIMU`` and ``SensorContact`` read solver observables by default.
-Setting ``request_state_attributes=True`` or ``request_contact_attributes=True``
-is deprecated in Newton 1.7 and emits one sensor-specific warning at the caller's
-location. Omit both arguments; they will be removed together with the legacy fields.
+MuJoCo and Kamino keep geometry-only ``update_contacts()`` for their native
+contact detection.
 
-``Contacts.EXTENDED_ATTRIBUTES`` and direct ``requested_attributes={"force"}``
-remain compatibility APIs. New integrations should not allocate
-``Contacts.force``.
-
-``State.EXTENDED_ATTRIBUTES`` remains a compatibility registry for the three
-deprecated state destinations listed above.
-
-This deprecation does not affect custom attributes registered with
+This removal does not affect custom attributes registered with
 :meth:`ModelBuilder.add_custom_attribute <newton.ModelBuilder.add_custom_attribute>`.
 Existing custom model, state, and control data remain supported; the migration
 only covers built-in solver-produced diagnostics. The new ``CONTACT*`` frequencies
