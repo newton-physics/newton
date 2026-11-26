@@ -53,6 +53,7 @@ See Also:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import warp as wp
@@ -2731,6 +2732,7 @@ def _group_contact_won(
     return won
 
 
+@lru_cache
 def create_export_group_contacts_kernel(writer_func: Any):
     """Create the kernel that writes every staged contact that won a slot of its group."""
 
@@ -2844,6 +2846,7 @@ def _roundoff_duplicate_bit_for_slot_pair(
     return 1 << slot_b
 
 
+@lru_cache
 def create_export_reduced_contacts_kernel(writer_func: Any):
     """Create a tiled kernel that exports globally reduced contacts.
 

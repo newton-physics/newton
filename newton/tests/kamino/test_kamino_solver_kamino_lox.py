@@ -1321,7 +1321,7 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
 
     def test_box_on_plane_projects_detected_contact(self):
         """Project detected contacts to keep a box above the plane with every projection schedule."""
-        schedules = ((1, "none"), (4, "none"), (1, "apgd"), (1, "anderson"), (4, "anderson"))
+        schedules = ((1, "none"), (4, "none"), (1, "nesterov"), (4, "nesterov"), (1, "anderson"), (4, "anderson"))
         for max_colors, acceleration in schedules:
             with self.subTest(gauss_seidel_max_colors=max_colors, projection_acceleration=acceleration):
                 model = ModelKamino.from_newton(build_box_on_plane(ground=True).finalize(device=self.default_device))
@@ -1362,6 +1362,35 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
                     self.assertTrue(np.isfinite(getattr(metrics, name).numpy()).all(), name)
                 self.assertLess(float(metrics.r_eom.numpy()[0]), 1.0e-3)
                 self.assertLess(float(metrics.r_ncp_primal.numpy()[0]), 1.0e-5)
+                if (max_colors, acceleration) == (1, "nesterov") and self.default_device.is_cuda:
+                    self._check_projection_paths_agree(solver)
+
+    def _check_projection_paths_agree(self, solver):
+        """Project the contacts of the last step through the per-world and the row-parallel kernels, over two
+        splitting iterations of a solve, and match their twists and reactions."""
+        native = solver.solver_fd
+        projection = native._projection
+        state = native._data.state
+        rows = native._problem.data.contact_rows
+        # A falling, spinning box from rest: the Jacobi sweeps of its four contacts keep correcting each other
+        reaction = np.zeros_like(rows.reaction.numpy())
+        twist = state.projected_twist.numpy() + np.array([0.1, 0.0, -0.5, 0.3, 0.2, 0.0], dtype=np.float32)
+        results = []
+        for by_world in (True, False):
+            projection._by_world = by_world
+            projection.nesterov.reset()
+            rows.reaction.assign(reaction)
+            for _iteration in range(2):
+                state.world_active.fill_(True)
+                state.world_failed.zero_()
+                state.projected_twist.assign(twist)
+                projection.project(
+                    5, True, state.world_active, state.world_failed, native._model.bodies.wid, state.projected_twist
+                )
+            results.append((state.projected_twist.numpy().copy(), rows.reaction.numpy().copy()))
+        np.testing.assert_allclose(results[1][0], results[0][0], rtol=1.0e-4, atol=1.0e-6)
+        np.testing.assert_allclose(results[1][1], results[0][1], rtol=1.0e-4, atol=1.0e-6)
+        self.assertGreater(float(np.abs(results[0][0] - twist).max()), 1.0e-3)
 
     def test_cartpole_projects_detected_joint_limit(self):
         """Project detected joint limits for a cartpole."""

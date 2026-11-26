@@ -49,7 +49,6 @@ class _AttributeNamespaceView(Model.AttributeNamespace):
     def __init__(self, parent: Model.AttributeNamespace, view: ModelView) -> None:
         super().__init__(object.__getattribute__(parent, "_name"))
         object.__setattr__(self, "_parent_namespace", parent)
-        self._removed_attributes.update(parent._removed_attributes)
         for name, (getter, message) in parent._deprecated_aliases.items():
             spec = view.parent._attribute_spec(f"{self._name}:{name}")
             view_getter = (
@@ -112,7 +111,7 @@ class ModelView:
         if name in overrides:
             return self._count_limited_attribute(name, overrides[name])
         value = getattr(parent, name)
-        if isinstance(value, Model.AttributeNamespace) and (value._deprecated_aliases or value._removed_attributes):
+        if isinstance(value, Model.AttributeNamespace) and value._deprecated_aliases:
             cache = object.__getattribute__(self, "_cache")
             if name not in cache:
                 cache[name] = _AttributeNamespaceView(value, self)
@@ -348,17 +347,6 @@ class ModelView:
         from ...sim import Model  # noqa: PLC0415
 
         return Model.get_requested_state_attributes(self)
-
-    def _add_requested_state_attributes(
-        self,
-        state: State,
-        requested: list[str],
-        requires_grad: bool = False,
-    ) -> None:
-        """Delegate requested state allocation with this view's counts."""
-        from ...sim import Model  # noqa: PLC0415
-
-        Model._add_requested_state_attributes(self, state, requested, requires_grad=requires_grad)
 
     def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
         """Return an attribute frequency count using this view's overrides."""
@@ -680,10 +668,17 @@ class ModelView:
 
         Args:
             particle_indices: 1-D int array of particle indices to mark.
+
+        Raises:
+            ValueError: If any selected particle sets :attr:`~newton.ParticleFlags.KINEMATIC`.
         """
         parent = object.__getattribute__(self, "_parent")
         if particle_indices.shape[0] == 0:
             return
+
+        flags = self.particle_flags.numpy()[particle_indices.numpy()]
+        if (flags & int(ParticleFlags.KINEMATIC)).any():
+            raise ValueError("ParticleFlags.KINEMATIC particles cannot be marked as coupling proxies.")
 
         particle_flags = self._cow_array("particle_flags")
         wp.launch(

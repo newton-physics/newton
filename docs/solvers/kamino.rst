@@ -28,14 +28,14 @@ and configuration details. Runnable workflows are available in the
 Body acceleration
 -----------------
 
-Kamino populates :attr:`~newton.State.body_qdd` when the extended state
-attribute is requested. Values are center-of-mass spatial accelerations in the
-world frame, with linear acceleration followed by angular acceleration. For a
-step of duration ``dt``, Kamino reports the discrete step average
-``(body_qd_out - body_qd_in) / dt``. Consequently, a contact impact reports its
-velocity impulse divided by ``dt`` rather than a continuous midpoint
-acceleration. Resetting a state clears the requested acceleration in each reset
-world.
+Kamino populates :attr:`~newton.solvers.SolverBase.Observables.body_qdd` when
+:attr:`~newton.solvers.SolverBase.ObservableKind.BODY_QDD` is requested
+through :meth:`~newton.solvers.SolverBase.observables`. Values are
+center-of-mass spatial accelerations in the world frame, with linear
+acceleration followed by angular acceleration. For a step of duration ``dt``,
+Kamino reports the discrete step average ``(body_qd_out - body_qd_in) / dt``.
+Consequently, a contact impact reports its velocity impulse divided by ``dt``
+rather than a continuous midpoint acceleration.
 
 Choosing a dynamics solver
 --------------------------
@@ -368,19 +368,35 @@ fully parallel Jacobi sweep, and larger values process up to that many
 approximate constraint colors sequentially. ``config.lox.projection_acceleration``
 optionally accelerates the resulting map:
 
-* ``"none"`` (default) runs plain sweeps.
-* ``"apgd"`` applies restarted Nesterov extrapolation and requires
-  ``gauss_seidel_max_colors=1``.
+* ``"none"`` runs plain sweeps.
+* ``"nesterov"`` (default) applies restarted Nesterov extrapolation after every
+  sweep but the last, for either the Jacobi or the colored map.
 * ``"anderson"`` applies one safeguarded Anderson direction
-  after every sweep, for either the Jacobi or the colored map. Set
-  ``projection_anderson_recycle=False`` to discard the direction between
-  splitting iterations.
+  after every sweep, for either the Jacobi or the colored map.
+
+Both carry their state, the Nesterov momentum and reaction history or the
+Anderson direction, across the splitting iterations of one step. Nesterov applies
+the extrapolation of the last sweep of a splitting iteration at the start of
+the next projection, so that each projection still returns a sweep output. Set
+``projection_acceleration_recycle=False`` to restart it at every splitting
+iteration.
+
+LOX regularizes the local contact solves with
+``config.lox.contact_proximal_regularization`` (default ``0.01``), scaling their
+Delassus diagonals by one plus this value. The contact law retains its mechanical
+response, so converged solutions retain the hard-contact fixed point. For rigid
+contacts without spatial friction, the first splitting iterations
+(``contact_proximal_warmstart_window``) center the proximal term on
+``contact_proximal_warmstart_scale`` (default ``0.9``) times the warm-start
+reaction. Later iterations center it on the current reaction. Set
+``contact_proximal_regularization=0.0`` to disable both terms.
 
 LOX contact extensions
 ----------------------
 
 Enable these features through ``config.lox`` after selecting
-``dynamics_solver="lox"``. They are disabled by default.
+``dynamics_solver="lox"``. They are disabled by default, except spatial
+friction, which follows the shapes' friction modes.
 
 * ``contact_compliance=True`` turns contacts with a positive per-contact
   stiffness ``k`` [N/m] (:attr:`newton.Contacts.rigid_contact_stiffness`) into
@@ -397,11 +413,15 @@ Enable these features through ``config.lox`` after selecting
   velocity, which better preserves energy in speculative impacts. Restitution
   applies either way: by default, the bounce target is fixed at the beginning of
   the step.
-* ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
-  ``mu_rolling`` coefficients, both in metres. Sliding, torsion, and rolling
-  share one elliptic friction budget. Contacts with zero angular coefficients
-  retain the classical 3D contact solve. Kamino's primitive collision pipeline
-  provides no angular coefficients.
+* Spatial friction applies the shape ``mu_torsional`` and ``mu_rolling``
+  coefficients, both in metres, on contacts whose
+  :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` enables torsional or
+  rolling friction. It is enabled automatically when any shape uses such a
+  mode. Sliding, torsion, and rolling share one elliptic friction budget.
+  Contacts with zero angular coefficients retain the classical 3D contact
+  solve. Kamino's primitive collision pipeline provides no angular
+  coefficients. The ``contact_spatial_friction`` option, which enabled spatial
+  friction on every contact, is deprecated.
 
 Heterogeneous worlds
 --------------------

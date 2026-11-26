@@ -16,7 +16,6 @@ import numpy as np
 
 from ..exceptions import NewtonWarning
 from ..geometry import Mesh
-from ..utils.deprecation import deprecate_nonkeyword_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +280,6 @@ def get_mesh(
 ) -> tuple[Mesh, np.ndarray | None, np.ndarray]: ...
 
 
-@deprecate_nonkeyword_arguments
 def get_mesh(
     source: Usd.Prim | Usd.Stage | str | os.PathLike[str] | None = None,
     *,
