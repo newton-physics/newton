@@ -96,7 +96,7 @@ class Example:
         # Configure CD components based on whether we want to use Kamino's
         # internal contact solver or Newton's collision pipeline
         if not self.use_kamino_contacts:
-            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
             self.contacts = self.collision_pipeline.contacts()
         else:
             self.collision_pipeline = None

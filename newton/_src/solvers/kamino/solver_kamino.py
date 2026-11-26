@@ -993,6 +993,10 @@ class SolverKamino(SolverBase, CouplingInterface):
                 remappable=True,
             )
 
+        self._contact_match_map = None
+        if self._contacts_kamino is not None and self._contacts_kamino.data.matched_slots is not None:
+            self._contact_match_map = self._kamino.ContactMatchMap(model.device)
+
         # Declare an internal reference cache to be able to detect if
         # a Kamino-internal collision detector was used at runtime.
         # NOTE: This is used to determine whether to clear the output
@@ -1263,7 +1267,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
         generates contacts on every step and ``contacts`` is not used as input. Otherwise, non-``None``
         contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
-        converted to Kamino's internal format and used directly.
+        converted to Kamino's internal format and used directly. Container contact
+        warm starting uses :attr:`Contacts.rigid_contact_match_index` when the
+        Newton pipeline enables contact matching.
 
         Args:
             state_in: The input state.
@@ -1323,6 +1329,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self._contacts_kamino is not None:
                 self._contacts_kamino.clear()
 
+        contact_stream = 0
+        if self._contact_match_map is not None:
+            contact_stream = self._contact_match_map.resolve(contacts, self._contacts_kamino)
+
         # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(
             body_com=self._model_kamino.bodies.i_r_com_i,
@@ -1349,6 +1359,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             detector=self._detector,
             dt=dt,
         )
+
+        if self._contact_match_map is not None:
+            self._contact_match_map.update(contacts, self._contacts_kamino, contact_stream)
 
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.SOLVER_RESIDUAL):
             self._solver_kamino.solver_fd.write_world_residual(observables.solver_residual)

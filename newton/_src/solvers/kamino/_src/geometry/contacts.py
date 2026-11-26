@@ -376,6 +376,9 @@ class ContactsKaminoData:
     :class:`ContactsKamino` is constructed with ``remappable=True``.
     """
 
+    matched_slots: wp.array[wp.int32] | None = None
+    """Previous Kamino slot for each pipeline-matched contact, or -1."""
+
     def clear(self):
         """
         Clears the count of active contacts.
@@ -952,6 +955,7 @@ class ContactsKamino:
                 velocity=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
                 mode=wp.full(value=ContactMode.INACTIVE, shape=(model_max_contacts,), dtype=wp.int32),
                 remap=wp.full(value=-1, shape=(model_max_contacts,), dtype=wp.int32) if remappable else None,
+                matched_slots=wp.full(model_max_contacts, -1, dtype=wp.int32) if remappable else None,
             )
 
     def clear(self):
@@ -1540,6 +1544,7 @@ def convert_contacts_newton_to_kamino(
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
+        contacts_out.clear()
         return
 
     # Ensure that the model, state, contacts_in and
@@ -1574,8 +1579,6 @@ def convert_contacts_newton_to_kamino(
     # and enforces per-world and model limits.
     max_converted_contacts = contacts_in.rigid_contact_max
 
-    # Clear the output contacts to reset the active contact
-    # counts and reset contact data to sentinel values.
     contacts_out.clear()
 
     # Generate the conversion kernel

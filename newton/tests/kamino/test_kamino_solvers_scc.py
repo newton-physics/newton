@@ -483,10 +483,6 @@ class TestSCCSolver(NewtonTestCase):
         self.assertEqual(config.scc.max_alternating_iterations, 32)
         self.assertEqual(config.scc.inequality_sweeps_per_iteration, 2)
         self.assertEqual(config.scc.bilateral_solve_interval, 1)
-        self.assertEqual(
-            config.scc.contact_warmstart_method,
-            "key_and_position_with_tangential_net_force",
-        )
         self.assertFalse(config.dynamics.preconditioning)
 
         sparse_config = SolverKamino.Config(dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True)
@@ -516,20 +512,6 @@ class TestSCCSolver(NewtonTestCase):
         for kwargs in invalid_scc_configs:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 kamino_config.SCCSolverConfig(**kwargs)
-        for method in (
-            "key_and_position",
-            "geom_pair_net_force",
-            "key_and_position_with_net_force_backup",
-            "key_and_position_with_tangential_net_force",
-            "key_and_position_with_net_force_backup_and_tangential_net_force",
-        ):
-            self.assertEqual(
-                kamino_config.SCCSolverConfig(contact_warmstart_method=method).contact_warmstart_method, method
-            )
-        for method in ("reaction", "geom_pair_net_wrench"):
-            with self.assertRaises(ValueError):
-                kamino_config.SCCSolverConfig(contact_warmstart_method=method)
-
         model_with_attrs = SimpleNamespace(
             kamino=SimpleNamespace(max_solver_iterations=wp.array([37], dtype=wp.int32, device=self.device))
         )
@@ -3012,6 +2994,7 @@ class TestSCCSolver(NewtonTestCase):
         np.testing.assert_array_equal(v_plus_after[1], np.zeros_like(v_plus_after[1]))
 
     def test_12_scc_opening_contact_releases_warmstarted_force(self):
+        """Discard a warm-started normal force on a matched, opening contact."""
         radius = 0.1
         separation = 0.005
         gap = 0.03
@@ -3047,12 +3030,6 @@ class TestSCCSolver(NewtonTestCase):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         config = SolverKamino.Config(
-            use_collision_detector=True,
-            collision_detector=kamino_config.CollisionDetectorConfig(
-                max_contacts_per_world=8,
-                max_contacts_per_pair=8,
-                default_gap=gap,
-            ),
             dynamics_solver="scc",
             scc=kamino_config.SCCSolverConfig(
                 tolerance=1e-5,
@@ -3061,12 +3038,16 @@ class TestSCCSolver(NewtonTestCase):
                 inequality_sweeps_per_iteration=4,
             ),
         )
+        config.dynamics.cull_speculative_contacts = False
+        pipeline = newton.CollisionPipeline(model, contact_matching="latest", contact_matching_pos_threshold=0.01)
+        contacts = pipeline.contacts()
         solver = SolverKamino(model, config=config)
 
-        solver.step(state_0, state_1, control=None, contacts=None, dt=1e-3)
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control=None, contacts=contacts, dt=1e-3)
         self.assertEqual(int(solver._contacts_kamino.model_active_contacts.numpy()[0]), 1)
 
-        cache = solver._solver_kamino._ws_contacts.cache
+        cache = solver._solver_kamino._ws_contacts
         self.assertIsNotNone(cache)
         reaction = cache.reaction.numpy()
         reaction[:, :] = 0.0
@@ -3076,7 +3057,9 @@ class TestSCCSolver(NewtonTestCase):
         velocity[:, :] = 0.0
         cache.velocity.assign(velocity)
 
-        solver.step(state_1, state_0, control=None, contacts=None, dt=1e-3)
+        pipeline.collide(state_1, contacts)
+        solver.step(state_1, state_0, control=None, contacts=contacts, dt=1e-3)
+        self.assertEqual(int(solver._contacts_kamino.data.matched_slots.numpy()[0]), 0)
 
         contact_count = int(solver._contacts_kamino.model_active_contacts.numpy()[0])
         gaps = solver._contacts_kamino.gapfunc.numpy()[:contact_count, 3]

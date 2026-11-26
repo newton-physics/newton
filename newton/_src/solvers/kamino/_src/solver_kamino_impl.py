@@ -157,17 +157,13 @@ class SolverKaminoImpl(SolverBase):
         self._config: SolverKaminoImpl.Config = config
         if config.dynamics_solver == "padmm":
             warmstart_mode = config.padmm.warmstart_mode
-            contact_warmstart_method = config.padmm.contact_warmstart_method
         elif config.dynamics_solver == "scc":
             warmstart_mode = config.scc.warmstart_mode
-            contact_warmstart_method = config.scc.contact_warmstart_method
         elif config.dynamics_solver == "lox":
             warmstart_mode = "containers"
-            contact_warmstart_method = config.lox.contact_warmstart_method
         else:
             raise ValueError(f"Unsupported dynamics solver: {config.dynamics_solver}")
         self._warmstart_mode = WarmStartMode.from_string(warmstart_mode)
-        self._contact_warmstart_method = WarmstarterContacts.Method.from_string(contact_warmstart_method)
         self._rotation_correction: JointCorrectionMode = JointCorrectionMode.from_string(config.rotation_correction)
 
         # ---------------------------------------------------------------------------
@@ -359,10 +355,8 @@ class SolverKaminoImpl(SolverBase):
         self._ws_contacts: WarmstarterContacts | None = None
         if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits = WarmstarterLimits(limits=self._limits)
-            self._ws_contacts = WarmstarterContacts(
-                contacts=contacts,
-                method=self._contact_warmstart_method,
-            )
+            if contacts is not None and contacts.data.matched_slots is not None:
+                self._ws_contacts = WarmstarterContacts(contacts)
 
         # Allocate the solution metrics evaluator if enabled
         self._metrics: SolutionMetrics | None = None
@@ -1024,6 +1018,7 @@ class SolverKaminoImpl(SolverBase):
         # Reset the warm-starting caches if enabled
         if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits.reset(world_mask=world_mask)
+        if self._ws_contacts is not None:
             self._ws_contacts.reset(world_mask=world_mask)
 
     ###
@@ -1182,7 +1177,12 @@ class SolverKaminoImpl(SolverBase):
         # constraints containers from the current solver data
         if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits.warmstart(self._limits)
-            self._ws_contacts.warmstart(self._model, self._data, contacts)
+            if contacts is not None and contacts.model_max_contacts_host > 0:
+                if self._ws_contacts is not None:
+                    self._ws_contacts.warmstart(contacts)
+                else:
+                    contacts.reaction.zero_()
+                    contacts.velocity.zero_()
 
         # Solve the forward dynamics sub-problem to compute the total effective
         # body wrenches applied to each body of the system
@@ -1193,7 +1193,8 @@ class SolverKaminoImpl(SolverBase):
         # NOTE: This needs to happen after unpacking the multipliers
         if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits.update(self._limits)
-            self._ws_contacts.update(contacts)
+            if self._ws_contacts is not None and contacts is not None:
+                self._ws_contacts.update(contacts)
 
     def _solve_dual_forward_dynamics(self, contacts: ContactsKamino | None = None):
         """

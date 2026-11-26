@@ -165,9 +165,6 @@ class Example:
             solver_config.scc.bilateral_solve_interval = 8
             configure_ldl(solver_config, args)
             solver_config.scc.omega = 1.2
-            solver_config.scc.contact_warmstart_method = (
-                "key_and_position_with_net_force_backup_and_tangential_net_force"
-            )
             solver_config.scc.use_schur_complement = True
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
@@ -189,7 +186,9 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, contact_matching="latest" if self.solver_type == "kamino" else "disabled"
+        )
         self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)

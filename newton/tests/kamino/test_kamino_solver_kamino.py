@@ -21,7 +21,6 @@ from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.shapes import GeoType
 from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
@@ -37,11 +36,10 @@ from newton._src.solvers.kamino._src.solvers.common import tolerance_scaled_resi
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests, test_context
-from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics
 from newton.tests.utils.basics import build_boxes_fourbar
-from newton.tests.utils.testing import build_binary_revolute_joint_test, build_shape_pairs_test
+from newton.tests.utils.testing import build_binary_revolute_joint_test
 
 logger = logging.getLogger(__name__)
 
@@ -555,7 +553,6 @@ class TestSolverKaminoConfig(NewtonTestCase):
         )
 
         invalid_values = (
-            ({"contact_warmstart_method": "geom_pair_net_wrench"}, "contact warmstart method is not implemented"),
             ({"projection_acceleration": "invalid"}, "projection_acceleration"),
             ({"gauss_seidel_max_colors": True}, "gauss_seidel_max_colors"),
             ({"max_iterations": 0}, "max_iterations"),
@@ -1770,61 +1767,44 @@ class TestSolverKaminoImpl(NewtonTestCase):
 
     def test_10_reset_warmstarting_for_select_worlds(self):
         """Test resetting the contacts warmstarting cache for select worlds."""
-        # Create a heterogenous, contact-rich model
-        shape_types = [GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX, GeoType.CONE]
-        shape_types = [type_.name.lower() for type_ in shape_types]
-        shape_pairs = [(type1, type2) for type1 in shape_types for type2 in shape_types]
-        builder = build_shape_pairs_test(
-            shape_pairs=shape_pairs,
-            distance=0.0,
-            ground_box=True,
-            ground_z=-1.0,  # Ensures non-zero contact reactions after just a few steps
-        )
-        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        single = newton.ModelBuilder()
+        body = single.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()))
+        single.add_shape_sphere(body, radius=0.1)
+        single.add_ground_plane()
+        builder = newton.ModelBuilder()
+        builder.replicate(single, 2)
+        model = builder.finalize(device=self.default_device)
+        pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+        contacts = pipeline.contacts()
+        solver = SolverKamino(model)
+        state_in, state_out = model.state(), model.state()
 
-        # Initialize the solver and step it a few times
-        contacts = ContactsKamino(model=model)
-        config = SolverKamino.Config()
-        config.padmm.warmstart_mode = "containers"
-        solver = SolverKaminoImpl(model=model, contacts=contacts, config=config)
-        state_p = model.state()
-        state_n = model.state()
-        control = model.control()
-        detector = CollisionDetector(model)
-        step_solver(
-            num_steps=10,
-            solver=solver,
-            state_p=state_p,
-            state_n=state_n,
-            control=control,
-            contacts=contacts,
-            detector=detector,
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, 1e-3)
+        solver.reset(
+            state_out,
+            world_mask=wp.array([True, False, False], dtype=wp.bool, device=model.device),
+            config=SolverKamino.ResetConfig.preserve(),
         )
 
-        # Check that all worlds have contacts, and that most reactions / velocities are non-trivial
-        self.assertTrue(np.all(contacts.world_active_contacts.numpy() > 0))
-        num_active = contacts.model_active_contacts.numpy()[0]
-        reaction_norms = np.linalg.norm(contacts.reaction.numpy()[:num_active], axis=1)
-        velocity_norms = np.linalg.norm(contacts.velocity.numpy()[:num_active], axis=1)
-        self.assertTrue(np.count_nonzero(reaction_norms + velocity_norms) > 0.8 * num_active)
+        # Check the warm start itself using the collision generation already solved by Kamino.
+        # Only the reset world's cached reaction should be invalidated.
+        native = solver._contacts_kamino
+        self.assertEqual(int(native.model_active_contacts.numpy()[0]), 2)
+        solver._contact_match_map.resolve(contacts, native)
+        solver._solver_kamino._ws_contacts.warmstart(native)
+        world = native.wid.numpy()[:2]
+        reaction = native.reaction.numpy()[:2, 2]
+        self.assertEqual(float(reaction[world == 0].item()), 0.0)
+        self.assertGreater(float(reaction[world == 1].item()), 0.0)
 
-        # Reset the solver internals (including warmstarting) with a non-trivial mask
-        rng = np.random.default_rng(self.seed)
-        world_mask_np = sample_world_mask(model.size.num_worlds, rng, target_inactive_rate=0.5)[0]
-        world_mask = wp.array(world_mask_np, dtype=wp.bool, device=self.default_device)
-        solver.reset(state=state_n, world_mask=world_mask, config=SolverKamino.ResetConfig.preserve())
-
-        # Run contact warmstarting, and check that contacts in reset worlds get cold-started
-        solver._ws_contacts.warmstart(model=model, data=solver.data, contacts=contacts)
-        reaction_norms = np.linalg.norm(contacts.reaction.numpy()[:num_active], axis=1)
-        velocity_norms = np.linalg.norm(contacts.velocity.numpy()[:num_active], axis=1)
-        contact_wid = contacts.wid.numpy()[:num_active]
-        contact_reset_mask = world_mask_np[contact_wid]
-        np.testing.assert_equal(reaction_norms[contact_reset_mask], 0.0)
-        np.testing.assert_equal(velocity_norms[contact_reset_mask], 0.0)
-
-        # Sanity check that not everything got cold-started
-        self.assertTrue(max(reaction_norms) + max(velocity_norms) > 0.0)
+        # Matches from a collision pass that Kamino skipped cannot index its solved reactions.
+        pipeline.collide(state_out, contacts)
+        pipeline.collide(state_out, contacts)
+        solver.step(state_out, state_in, None, contacts, 1e-3)
+        count = int(native.model_active_contacts.numpy()[0])
+        self.assertGreater(count, 0)
+        np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], -1)
 
     ###
     # Test Step Operations

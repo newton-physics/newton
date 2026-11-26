@@ -66,6 +66,12 @@ initialize consistently:
    config = newton.solvers.SolverKamino.Config(dynamics_solver="scc")
    solver = newton.solvers.SolverKamino(model, config=config)
 
+Contact warm starts use the match indices produced by
+:class:`~newton.CollisionPipeline`. Create the pipeline with
+``contact_matching="latest"`` or ``"sticky"`` and pass its contacts to
+:meth:`~newton.solvers.SolverKamino.step`. With Kamino's native collision
+detector or with matching disabled, contact containers start cold.
+
 .. deprecated:: 1.9
 
    ``dynamics_solver="dvi"`` and ``config.dvi`` remain supported aliases for
@@ -356,8 +362,7 @@ PADMM and SCC iteration logs; LOX reports its iterations and residuals through
 LOX solves its own primal problem, so ``sparse_dynamics``,
 ``config.dynamics.linear_solver_type``, ``config.dynamics.linear_solver_kwargs``
 and ``config.dynamics.preconditioning`` only affect the dual problem of the
-optional solution metrics. LOX always warm-starts from its containers;
-``config.lox.contact_warmstart_method`` selects how it matches contacts.
+optional solution metrics. LOX always uses container warm starting.
 
 LOX unilateral projection
 -------------------------

@@ -93,9 +93,9 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
             setattr(config.lox, name, value)
         return SolverKamino(model, config=config)
 
-    def _collide(self, model, state, *, stiffness=None, damping=0.0):
+    def _collide(self, model, state, *, stiffness=None, damping=0.0, pipeline=None):
         """Detect the contacts of ``state``, optionally with a uniform per-contact stiffness [N/m] and damping [N s/m]."""
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model) if pipeline is None else pipeline
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
@@ -314,14 +314,18 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                 config = SolverKamino.Config(dynamics_solver="lox", use_collision_detector=False)
                 config.lox.inertial_warmstart_fraction = 1.0
                 solver = SolverKamino(model, config=config)
-                pipeline = newton.CollisionPipeline(model)
+                pipeline = newton.CollisionPipeline(
+                    model, contact_matching="latest", contact_matching_pos_threshold=0.01
+                )
                 contacts = pipeline.contacts()
                 state_in, state_out, control = model.state(), model.state(), model.control()
                 iterations = []
 
-                for _ in range(10):
+                for step in range(10):
                     pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, control, contacts, 0.002)
+                    if step > 0:
+                        self.assertEqual(int(solver._contacts_kamino.data.matched_slots.numpy()[0]), 0)
                     state_in, state_out = state_out, state_in
                     iterations.append(int(solver.status.numpy()["iterations"][0]))
 
@@ -440,14 +444,18 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                     use_graph_conditionals=use_graph_conditionals,
                 )
                 state_in, state_out = model.state(), model.state()
-                contacts = self._collide(model, state_in, stiffness=1000.0)
+                pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+                contacts = self._collide(model, state_in, stiffness=1000.0, pipeline=pipeline)
                 control = model.control()
                 solver.step(state_in, state_out, control, contacts, dt=0.01)
                 expected = state_out.body_qd.numpy()
                 with wp.ScopedCapture(device=self.default_device) as capture:
+                    pipeline.collide(state_in, contacts)
+                    contacts.rigid_contact_stiffness.fill_(1000.0)
                     solver.step(state_in, state_out, control, contacts, dt=0.01)
                 for _ in range(2):
                     wp.capture_launch(capture.graph)
+                    self.assertEqual(int(solver._contacts_kamino.data.matched_slots.numpy()[0]), 0)
                     np.testing.assert_allclose(state_out.body_qd.numpy(), expected, rtol=0.0, atol=2.0e-4)
                     np.testing.assert_array_equal(solver.status.numpy()["failed"], 0)
 
