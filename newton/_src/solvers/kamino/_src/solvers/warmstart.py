@@ -9,6 +9,7 @@ from weakref import WeakKeyDictionary
 
 import warp as wp
 
+from .....geometry.contact_match import ContactMatcher
 from .....sim.contacts import GENERATION_SENTINEL, Contacts
 from ..geometry.contacts import ContactsKamino
 from ..geometry.keying import KeySorter, binary_search_find_range_start, make_bitmask, uint64_sentinel_value
@@ -305,19 +306,24 @@ def _record_contact_slots(
 class ContactMatchMap:
     """Translate pipeline contact indices into the previous compacted Kamino slots."""
 
-    def __init__(self, device: wp.DeviceLike):
+    def __init__(self, device: wp.DeviceLike, capacity: int = 0):
         self._device = device
         self._streams: WeakKeyDictionary[Contacts, int] = WeakKeyDictionary()
         self._next_stream = 1
         self._previous_generation = wp.full(1, GENERATION_SENTINEL, dtype=wp.int32, device=device)
         self._previous_stream = wp.zeros(1, dtype=wp.int32, device=device)
-        self._previous_slots = wp.empty(0, dtype=wp.int32, device=device)
+        # Sized up front for the model's contact buffers so CUDA graph capture does not allocate.
+        self._previous_slots = wp.full(capacity, -1, dtype=wp.int32, device=device)
 
     def resolve(self, source: Contacts | None, contacts: ContactsKamino) -> int:
-        """Resolve matches and return the ID of the source buffer."""
+        """Resolve pipeline matches into ``contacts.data.matched_slots``.
+
+        Returns:
+            The ID of the source buffer, or ``0`` when the source carries no matches.
+            In that case ``matched_slots`` is left for :class:`WarmstarterContacts` to fill.
+        """
         matched_slots = contacts.data.matched_slots
         if source is None or source.rigid_contact_match_index is None or source.rigid_contact_max == 0:
-            matched_slots.fill_(-1)
             return 0
         stream = self._streams.get(source)
         if stream is None:
@@ -401,16 +407,170 @@ def invalidate_contact_worlds(world_mask: wp.array[wp.bool], world: wp.array[wp.
         world[cid] = -1
 
 
-class WarmstarterContacts:
-    """Carry linear reactions and velocities across pipeline-matched contacts."""
+@wp.kernel
+def _gather_sorted_contacts(
+    count: wp.array[wp.int32],
+    sorted_to_slot: wp.array[wp.int32],
+    gid_AB: wp.array[wp.vec2i],
+    position_A: wp.array[wp.vec3f],
+    position_B: wp.array[wp.vec3f],
+    frame: wp.array[wp.quatf],
+    shape0: wp.array[wp.int32],
+    shape1: wp.array[wp.int32],
+    point0: wp.array[wp.vec3],
+    point1: wp.array[wp.vec3],
+    normal: wp.array[wp.vec3],
+):
+    row = wp.tid()
+    if row >= count[0]:
+        return
+    slot = sorted_to_slot[row]
+    gid = gid_AB[slot]
+    shape0[row] = gid[0]
+    shape1[row] = gid[1]
+    point0[row] = position_A[slot]
+    point1[row] = position_B[slot]
+    # Kamino contact frames carry the normal on their z-axis.
+    normal[row] = wp.quat_rotate(frame[slot], wp.vec3f(0.0, 0.0, 1.0))
 
-    def __init__(self, contacts: ContactsKamino):
+
+@wp.kernel
+def _matched_slots_from_sorted_rows(
+    count: wp.array[wp.int32],
+    sorted_to_slot: wp.array[wp.int32],
+    match_index: wp.array[wp.int32],
+    previous_sorted_to_slot: wp.array[wp.int32],
+    matched_slots: wp.array[wp.int32],
+):
+    row = wp.tid()
+    if row >= count[0]:
+        return
+    previous = match_index[row]
+    slot = int(-1)
+    if previous >= 0:
+        slot = previous_sorted_to_slot[previous]
+    matched_slots[sorted_to_slot[row]] = slot
+
+
+class WarmstarterContacts:
+    """Carry linear reactions and velocities across matched contacts.
+
+    Matches come from the Newton collision pipeline when it provides them.
+    Otherwise this warm starter runs the same :class:`ContactMatcher` on the
+    Kamino contacts, for example those of Kamino's own collision detector.
+    """
+
+    def __init__(self, contacts: ContactsKamino, geom_world: wp.array[wp.int32], world_count: int):
         self.world = wp.full_like(contacts.wid, -1)
         self.frame = wp.empty_like(contacts.frame)
         self.reaction = wp.empty_like(contacts.reaction)
         self.velocity = wp.empty_like(contacts.velocity)
 
-    def warmstart(self, contacts: ContactsKamino) -> None:
+        # Matcher state for contacts that arrive without pipeline matches.
+        capacity = contacts.model_max_contacts_host
+        device = contacts.device
+        with wp.ScopedDevice(device):
+            self._sorter = KeySorter(max_num_keys=capacity, device=device)
+            self._matcher = ContactMatcher(
+                capacity,
+                sorter=None,
+                shape_world=geom_world,
+                world_count=world_count,
+                shape_index_bits=31,
+                # Kamino keys are bare geometry-pair keys.
+                sub_key_bits=0,
+                device=device,
+            )
+            self._buffer_id = self._matcher.buffer_id(self)
+            self._generation = wp.zeros(1, dtype=wp.int32)
+            self._match_generation = wp.zeros(1, dtype=wp.int32)
+            # Contact points are world positions, so no shape has a body here.
+            self._shape_body = wp.full(geom_world.shape[0], -1, dtype=wp.int32)
+            self._body_q = wp.empty(1, dtype=wp.transform)
+            self._shape0 = wp.empty(capacity, dtype=wp.int32)
+            self._shape1 = wp.empty(capacity, dtype=wp.int32)
+            self._point0 = wp.empty(capacity, dtype=wp.vec3)
+            self._point1 = wp.empty(capacity, dtype=wp.vec3)
+            self._normal = wp.empty(capacity, dtype=wp.vec3)
+            self._match_index = wp.empty(capacity, dtype=wp.int32)
+            self._previous_sorted_to_slot = wp.empty(capacity, dtype=wp.int32)
+
+    def match(self, contacts: ContactsKamino) -> None:
+        """Match the contacts against the previous solve and write ``contacts.data.matched_slots``."""
+        count = contacts.model_active_contacts
+        self._sorter.sort(num_active_keys=count, keys=contacts.key)
+        sorted_keys = self._sorter.sorted_keys_int64
+        sorted_to_slot = self._sorter.sorted_to_unsorted_map
+        capacity = contacts.model_max_contacts_host
+        wp.launch(
+            _gather_sorted_contacts,
+            dim=capacity,
+            inputs=[
+                count,
+                sorted_to_slot,
+                contacts.gid_AB,
+                contacts.position_A,
+                contacts.position_B,
+                contacts.frame,
+                self._shape0,
+                self._shape1,
+                self._point0,
+                self._point1,
+                self._normal,
+            ],
+            device=contacts.device,
+        )
+        sorted_args = (
+            sorted_keys,
+            count,
+            self._point0,
+            self._point1,
+            self._shape0,
+            self._shape1,
+            self._normal,
+            self._body_q,
+            self._shape_body,
+        )
+        self._matcher.match(
+            *sorted_args,
+            self._match_index,
+            buffer_id=self._buffer_id,
+            match_generation_out=self._match_generation,
+            device=contacts.device,
+        )
+        wp.launch(
+            _matched_slots_from_sorted_rows,
+            dim=capacity,
+            inputs=[
+                count,
+                sorted_to_slot,
+                self._match_index,
+                self._previous_sorted_to_slot,
+                contacts.data.matched_slots,
+            ],
+            device=contacts.device,
+        )
+        self._matcher.save_sorted_state(
+            *sorted_args,
+            buffer_id=self._buffer_id,
+            contact_generation=self._generation,
+            device=contacts.device,
+        )
+        wp.copy(self._previous_sorted_to_slot, sorted_to_slot, count=capacity)
+
+    def warmstart(self, contacts: ContactsKamino, matched: bool = False) -> None:
+        """Restore cached reactions on matched contacts.
+
+        Args:
+            contacts: The contacts to warm-start.
+            matched: Whether ``contacts.data.matched_slots`` already holds the
+                collision pipeline's matches for this step.
+        """
+        if matched:
+            # The pipeline owns this step's history, so a later fallback must not match against an older one.
+            self._matcher.reset()
+        else:
+            self.match(contacts)
         wp.launch(
             _restore_contact_reactions,
             dim=contacts.model_max_contacts_host,

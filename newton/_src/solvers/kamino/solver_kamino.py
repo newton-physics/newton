@@ -994,8 +994,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             )
 
         self._contact_match_map = None
-        if self._contacts_kamino is not None and self._contacts_kamino.data.matched_slots is not None:
-            self._contact_match_map = self._kamino.ContactMatchMap(model.device)
+        if self._contacts_kamino is not None and self._contacts_kamino.data.remap is not None:
+            self._contact_match_map = self._kamino.ContactMatchMap(model.device, model.rigid_contact_max or 0)
 
         # Declare an internal reference cache to be able to detect if
         # a Kamino-internal collision detector was used at runtime.
@@ -1269,7 +1269,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
         converted to Kamino's internal format and used directly. Container contact
         warm starting uses :attr:`Contacts.rigid_contact_match_index` when the
-        Newton pipeline enables contact matching.
+        Newton pipeline enables contact matching, and otherwise matches the
+        contacts against the previous step with the same contact matcher.
 
         Args:
             state_in: The input state.
@@ -1358,6 +1359,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             contacts=self._contacts_kamino,
             detector=self._detector,
             dt=dt,
+            contacts_matched=contact_stream != 0,
         )
 
         if self._contact_match_map is not None:

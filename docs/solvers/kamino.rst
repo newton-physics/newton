@@ -66,11 +66,13 @@ initialize consistently:
    config = newton.solvers.SolverKamino.Config(dynamics_solver="scc")
    solver = newton.solvers.SolverKamino(model, config=config)
 
-Contact warm starts use the match indices produced by
-:class:`~newton.CollisionPipeline`. Create the pipeline with
-``contact_matching="latest"`` or ``"sticky"`` and pass its contacts to
-:meth:`~newton.solvers.SolverKamino.step`. With Kamino's native collision
-detector or with matching disabled, contact containers start cold.
+Contact warm starts carry each contact's reaction from the previous step to
+its match. When the contacts passed to :meth:`~newton.solvers.SolverKamino.step`
+come from a :class:`~newton.CollisionPipeline` created with
+``contact_matching="latest"`` or ``"sticky"``, Kamino uses the pipeline's match
+indices. Otherwise, including with Kamino's native collision detector, Kamino
+matches its contacts against the previous step with the same contact matcher
+and its default thresholds.
 
 .. deprecated:: 1.9
 

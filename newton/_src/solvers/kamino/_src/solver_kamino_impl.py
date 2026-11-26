@@ -355,8 +355,9 @@ class SolverKaminoImpl(SolverBase):
         self._ws_contacts: WarmstarterContacts | None = None
         if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits = WarmstarterLimits(limits=self._limits)
-            if contacts is not None and contacts.data.matched_slots is not None:
-                self._ws_contacts = WarmstarterContacts(contacts)
+            if contacts is not None and contacts.model_max_contacts_host > 0:
+                self._ws_contacts = WarmstarterContacts(contacts, self._model.geoms.wid, self._model.size.num_worlds)
+        self._contacts_matched = False
 
         # Allocate the solution metrics evaluator if enabled
         self._metrics: SolutionMetrics | None = None
@@ -777,6 +778,7 @@ class SolverKaminoImpl(SolverBase):
         contacts: ContactsKamino | None = None,
         detector: CollisionDetector | None = None,
         dt: float | None = None,
+        contacts_matched: bool = False,
     ):
         """
         Progresses the simulation by a single time-step `dt` given the current
@@ -791,7 +793,12 @@ class SolverKaminoImpl(SolverBase):
             detector: An optional collision detector to use for generating contacts at the current state.
                 If `None`, the `contacts` data will be used as the current set of active contacts.
             dt: A uniform time-step to apply uniformly to all worlds of the simulation.
+            contacts_matched: Whether ``contacts.data.matched_slots`` already holds the collision
+                pipeline's matches for this step. Otherwise, contacts are matched against the
+                previous step's contacts before warm starting.
         """
+        self._contacts_matched = contacts_matched
+
         # If specified, configure the internal per-world solver time-step uniformly from the input argument
         if dt is not None:
             self._model.time.set_uniform_timestep(dt)
@@ -1177,12 +1184,8 @@ class SolverKaminoImpl(SolverBase):
         # constraints containers from the current solver data
         if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits.warmstart(self._limits)
-            if contacts is not None and contacts.model_max_contacts_host > 0:
-                if self._ws_contacts is not None:
-                    self._ws_contacts.warmstart(contacts)
-                else:
-                    contacts.reaction.zero_()
-                    contacts.velocity.zero_()
+            if self._ws_contacts is not None and contacts is not None:
+                self._ws_contacts.warmstart(contacts, matched=self._contacts_matched)
 
         # Solve the forward dynamics sub-problem to compute the total effective
         # body wrenches applied to each body of the system

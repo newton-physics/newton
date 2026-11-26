@@ -73,7 +73,7 @@ class WarmstarterAngularContacts:
     def warmstart(self, contacts, source_to_internal, time_step, angular_reaction):
         """Restore matched spin and rolling impulses in their current frames."""
         angular_reaction.zero_()
-        if not self.capacity or contacts.data.matched_slots is None:
+        if not self.capacity:
             return
         wp.launch(
             _restore_angular_reactions,
@@ -94,7 +94,7 @@ class WarmstarterAngularContacts:
 
     def update(self, contacts, source_to_internal, inverse_time_step, angular_reaction):
         """Store the solved spin and rolling reactions."""
-        if not self.capacity or contacts.data.matched_slots is None:
+        if not self.capacity:
             return
         wp.launch(
             _store_angular_reactions,

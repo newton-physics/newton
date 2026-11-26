@@ -1792,7 +1792,7 @@ class TestSolverKaminoImpl(NewtonTestCase):
         native = solver._contacts_kamino
         self.assertEqual(int(native.model_active_contacts.numpy()[0]), 2)
         solver._contact_match_map.resolve(contacts, native)
-        solver._solver_kamino._ws_contacts.warmstart(native)
+        solver._solver_kamino._ws_contacts.warmstart(native, matched=True)
         world = native.wid.numpy()[:2]
         reaction = native.reaction.numpy()[:2, 2]
         self.assertEqual(float(reaction[world == 0].item()), 0.0)
@@ -1805,6 +1805,42 @@ class TestSolverKaminoImpl(NewtonTestCase):
         count = int(native.model_active_contacts.numpy()[0])
         self.assertGreater(count, 0)
         np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], -1)
+
+    def test_11_warmstart_contacts_without_pipeline_matches(self):
+        """Match contacts that arrive without pipeline matches and warm-start them."""
+        single = newton.ModelBuilder()
+        body = single.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+        single.add_shape_sphere(body, radius=0.1)
+        single.add_ground_plane()
+        builder = newton.ModelBuilder()
+        builder.replicate(single, 2)
+        model = builder.finalize(device=self.default_device)
+
+        for use_collision_detector in (True, False):
+            with self.subTest(use_collision_detector=use_collision_detector):
+                solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=use_collision_detector))
+                pipeline = None if use_collision_detector else newton.CollisionPipeline(model)
+                contacts = None if pipeline is None else pipeline.contacts()
+                state_in, state_out = model.state(), model.state()
+                for _ in range(2):
+                    if pipeline is not None:
+                        pipeline.collide(state_in, contacts)
+                    solver.step(state_in, state_out, None, contacts, 1e-3)
+                    state_in, state_out = state_out, state_in
+
+                # The second step matched every contact of the first step.
+                native = solver._contacts_kamino
+                count = int(native.model_active_contacts.numpy()[0])
+                self.assertEqual(count, 2)
+                np.testing.assert_array_equal(np.sort(native.data.matched_slots.numpy()[:count]), [0, 1])
+
+                # Matching the solved contacts against themselves restores each solved reaction in its own slot.
+                solved = native.reaction.numpy()[:count].copy()
+                native.reaction.zero_()
+                solver._solver_kamino._ws_contacts.warmstart(native)
+                np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], [0, 1])
+                np.testing.assert_allclose(native.reaction.numpy()[:count], solved, rtol=1e-6)
+                self.assertTrue(np.all(solved[:, 2] > 0.0))
 
     ###
     # Test Step Operations

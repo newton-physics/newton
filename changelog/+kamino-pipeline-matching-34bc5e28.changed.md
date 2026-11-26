@@ -1,1 +1,1 @@
-Use Newton collision-pipeline matches to warm-start Kamino contacts. Enable `contact_matching="latest"` or `"sticky"` on the pipeline in place of Kamino?s `contact_warmstart_method` setting. Kamino?s native collision detector uses cold contact starts.
+Match Kamino contacts for container warm starts with Newton's contact matcher in place of Kamino's own matching methods, and use the collision pipeline's matches when it provides them. Remove assignments to the experimental `contact_warmstart_method` option of the PADMM, SCC, and LOX configs, which no longer exists.
