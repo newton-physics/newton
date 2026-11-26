@@ -265,6 +265,22 @@ def test_config_constructor_options(test, device):
             for array, expected in zip(arrays, before, strict=True):
                 np.testing.assert_array_equal(array.numpy(), expected)
 
+    none_solver = newton.solvers.SolverStyle3D(
+        model,
+        config=replace(valid_config),
+        dynamics=newton.solvers.SolverStyle3D.Dynamics.NONE,
+    )
+    none_solver.step(state_in, state_out, control, contacts, 0.01)
+    for array, expected in zip(arrays, before, strict=True):
+        np.testing.assert_array_equal(array.numpy(), expected)
+
+    none_solver.config.iterations = 0
+    with test.subTest(dynamics=none_solver.dynamics, invalid_iterations=0):
+        with test.assertRaisesRegex(ValueError, "Config.iterations must be at least 1"):
+            none_solver.step(state_in, state_out, control, contacts, 0.01)
+        for array, expected in zip(arrays, before, strict=True):
+            np.testing.assert_array_equal(array.numpy(), expected)
+
     solver.config = valid_config
     actual = solve(solver)
     np.testing.assert_allclose(actual[0], previous[0], atol=1e-6)

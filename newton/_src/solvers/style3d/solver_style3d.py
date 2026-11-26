@@ -609,7 +609,7 @@ class SolverStyle3D(SolverBase):
 
         if self.dynamics == SolverStyle3D.Dynamics.NONE:
             return
-        elif self.config.iterations < 1:
+        if self.config.iterations < 1:
             raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
         if self._dof_block_count == 0:
             return
