@@ -8,6 +8,7 @@
 
 import datetime
 import inspect
+import logging
 import os
 import pkgutil
 import re
@@ -172,17 +173,29 @@ if pandoc_path is None:
         "build the complete documentation."
     )
 
+_USD_INVENTORY_URL = "https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest"
+
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp/stable", None),
-    "usd": ("https://openusd.org/release", None),
+    "usd": (_USD_INVENTORY_URL, None),
 }
 
+
+def _tolerate_usd_inventory_failure(record: logging.LogRecord) -> bool:
+    """Report a failed fetch of the USD inventory as info: the host is unreliable and ``-W`` would fail the build."""
+    if record.levelno == logging.WARNING and _USD_INVENTORY_URL in record.getMessage():
+        record.levelno, record.levelname = logging.INFO, "INFO"
+    return True
+
+
+logging.getLogger("sphinx.sphinx.ext.intersphinx").addFilter(_tolerate_usd_inventory_failure)
+
 # Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
-# ``pxr.*`` paths in the generated Python API reference.
+# ``pxr.*`` paths so intersphinx can resolve them against the USD inventory.
 # Note: this only affects annotations processed by autodoc, not autosummary stubs.
 autodoc_type_aliases = {
     "Usd.Prim": "pxr.Usd.Prim",
