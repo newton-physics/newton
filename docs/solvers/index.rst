@@ -217,10 +217,22 @@ formulation.
   at the start of the step, unless ``enable_restitution=False``),
   :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
   :class:`~newton.solvers.SolverKamino`.
-- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
-  :class:`~newton.solvers.SolverMuJoCo`.
-  :class:`~newton.solvers.SolverVBD` also supports these properties for
-  compliant-ALM rigid-rigid contacts.
+- ``friction_mode``: every built-in solver makes a contact frictionless when
+  both of its shapes are ``NONE``, and a particle contact when its shape is
+  (except :class:`~newton.solvers.SolverMuJoCo` flexes, see
+  :ref:`mujoco-flexes`). The modes with torsional or rolling friction are
+  supported by
+  :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
+  :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverKamino`
+  with the LOX backend (torsional and rolling friction share its elliptic
+  friction budget). Other solvers apply sliding friction only, and warn if they
+  solve rigid contacts. :class:`~newton.solvers.SolverSteel` provides
+  experimental torsion on shapes whose mode enables torsional friction and that also set
+  ``steel:min_torsional_patch_radius``.
+- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverVBD`,
+  and the LOX backend of :class:`~newton.solvers.SolverKamino`, on contacts
+  whose ``friction_mode`` enables them.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact
@@ -501,7 +513,7 @@ motion; see :ref:`passive-joint-springs` for details.
 
 | :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
 | :sup:`4` SemiImplicit enforces joint-owned mimic relationships with penalty springs configured by ``joint_mimic_ke`` and ``joint_mimic_kd``.
-| :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
+| :sup:`5` XPBD enforces joint-owned mimic relationships through coupled maximal-coordinate corrections, one per solver iteration. VBD solves them as implicit finite-stiffness rows in its rigid-body solve, using ``rigid_joint_linear_ke`` and ``rigid_joint_angular_ke``.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 | :sup:`8` Steel rejects models with disabled articulation joints instead of ignoring them; a disabled loop-closing joint starts as a released closure.

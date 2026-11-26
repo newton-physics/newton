@@ -152,6 +152,26 @@ Joint types
      - *unsupported*
      - Not forwarded to MuJoCo.
 
+.. _mjcf-merged-joints:
+
+MJCF import combines a body's hinge and slide joints into a single Newton
+joint, which applies the slides in the parent frame and then the hinges about
+a single anchor. The anchor is the point where the hinge axes meet. If they do
+not meet, or are all nearly parallel without lying on one line, the anchor is
+the first hinge's position, which changes the body's motion and logs a
+warning. A slide listed after hinges keeps its motion
+only if it is parallel to every hinge listed before it. Otherwise it is still
+applied before the hinges, which changes the body's motion and emits
+:class:`~newton.NewtonDeprecationWarning`; a future release will raise an
+error.
+
+Hinge axes meet if the point with the smallest summed squared distance to them
+lies within 1e-4 MJCF length units of every axis. Two axes are
+parallel if the angle between them is below 0.06 degrees. A body without
+hinges is anchored at its first slide's position. None of this applies to a
+root body whose joints are replaced through ``floating``, ``base_joint`` or
+``parent_body``.
+
 Joint reference values (``ref``)
 --------------------------------
 
@@ -917,7 +937,12 @@ warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
 friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
 each other and with shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`,
 including shapes that do not collide with other shapes. A flex collides with
-itself only when ``selfcollide`` is set through ``add_flex``. Flex
+itself only when ``selfcollide`` is set through ``add_flex``. Flexes have
+sliding friction (MuJoCo ``condim`` 3) and priority 0. A flex contact uses the
+``condim`` of the side with the higher priority and, at equal priority, the
+higher ``condim`` of its flex and shape, so a
+:attr:`~newton.ShapeFrictionMode.NONE` shape makes flex contacts frictionless
+only if it has a positive ``mujoco:geom_priority``. Flex
 contacts require ``use_mujoco_contacts=True``; the solver rejects models with
 flexes otherwise. In exported contacts, the flex side has shape
 ``-1``; :class:`~newton.sensors.SensorContact` and the viewer skip these
@@ -1443,6 +1468,35 @@ When importing MuJoCo-authored USD, opt into that mapping explicitly::
 Registering MuJoCo custom attributes alone enables the ``model.mujoco``
 namespace but does not map ``mjc:damping`` to the built-in property.
 
+.. _mujoco-friction-modes:
+
+Friction modes and ``condim``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
+``condim`` 1, 3, 4, and 6 import as :class:`~newton.ShapeFrictionMode`
+``NONE``, ``SLIDING``, ``SLIDING_TORSIONAL``, and ``SLIDING_TORSIONAL_ROLLING``,
+and the solver converts the modes back. USD ``mjc:condim`` maps through
+:class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
+custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
+per-shape values set in code override the friction mode at
+:meth:`~newton.ModelBuilder.finalize` with a deprecation warning, a changed
+default applies to shapes left at ``SLIDING``, and
+``model.mujoco.condim`` is a copy of the friction modes; values written to it
+are applied when it is next read or a solver is constructed.
+
+``SLIDING_ROLLING`` has no ``condim``. Its geom gets ``condim`` 6 and MuJoCo's
+minimum torsional coefficient of 1e-5 in place of ``mu_torsional``.
+MuJoCo resolves a contact between geoms of equal priority from the higher
+``condim`` and the larger coefficient of each friction component. With
+``use_mujoco_contacts=True``, a ``SLIDING_ROLLING`` shape therefore still gets
+torsional friction from the ``mu_torsional`` of the shape it touches, also when
+that shape's mode does not enable torsional friction. To avoid this, set
+``mu_torsional`` of the other shapes to zero, give the shape a higher
+``mujoco:geom_priority`` so that its own parameters apply, or use
+``use_mujoco_contacts=False``, where a contact has torsional friction only if
+one of its shapes enables it.
+
 
 Unsupported MuJoCo features
 ---------------------------
@@ -1697,7 +1751,10 @@ tendon limits using the current ``model.mujoco`` limit modes, gains, raw
 ``solref`` values, and ranges. Those pending edits are therefore published even
 without :attr:`~newton.ModelFlags.TENDON_PROPERTIES`. This includes joint
 inertial/reference updates and the broad joint-DOF, body, body-inertial, and
-actuator notifications. Publish tendon edits explicitly with
+actuator notifications. :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` recomputes
+constants, at the same cost, only for models with a spatial tendon or a
+site-based actuator transmission, whose reference constants depend on site and
+wrapping-geometry poses. Publish tendon edits explicitly with
 :attr:`~newton.ModelFlags.TENDON_PROPERTIES` before these updates rather than
 relying on them to preserve pending tendon-limit changes. Force-only joint
 notifications do not recompute constants and leave tendon limits unchanged.

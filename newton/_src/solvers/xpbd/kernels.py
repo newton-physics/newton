@@ -11,10 +11,13 @@ from ...math import (
     vec_min,
     velocity_at_point,
 )
-from ...sim import BodyFlags, JointType, Model
+from ...sim import BodyFlags, JointType, Model, ShapeFrictionMode
 from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
+from ..contact_gather import contact_side_body
+from ..solver import contact_friction_mode, particle_is_kinematic
 
 
 @wp.kernel
@@ -70,7 +73,7 @@ def apply_particle_shape_restitution(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+    if (particle_flags[particle_index] & (ParticleFlags.ACTIVE | ParticleFlags.KINEMATIC)) != ParticleFlags.ACTIVE:
         return
 
     v_new = particle_v_new[particle_index]
@@ -132,6 +135,7 @@ def solve_particle_shape_contacts(
     body_flags: wp.array[wp.int32],
     shape_body: wp.array[int],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     particle_mu: float,
     particle_ka: float,
     contact_count: wp.array[int],
@@ -190,6 +194,8 @@ def solve_particle_shape_contacts(
 
     # take average material properties of shape and particle parameters
     mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
+    if contact_friction_mode(shape_material_friction_mode, shape_index, -1) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     # body velocity
     body_v_s = wp.spatial_vector()
@@ -702,6 +708,19 @@ def solve_tetrahedra(
 
 
 @wp.kernel
+def update_particle_inv_mass_effective(
+    particle_flags: wp.array[wp.int32],
+    particle_inv_mass: wp.array[float],
+    particle_inv_mass_effective: wp.array[float],
+):
+    tid = wp.tid()
+    if particle_is_kinematic(particle_flags[tid]):
+        particle_inv_mass_effective[tid] = 0.0
+    else:
+        particle_inv_mass_effective[tid] = particle_inv_mass[tid]
+
+
+@wp.kernel
 def apply_particle_deltas(
     x_orig: wp.array[wp.vec3],
     x_pred: wp.array[wp.vec3],
@@ -713,11 +732,17 @@ def apply_particle_deltas(
     v_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
-    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+    flags = particle_flags[tid]
+    if (flags & ParticleFlags.ACTIVE) == 0:
         return
 
     x0 = x_orig[tid]
     xp = x_pred[tid]
+
+    if flags & ParticleFlags.KINEMATIC:
+        x_out[tid] = xp
+        v_out[tid] = (xp - x0) / dt
+        return
 
     # constraint deltas
     d = delta[tid]
@@ -1965,24 +1990,29 @@ def _solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     relaxation: float,
     dt: float,
-    deltas: wp.array[wp.spatial_vector],
-    contact_inv_weight: wp.array[float],
-    contact_impulse: wp.array[wp.spatial_vector],
     recovery: MeshRecoveryData,
     contact_generation: wp.array[int],
     tid: int,
 ):
+    """Solve one rigid contact and return its body corrections.
+
+    Returns:
+        The spatial position corrections for body A and body B, and 1 when the
+        contact is active (it counts toward the per-body contact weighting),
+        otherwise 0 with zero corrections.
+    """
 
     count = contact_count[0]
     if tid >= count:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
     body_a = -1
     if shape_a >= 0:
         body_a = shape_body[shape_a]
@@ -1990,7 +2020,7 @@ def _solve_body_contact_positions(
     if shape_b >= 0:
         body_b = shape_body[shape_b]
     if body_a == body_b:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     # find body to world transform
     X_wb_a = wp.transform_identity()
@@ -2010,7 +2040,7 @@ def _solve_body_contact_positions(
         contact_normal[tid],
     )
     if recovery_slot < -1:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     # compute body position in world space
     n = contact_normal[tid]
@@ -2019,7 +2049,7 @@ def _solve_body_contact_positions(
     d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
 
     if d >= 0.0:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     m_inv_a = 0.0
     m_inv_b = 0.0
@@ -2071,6 +2101,13 @@ def _solve_body_contact_positions(
         mu /= float(mat_nonzero)
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
+    friction_mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
+    if (friction_mode & FRICTION_SLIDING_BIT) == 0:
+        mu = 0.0
+    if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
+        mu_torsional = 0.0
+    if (friction_mode & FRICTION_ROLLING_BIT) == 0:
+        mu_rolling = 0.0
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2089,13 +2126,7 @@ def _solve_body_contact_positions(
         target = recovery_step_depth(recovery.contacts[recovery_slot].thickness, -d)
         correction = wp.max(d, wp.min(0.0, wp.dot(n, vb - va) * dt - target))
         if correction == 0.0:
-            return
-
-    if contact_inv_weight:
-        if body_a >= 0:
-            wp.atomic_add(contact_inv_weight, body_a, 1.0)
-        if body_b >= 0:
-            wp.atomic_add(contact_inv_weight, body_b, 1.0)
+            return wp.spatial_vector(), wp.spatial_vector(), 0
 
     lambda_n = compute_contact_constraint_delta(
         correction, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -n, n, angular_a, angular_b, relaxation, dt
@@ -2198,13 +2229,7 @@ def _solve_body_contact_positions(
             ang_delta_a -= roll_n * lambda_roll
             ang_delta_b += roll_n * lambda_roll
 
-    if body_a >= 0:
-        wp.atomic_add(deltas, body_a, wp.spatial_vector(lin_delta_a, ang_delta_a))
-    if body_b >= 0:
-        wp.atomic_add(deltas, body_b, wp.spatial_vector(lin_delta_b, ang_delta_b))
-
-    if contact_impulse:
-        wp.atomic_add(contact_impulse, tid, wp.spatial_vector(lin_delta_a, ang_delta_a))
+    return wp.spatial_vector(lin_delta_a, ang_delta_a), wp.spatial_vector(lin_delta_b, ang_delta_b), 1
 
 
 @wp.kernel
@@ -2230,6 +2255,7 @@ def solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
@@ -2238,11 +2264,12 @@ def solve_body_contact_positions(
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
 ):
+    """Solve rigid contacts and scatter their corrections into per-body deltas with atomics."""
     tid = wp.tid()
     surface_velocity = wp.vec3(0.0)
     if contact_surface_velocity:
         surface_velocity = contact_surface_velocity[tid]
-    _solve_body_contact_positions(
+    delta_a, delta_b, active = _solve_body_contact_positions(
         body_q,
         body_qd,
         body_flags,
@@ -2264,15 +2291,143 @@ def solve_body_contact_positions(
         shape_material_mu,
         shape_material_mu_torsional,
         shape_material_mu_rolling,
+        shape_material_friction_mode,
         relaxation,
         dt,
-        deltas,
-        contact_inv_weight,
-        contact_impulse,
         recovery,
         contact_generation,
         tid,
     )
+    if contact_impulse:
+        # Each thread owns its contact slot, so a plain store suffices.
+        contact_impulse[tid] = delta_a
+    if active == 0:
+        return
+
+    body_a = contact_side_body(contact_shape0[tid], shape_body)
+    body_b = contact_side_body(contact_shape1[tid], shape_body)
+    if body_a >= 0:
+        wp.atomic_add(deltas, body_a, delta_a)
+    if body_b >= 0:
+        wp.atomic_add(deltas, body_b, delta_b)
+    if contact_inv_weight:
+        if body_a >= 0:
+            wp.atomic_add(contact_inv_weight, body_a, 1.0)
+        if body_b >= 0:
+            wp.atomic_add(contact_inv_weight, body_b, 1.0)
+
+
+@wp.kernel
+def solve_body_contact_positions_per_contact(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_material_mu: wp.array[float],
+    shape_material_mu_torsional: wp.array[float],
+    shape_material_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
+    relaxation: float,
+    dt: float,
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
+    contact_delta: wp.array[wp.spatial_vector],
+    contact_active: wp.array[wp.int32],
+    contact_impulse: wp.array[wp.spatial_vector],
+):
+    """Solve rigid contacts and store each contact's corrections in its own slots.
+
+    Body A's correction goes to ``contact_delta[2 * tid]`` and body B's to
+    ``contact_delta[2 * tid + 1]``. :func:`gather_body_contact_deltas` sums them
+    per body in a fixed order, so this path needs no atomics.
+    """
+    tid = wp.tid()
+    surface_velocity = wp.vec3(0.0)
+    if contact_surface_velocity:
+        surface_velocity = contact_surface_velocity[tid]
+    delta_a, delta_b, active = _solve_body_contact_positions(
+        body_q,
+        body_qd,
+        body_flags,
+        body_com,
+        body_m_inv,
+        body_I_inv,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        surface_velocity,
+        contact_offset0,
+        contact_offset1,
+        contact_normal,
+        contact_thickness0,
+        contact_thickness1,
+        contact_shape0,
+        contact_shape1,
+        shape_material_mu,
+        shape_material_mu_torsional,
+        shape_material_mu_rolling,
+        shape_material_friction_mode,
+        relaxation,
+        dt,
+        recovery,
+        contact_generation,
+        tid,
+    )
+    contact_delta[2 * tid] = delta_a
+    contact_delta[2 * tid + 1] = delta_b
+    contact_active[tid] = active
+    if contact_impulse:
+        contact_impulse[tid] = delta_a
+
+
+# Its own module, outside Warp's deterministic lowering: the forward pass has no atomics, and in the
+# backward pass every gradient element has a single writer (each contact side belongs to one body),
+# while recorded lowering cannot differentiate the read-modify-write of the body output.
+@wp.kernel(module="unique", module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED})
+def gather_body_contact_deltas(
+    body_start: wp.array[wp.int32],
+    body_end: wp.array[wp.int32],
+    sides: wp.array[wp.int32],
+    contact_delta: wp.array[wp.spatial_vector],
+    contact_active: wp.array[wp.int32],
+    # outputs
+    deltas: wp.array[wp.spatial_vector],
+    contact_inv_weight: wp.array[float],
+):
+    """Sum each body's contact corrections and active contacts in ascending contact order.
+
+    The contact sides come from :func:`~newton._src.solvers.contact_gather.sort_contact_sides_by_body`.
+    """
+    body = wp.tid()
+    start = body_start[body]
+    end = body_end[body]
+    if start == end:
+        return
+    delta = wp.spatial_vector()
+    active_count = int(0)
+    for i in range(start, end):
+        side = sides[i]
+        delta += contact_delta[side]
+        active_count += contact_active[side // 2]
+    # Each thread owns its body. Keep particle-contact deltas added earlier in the iteration.
+    deltas[body] = deltas[body] + delta
+    if contact_inv_weight:
+        contact_inv_weight[body] = float(active_count)
 
 
 @wp.kernel
@@ -2334,7 +2489,8 @@ def accumulate_weighted_contact_impulse(
         wp.spatial_top(impulse) * weight,
         wp.spatial_bottom(impulse) * weight,
     )
-    wp.atomic_add(contact_impulse, tid, scaled)
+    # Each thread owns its contact slot, so a plain read-modify-write suffices.
+    contact_impulse[tid] = contact_impulse[tid] + scaled
 
 
 @wp.kernel

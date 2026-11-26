@@ -95,7 +95,7 @@ def Xform "World"
         {
             rel newton:targets = </World/Robot/knee>
             rel newton:outputJoint = </World/Robot/knee_backlash>
-            rel newton:battery = </World/Robot/Battery>
+            rel newton:supply = </World/Robot/Battery>
             uniform token newton:outputSpace = "duty"
             float newton:kp = 0.5
             float newton:kt = 0.6
@@ -116,7 +116,7 @@ def Xform "World"
         )
         {
             rel newton:targets = </World/Robot/ankle>
-            rel newton:battery = </World/Robot/Battery>
+            rel newton:supply = </World/Robot/Battery>
             uniform token newton:outputSpace = "duty"
             float newton:kp = 0.5
             float newton:kt = 0.6

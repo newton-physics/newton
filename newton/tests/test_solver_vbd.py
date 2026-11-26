@@ -2108,6 +2108,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 shape_mu,
                 shape_mu_torsional,
                 shape_mu_rolling,
+                wp.array([int(newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING)] * 2, dtype=wp.int32, device=device),
                 1,
                 match_index,
                 *matched_gen[:3],
@@ -2183,6 +2184,9 @@ def _rigid_contact_history_compliant_alm_friction_warmstart(test, device):
                     wp.array(shape_mu, dtype=float, device=device),
                     wp.array([0.4, 0.4], dtype=float, device=device),
                     wp.array([0.2, 0.2], dtype=float, device=device),
+                    wp.array(
+                        [int(newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING)] * 2, dtype=wp.int32, device=device
+                    ),
                     latest,
                     match_index,
                     *matched_gen[:3],
@@ -2442,6 +2446,7 @@ def _rigid_contact_reset_ownership(test, device):
                 wp.array([2.0] * 4, dtype=float, device=device),
                 wp.zeros(4, dtype=float, device=device),
                 wp.zeros(4, dtype=float, device=device),
+                None,
                 1,
                 match_index,
                 *matched_gen[:3],
@@ -4220,6 +4225,65 @@ def _rigid_compliant_limit_holds_under_load(test, device):
     test.assertAlmostEqual(position, 0.1, delta=5.0e-4)
     test.assertLess(abs(speed), 1.0e-2)
 
+    # A resting multiplier must release when the applied force reverses.
+    wrench *= -1.0
+    for _ in range(20):
+        state_0.body_f.assign(wrench)
+        solver.step(state_0, state_1, None, None, dt)
+        state_0, state_1 = state_1, state_0
+    test.assertLess(float(state_0.body_q.numpy()[body, 0]), 0.08)
+
+
+def _rigid_compliant_limit_holds_on_arrival_and_under_effort(test, device):
+    """Stop a link arriving at a compliant limit, and one a joint effort presses into it."""
+    # Even iteration counts exposed a multiplier step that released the limit on alternate sweeps.
+    for limit_ke in (1.0e5, 1.0e8):
+        for iterations in (4, 5):
+            with test.subTest(limit_ke=limit_ke, iterations=iterations):
+                builder = newton.ModelBuilder()
+                link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01), com=wp.vec3(0.3, 0.0, 0.0))
+                joint = builder.add_joint_revolute(
+                    -1, link, axis=newton.Axis.Y, limit_lower=-0.5, limit_upper=0.5, limit_ke=limit_ke, limit_kd=10.0
+                )
+                builder.add_articulation([joint])
+                builder.color()
+                model = builder.finalize(device=device)
+                solver = newton.solvers.SolverVBD(model, iterations=iterations)
+                state, other = model.state(), model.state()
+                for _ in range(60):
+                    solver.step(state, other, None, None, 1.0 / 60.0)
+                    state, other = other, state
+                    pose = state.body_q.numpy()[0]
+                    # Falling under gravity, it must stop at its upper limit with the hinge intact.
+                    test.assertLess(2.0 * np.arctan2(pose[4], pose[6]), 0.5 + 0.1)
+                    test.assertLess(float(np.linalg.norm(pose[:3])), 5.0e-3)
+
+    # A joint effort enters each step's free-body prediction far past the limit,
+    # so the limit must hold from an unconverged first iterate.
+    with test.subTest(case="joint effort"):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        link = builder.add_link(mass=0.05, inertia=wp.mat33(np.eye(3) * 1.0e-5), com=wp.vec3(0.03, 0.0, 0.0))
+        joint = builder.add_joint_revolute(
+            -1, link, axis=newton.Axis.Y, limit_lower=-0.5, limit_upper=0.5, limit_ke=1.0e4, limit_kd=0.5
+        )
+        builder.add_articulation([joint])
+        builder.joint_q[0] = 0.49
+        builder.color()
+        model = builder.finalize(device=device)
+        state, other = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        model.body_q.assign(state.body_q)
+        control = model.control()
+        control.joint_f.assign(np.array([0.2], dtype=np.float32))
+        solver = newton.solvers.SolverVBD(model)
+        for _ in range(120):
+            solver.step(state, other, control, None, 1.0 / 60.0)
+            state, other = other, state
+        pose = state.body_q.numpy()[0]
+        # It must rest effort / limit_ke past the bound with the hinge intact.
+        test.assertAlmostEqual(2.0 * np.arctan2(pose[4], pose[6]), 0.5 + 0.2 / 1.0e4, delta=0.01)
+        test.assertLess(float(np.linalg.norm(pose[:3])), 5.0e-3)
+
 
 def _body_structural_k_refreshes_after_joint_enable_notification(test, device):
     """Verify body_structural_k tracks joint enable flips."""
@@ -5362,6 +5426,7 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
 def _simulate_vbd_angular_friction(device, channel, coefficient):
     """Simulate rotation resisted by one angular contact-friction channel."""
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
     builder.default_shape_cfg.ke = 5.0e5
     builder.default_shape_cfg.kd = 100.0
     builder.default_shape_cfg.mu = 0.0
@@ -5418,6 +5483,7 @@ def _rolling_friction_stores_no_torsional_couple(test, device):
     mu_rolling = 1.0e-6
     builder = newton.ModelBuilder(gravity=tuple(-9.81 * normal))
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=ke, kd=0.0, mu=0.0, mu_torsional=0.0, mu_rolling=mu_rolling)
+    cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
     builder.add_shape_plane(plane=(*normal, 0.0), width=0.0, length=0.0, cfg=cfg)
     body = builder.add_body(
         xform=wp.transform(wp.vec3(*(normal * (radius - mass * 9.81 / ke))), wp.quat_identity()),
@@ -5459,6 +5525,7 @@ def _torsional_friction_holds_against_stiff_drive(test, device):
     builder.default_shape_cfg.mu = 0.0
     builder.default_shape_cfg.mu_torsional = mu_angular
     builder.default_shape_cfg.mu_rolling = 0.0
+    builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_TORSIONAL
     builder.add_ground_plane()
 
     center = wp.vec3(0.0, 0.0, radius - 1.0e-5)
@@ -5548,6 +5615,7 @@ def _collect_rigid_contact_forces_reports_solved_angular_reaction(test, device):
     inertia = 0.01
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=5.0e5, kd=0.0, mu=0.0, mu_torsional=0.01, mu_rolling=0.01)
+    cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
     builder.add_ground_plane(cfg=cfg)
     body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.2 - 9.81 / cfg.ke), wp.quat_identity()),
@@ -7068,6 +7136,7 @@ def _rigid_contact_history_restore_checks_provenance(test, device):
                     wp.array([0.5, 0.5], dtype=float, device=device),
                     wp.zeros(2, dtype=float, device=device),
                     wp.zeros(2, dtype=float, device=device),
+                    None,
                     1,
                     wp.array([1, 0], dtype=wp.int32, device=device),
                     wp.array([match_generation], dtype=wp.int32, device=device),
@@ -7882,6 +7951,12 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
+    "test_rigid_compliant_limit_holds_on_arrival_and_under_effort",
+    _rigid_compliant_limit_holds_on_arrival_and_under_effort,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
     "test_body_structural_k_refreshes_after_joint_enable_notification",
     _body_structural_k_refreshes_after_joint_enable_notification,
     devices=devices,
@@ -8259,6 +8334,7 @@ def _run_face_section2(device, shape_margin):
             model.shape_material_ke,
             model.shape_material_kd,
             model.shape_material_mu,
+            model.shape_material_friction_mode,
         ],
         outputs=[material_ke, material_kd, material_mu],
         device=device,
@@ -10173,6 +10249,270 @@ add_function_test(
     _rigid_contact_history_provenance_graph_replay,
     devices=cuda_devices,
 )
+
+
+# ---------------------------------------------------------------------------
+# Kinematic particle targets (ParticleFlags.KINEMATIC + Control.particle_target_q)
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _kinematic_target_offset_kernel(
+    indices: wp.array[wp.int32],
+    q0: wp.array[wp.vec3],
+    offset: wp.vec3,
+    target_q: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    i = indices[tid]
+    target_q[i] = q0[i] + offset
+
+
+@wp.kernel
+def _kinematic_target_device_time_kernel(
+    indices: wp.array[wp.int32],
+    q0: wp.array[wp.vec3],
+    t: wp.array[float],
+    velocity: wp.vec3,
+    target_q: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    i = indices[tid]
+    target_q[i] = q0[i] + velocity * t[0]
+
+
+@wp.kernel
+def _kinematic_advance_time_kernel(t: wp.array[float], dt: float):
+    t[0] = t[0] + dt
+
+
+@wp.kernel
+def _kinematic_clear_flag_kernel(indices: wp.array[wp.int32], flags: wp.array[wp.int32]):
+    i = indices[wp.tid()]
+    flags[i] = flags[i] & ~wp.int32(newton.ParticleFlags.KINEMATIC)
+
+
+def _kinematic_cloth_model(device, kinematic, dim=2, gravity=(0.0, 0.0, -10.0), z=1.0):
+    cloth = newton.ModelBuilder(gravity=gravity)
+    cloth.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, z),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=dim,
+        dim_y=dim,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-3,
+        particle_radius=0.01,
+    )
+    for i in kinematic:
+        cloth.particle_flags[i] |= int(newton.ParticleFlags.KINEMATIC)
+    cloth.color()
+    return cloth.finalize(device=device)
+
+
+def _run_kinematic_steps(model, solver, steps, dt, indices, offset_per_step, control=None):
+    """Step with a kernel-written target; return (q_in, target, state_out) of the last step."""
+    state_0, state_1 = model.state(), model.state()
+    control = model.control() if control is None else control
+    q_rest = wp.clone(model.particle_q)
+    idx = wp.array(indices, dtype=wp.int32, device=model.device)
+    q_in = None
+    for k in range(steps):
+        offset = wp.vec3(offset_per_step) * float(k + 1)
+        wp.launch(
+            _kinematic_target_offset_kernel,
+            dim=len(indices),
+            inputs=[idx, q_rest, offset],
+            outputs=[control.particle_target_q],
+            device=model.device,
+        )
+        if k == steps - 1:
+            q_in = state_0.particle_q.numpy().copy()
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+    return q_in, control.particle_target_q.numpy().copy(), state_0
+
+
+def test_kinematic_particle_friction_drag(test, device):
+    """A sheet resting on a sideways-moving KINEMATIC sheet is dragged by self-contact friction."""
+    settle_steps, move_steps, dt, step_dx = 100, 100, 2.0e-3, 2.0e-4
+    plate_count = 16
+
+    def run(mu):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+        for z in (0.0, 0.02):
+            builder.add_cloth_grid(
+                pos=wp.vec3(0.0, 0.0, z),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=3,
+                dim_y=3,
+                cell_x=0.1,
+                cell_y=0.1,
+                mass=0.05,
+                tri_ke=1.0e3,
+                tri_ka=1.0e3,
+                tri_kd=1.0e-3,
+                particle_radius=0.005,
+            )
+        for i in range(plate_count):
+            builder.particle_flags[i] |= int(newton.ParticleFlags.KINEMATIC)
+        builder.color()
+        model = builder.finalize(device=device)
+        model.soft_contact_ke = 1.0e4
+        model.soft_contact_kd = 0.0
+        model.soft_contact_mu = mu
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=10,
+            particle_enable_self_contact=True,
+            particle_self_contact_margin=0.02,
+            particle_self_contact_gap=0.01,
+        )
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        q_rest = wp.clone(model.particle_q)
+        idx = wp.array(list(range(plate_count)), dtype=wp.int32, device=device)
+        q_settled = None
+        for k in range(settle_steps + move_steps):
+            offset = wp.vec3(step_dx * max(0, k + 1 - settle_steps), 0.0, 0.0)
+            wp.launch(
+                _kinematic_target_offset_kernel,
+                dim=plate_count,
+                inputs=[idx, q_rest, offset],
+                outputs=[control.particle_target_q],
+                device=device,
+            )
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+            if k == settle_steps - 1:
+                q_settled = state_0.particle_q.numpy().copy()
+        q = state_0.particle_q.numpy()
+        plate_dx = q[:plate_count, 0].mean() - q_settled[:plate_count, 0].mean()
+        sheet_dx = q[plate_count:, 0].mean() - q_settled[plate_count:, 0].mean()
+        return plate_dx, sheet_dx, q[plate_count:, 2].min()
+
+    plate_dx, sheet_dx_friction, sheet_z = run(mu=1.0)
+    _, sheet_dx_frictionless, _ = run(mu=0.0)
+    test.assertAlmostEqual(plate_dx, step_dx * move_steps, delta=1.0e-6)
+    test.assertGreater(sheet_z, 0.0)
+    test.assertGreater(sheet_dx_friction, 0.9 * plate_dx)
+    test.assertLess(abs(sheet_dx_frictionless), 0.01 * plate_dx)
+
+
+def test_kinematic_particle_release(test, device):
+    """Clearing KINEMATIC on the device (no notify) releases the particle with its driven velocity."""
+    dt = 1.0e-3
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    builder.add_particle(
+        pos=(0.0, 0.0, 1.0),
+        vel=(0.0, 0.0, 0.0),
+        mass=1.0,
+        flags=int(newton.ParticleFlags.ACTIVE | newton.ParticleFlags.KINEMATIC),
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, iterations=2)
+    control = model.control()
+    _, _, state_0 = _run_kinematic_steps(model, solver, 5, dt, [0], (0.002, 0.0, 0.0), control=control)
+    v_kin = state_0.particle_qd.numpy()[0].copy()
+    np.testing.assert_allclose(v_kin, (2.0, 0.0, 0.0), rtol=1.0e-4)
+
+    wp.launch(
+        _kinematic_clear_flag_kernel,
+        dim=1,
+        inputs=[wp.array([0], dtype=wp.int32, device=device), model.particle_flags],
+        device=device,
+    )
+    state_1 = model.state()
+    solver.step(state_0, state_1, control, None, dt)
+    np.testing.assert_allclose(
+        state_1.particle_qd.numpy()[0], v_kin + np.array((0.0, 0.0, -10.0 * dt)), rtol=1.0e-4, atol=1.0e-4
+    )
+
+
+def test_kinematic_particle_dat_large_jump(test, device):
+    """DAT truncation does not shorten a large kinematic jump."""
+    dt = 1.0e-3
+    model = _kinematic_cloth_model(device, kinematic=[0], dim=3)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=5,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.01,
+        particle_self_contact_gap=0.005,
+    )
+    _, target, state = _run_kinematic_steps(model, solver, 1, dt, [0], (0.3, 0.2, -0.4))
+    np.testing.assert_array_equal(state.particle_q.numpy()[0], target[0])
+
+
+def test_kinematic_particle_zero_iterations(test, device):
+    """With iterations=0 the output state still receives the kinematic target."""
+    dt = 1.0e-3
+    model = _kinematic_cloth_model(device, kinematic=[0])
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    q_in, target, state = _run_kinematic_steps(model, solver, 1, dt, [0], (0.01, 0.0, 0.0))
+    np.testing.assert_array_equal(state.particle_q.numpy()[0], target[0])
+    np.testing.assert_allclose(state.particle_qd.numpy()[0], (target[0] - q_in[0]) / dt, rtol=1.0e-5)
+
+
+def test_kinematic_particle_graph_capture(test, device):
+    """A captured substep loop with a device-time target matches the per-step contract."""
+    dt = 1.0e-3
+    substeps = 4
+    model = _kinematic_cloth_model(device, kinematic=[0])
+    solver = newton.solvers.SolverVBD(model, iterations=3)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    q_rest = wp.clone(model.particle_q)
+    idx = wp.array([0], dtype=wp.int32, device=device)
+    t = wp.zeros(1, dtype=float, device=device)
+    velocity = wp.vec3(0.5, 0.0, 0.0)
+
+    def simulate():
+        nonlocal state_0, state_1
+        for _ in range(substeps):
+            wp.launch(_kinematic_advance_time_kernel, dim=1, inputs=[t, dt], device=device)
+            wp.launch(
+                _kinematic_target_device_time_kernel,
+                dim=1,
+                inputs=[idx, q_rest, t, velocity],
+                outputs=[control.particle_target_q],
+                device=device,
+            )
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+
+    with wp.ScopedCapture(device) as capture:
+        simulate()
+    for _ in range(3):
+        wp.capture_launch(capture.graph)
+    target = control.particle_target_q.numpy()[0]
+    np.testing.assert_allclose(target - q_rest.numpy()[0], (0.5 * dt * substeps * 3, 0.0, 0.0), rtol=1.0e-4)
+    np.testing.assert_array_equal(state_0.particle_q.numpy()[0], target)
+    np.testing.assert_allclose(state_0.particle_qd.numpy()[0], (0.5, 0.0, 0.0), rtol=1.0e-3)
+
+
+class TestVBDKinematicParticles(unittest.TestCase):
+    pass
+
+
+_kinematic_devices = cuda_devices if cuda_devices else devices[:1]
+for _name, _func, _devices in (
+    ("test_kinematic_particle_friction_drag", test_kinematic_particle_friction_drag, _kinematic_devices),
+    ("test_kinematic_particle_release", test_kinematic_particle_release, _kinematic_devices),
+    ("test_kinematic_particle_dat_large_jump", test_kinematic_particle_dat_large_jump, _kinematic_devices),
+    ("test_kinematic_particle_zero_iterations", test_kinematic_particle_zero_iterations, _kinematic_devices),
+    ("test_kinematic_particle_graph_capture", test_kinematic_particle_graph_capture, cuda_devices),
+):
+    add_function_test(TestVBDKinematicParticles, _name, _func, devices=_devices)
 
 
 def _vbd_world_residual(

@@ -449,10 +449,62 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
 
     Returns:
         A Warp transform containing the position and rotation extracted from the prim.
+
+    Note:
+        The rotation follows ``Gf.Transform``, the convention of the UsdPhysics parser. For a
+        mirrored (negative-determinant) matrix it puts the reflection into a negative uniform
+        scale, so the returned rotation is the negated orthogonal factor and reproduces the
+        authored axes only together with that scale. Callers that keep only the pose, such as
+        cameras, should build their frame from the authored axes instead.
     """
     mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
-    xform_pos, xform_rot, _scale = wp.transform_decompose(wp.mat44(mat.T))
-    return wp.transform(xform_pos, xform_rot)
+    # Use ``Gf.Transform`` so the rotation matches the UsdPhysics parser convention.
+    gf_xform = Gf.Transform(Gf.Matrix4d(*np.asarray(mat, dtype=np.float64).reshape(-1)))
+    translation = gf_xform.GetTranslation()
+    quat = gf_xform.GetRotation().GetQuat()
+    imag = quat.GetImaginary()
+    return wp.transform(
+        wp.vec3(float(translation[0]), float(translation[1]), float(translation[2])),
+        wp.quat(float(imag[0]), float(imag[1]), float(imag[2]), float(quat.GetReal())),
+    )
+
+
+def _get_camera_transform(
+    prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCache | None = None
+) -> wp.transform:
+    """Return a camera pose that keeps the authored view (local -Z) and up (local +Y) directions.
+
+    Unlike :func:`get_transform`, this drops any scale, shear or reflection: a mirrored
+    camera keeps its view and up directions and its right axis flips.
+
+    Args:
+        prim: The USD camera prim to query.
+        local: If True, get the local transformation; if False, get the world transformation.
+        xform_cache: Optional USD XformCache to reuse when computing world transforms (only used if ``local`` is False).
+
+    Returns:
+        A Warp transform whose rotation maps local -Z and +Y onto the authored view and up directions.
+    """
+    mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache).astype(np.float64)
+    # USD matrices act on row vectors: rows 0-2 are the images of the local axes, row 3 the translation.
+    back = mat[2, :3]
+    up = mat[1, :3]
+    back_len = np.linalg.norm(back)
+    if back_len < 1e-12:
+        return get_transform(prim, local=local, xform_cache=xform_cache)
+    z_axis = back / back_len
+    up = up - np.dot(up, z_axis) * z_axis
+    up_len = np.linalg.norm(up)
+    if up_len < 1e-12:
+        return get_transform(prim, local=local, xform_cache=xform_cache)
+    y_axis = up / up_len
+    x_axis = np.cross(y_axis, z_axis)
+    rotation = np.column_stack((x_axis, y_axis, z_axis))
+    translation = mat[3, :3]
+    return wp.transform(
+        wp.vec3(float(translation[0]), float(translation[1]), float(translation[2])),
+        wp.normalize(wp.quat_from_matrix(wp.mat33(*rotation.reshape(-1).tolist()))),
+    )
 
 
 def _normalized_quat(x: float, y: float, z: float, w: float) -> wp.quat:
