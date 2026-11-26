@@ -3592,6 +3592,73 @@ class TestSCCSolver(NewtonTestCase):
         schur, _, _ = self._step_articulated_bar_on_ground(True, 30, sparse=True)
         np.testing.assert_allclose(schur, reference, rtol=0.0, atol=1.0e-4)
 
+    def test_08d3d_dense_schur_keeps_arms_on_kinematic_base_apart(self):
+        """Color two arms on one kinematic base as separate nodes.
+
+        The base is immovable, so the Schur complement does not couple the arms
+        through it and their contacts may share colors.
+        """
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        SolverKamino.register_custom_attributes(builder)
+        builder.add_ground_plane(cfg=shape_cfg)
+        base = builder.add_link(
+            mass=1.0,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
+            inertia=wp.mat33(np.eye(3) * 1.0e-2),
+            is_kinematic=True,
+        )
+        joints = [builder.add_joint_free(base)]
+        for side in (1.0, -1.0):
+            parent = base
+            for index in range(2):
+                body = builder.add_link(
+                    mass=0.1,
+                    xform=wp.transform(wp.vec3(0.1 * (index + 1), 0.1 * side, 0.018), wp.quat_identity()),
+                    inertia=wp.mat33(np.eye(3) * 1.0e-3),
+                    lock_inertia=True,
+                )
+                builder.add_shape_sphere(body, radius=0.02, cfg=shape_cfg)
+                offset = (0.1, 0.1 * side, -0.082) if index == 0 else (0.1, 0.0, 0.0)
+                joints.append(
+                    builder.add_joint_revolute(
+                        parent,
+                        body,
+                        parent_xform=wp.transform(wp.vec3(*offset), wp.quat_identity()),
+                        axis=newton.Axis.Z,
+                    )
+                )
+                parent = body
+        builder.add_articulation(joints)
+        model = builder.finalize(device=self.device)
+
+        config = SolverKamino.Config(
+            dynamics_solver="scc",
+            use_fk_solver=False,
+            sparse_jacobian=False,
+            sparse_dynamics=False,
+            use_collision_detector=True,
+            scc=kamino_config.SCCSolverConfig(use_schur_complement=True, max_alternating_iterations=1),
+        )
+        solver = SolverKamino(model, config=config)
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        solver.step(state_in, state_out, control=model.control(), contacts=None, dt=0.005)
+        self.assertGreaterEqual(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 4)
+        scc = solver._solver_kamino.solver_fd
+        np.testing.assert_array_equal(scc._body_color_nodes.numpy(), [0, 1, 1, 3, 3])
+
+        # Ground contacts pair one body with the world (-1).
+        contact_colors: dict[int, list[int]] = {}
+        colors = scc._data.state.inequality_colors.numpy()
+        for (body_a, body_b), color in zip(scc._data.state.inequality_bodies.numpy(), colors, strict=True):
+            if color >= 0 and min(body_a, body_b) < 0 <= max(body_a, body_b):
+                contact_colors.setdefault(int(max(body_a, body_b)), []).append(int(color))
+        arm_colors = [contact_colors[1] + contact_colors[2], contact_colors[3] + contact_colors[4]]
+        for arm in arm_colors:
+            self.assertEqual(len(arm), len(set(arm)))
+        self.assertTrue(set(arm_colors[0]) & set(arm_colors[1]))
+
     def test_08d4_scc_incline_friction_threshold(self):
         """Hold or slide according to the Coulomb incline threshold."""
         dt = 2.0e-3

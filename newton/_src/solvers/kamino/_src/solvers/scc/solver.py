@@ -304,14 +304,17 @@ class SCCSolver:
         inequalities must not couple. Body coloring ensures that for the
         Delassus matrix. The bilateral Schur complement also couples every pair
         of bodies joined through eliminated joint rows, so the Schur path maps
-        each such component to one node, its lowest body index.
+        each such component to one node, its lowest body index. Immovable
+        bodies couple nothing and do not join components.
         """
         num_bodies = max(1, self._size.sum_of_num_bodies)
         if self._use_schur_complement and self._num_joints > 0:
             bilateral_cts = model.joints.num_kinematic_cts.numpy() + model.joints.num_dynamic_cts.numpy()
             bid_B = model.joints.bid_B.numpy()
             bid_F = model.joints.bid_F.numpy()
+            immovable = model.bodies.is_immovable.numpy() != 0
             joined = (bilateral_cts > 0) & (bid_B >= 0) & (bid_F >= 0)
+            joined[joined] &= ~immovable[bid_B[joined]] & ~immovable[bid_F[joined]]
             nodes = connected_component_labels(num_bodies, bid_B[joined], bid_F[joined])
         else:
             nodes = np.arange(num_bodies, dtype=np.int32)
