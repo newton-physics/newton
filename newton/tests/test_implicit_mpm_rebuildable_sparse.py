@@ -718,7 +718,7 @@ def test_particle_properties_notify_refreshes_volumes(test, device):
 
 
 def _run_material_block(device, *, capture, change=None, initial=None, steps=4, **config_kwargs):
-    """Step the sheared block and return the particle velocities, optionally changing the material after the first step.
+    """Step the sheared block and return the final state, optionally changing the material after the first step.
 
     With ``capture``, the steps after the change are replayed from a graph
     captured before the change, with the notification recorded in the graph.
@@ -750,7 +750,7 @@ def _run_material_block(device, *, capture, change=None, initial=None, steps=4, 
         else:
             two_steps()
     solver.check_sparse_grid_rebuild_status()
-    return state_0.particle_qd.numpy()
+    return state_0
 
 
 def test_material_change_reaches_captured_graph(test, device):
@@ -758,9 +758,9 @@ def test_material_change_reaches_captured_graph(test, device):
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture requires the Warp memory pool")
 
-    rigid = _run_material_block(device, capture=False)
-    eager = _run_material_block(device, capture=False, change=_COMPLIANT_VISCOUS)
-    graph = _run_material_block(device, capture=True, change=_COMPLIANT_VISCOUS)
+    rigid = _run_material_block(device, capture=False).particle_qd.numpy()
+    eager = _run_material_block(device, capture=False, change=_COMPLIANT_VISCOUS).particle_qd.numpy()
+    graph = _run_material_block(device, capture=True, change=_COMPLIANT_VISCOUS).particle_qd.numpy()
 
     test.assertGreater(np.max(np.abs(eager - rigid)), 1.0e-4)
     np.testing.assert_allclose(graph, eager, rtol=1.0e-5, atol=1.0e-6)
@@ -774,8 +774,13 @@ def test_disabled_compliance_is_ignored(test, device):
     material = _run_material_block(device, capture=False, initial=compliant, enable_compliance=False)
     enabled = _run_material_block(device, capture=False, initial=compliant)
 
-    test.assertGreater(np.max(np.abs(enabled - rigid)), 1.0e-4)
-    np.testing.assert_allclose(material, rigid, rtol=1.0e-5, atol=1.0e-6)
+    rigid_qd = rigid.particle_qd.numpy()
+    test.assertGreater(np.max(np.abs(enabled.particle_qd.numpy() - rigid_qd)), 1.0e-4)
+    np.testing.assert_allclose(material.particle_qd.numpy(), rigid_qd, rtol=1.0e-5, atol=1.0e-6)
+    # The elastic strain state ignores the modulus as well
+    rigid_strain = rigid.mpm.particle_elastic_strain.numpy()
+    test.assertGreater(np.max(np.abs(enabled.mpm.particle_elastic_strain.numpy() - rigid_strain)), 1.0e-6)
+    np.testing.assert_allclose(material.mpm.particle_elastic_strain.numpy(), rigid_strain, rtol=1.0e-5, atol=1.0e-6)
 
 
 class TestImplicitMPMRebuildableSparse(unittest.TestCase):

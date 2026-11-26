@@ -4120,7 +4120,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _warm_elasticity_temporaries(self, pic: fem.PicQuadrature):
         """Fill the elasticity temporary store by assembling the system once outside any graph capture."""
-        particle_elastic_strain = wp.zeros(self.model.particle_count, dtype=wp.mat33)
+        # Identity strains keep the warm-up finite: the Hencky strain takes the log of singular values
+        particle_elastic_strain = wp.full(self.model.particle_count, wp.mat33(np.eye(3)), dtype=wp.mat33)
         self._assemble_elasticity_system(particle_elastic_strain, 1.0, pic, self._scratchpad, 1.0)
 
     def _clear_elasticity_system(self, scratch: ImplicitMPMScratchpad):
@@ -4828,6 +4829,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 values={
                     "dt": dt,
                     "kinematic_elastic_strain": self.carry_residual_strain == "sampled",
+                    "enable_compliance": mpm_model.enable_compliance,
                     "particle_flags": mpm_model.material_particle_flags,
                     "particle_density": mpm_model.particle_density,
                     "particle_volume": mpm_model.material_particle_volume,
