@@ -1996,6 +1996,58 @@ class TestModelJoints(unittest.TestCase):
         finally:
             newton.use_coord_layout_targets = previous_flag
 
+    def test_explicit_drive_targets_are_independent_of_joint_limits(self):
+        """Preserve explicit position targets through joint construction and finalization."""
+        builder = newton.ModelBuilder()
+        expected = []
+        for kind in ("revolute", "prismatic"):
+            for target in (-0.08, 0.0, 0.2, 0.6):
+                with self.subTest(kind=kind, target=target):
+                    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                    joint = getattr(builder, f"add_joint_{kind}")(
+                        parent=-1,
+                        child=body,
+                        limit_lower=0.0,
+                        limit_upper=0.45,
+                        target_pos=target,
+                        target_ke=10.0,
+                    )
+                    builder.add_articulation([joint])
+                    expected.append(target)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.joint_target_q.numpy(), expected, atol=1e-7)
+        np.testing.assert_array_equal(model.joint_q.numpy(), 0.0)
+        np.testing.assert_array_equal(model.joint_limit_lower.numpy(), 0.0)
+        np.testing.assert_allclose(model.joint_limit_upper.numpy(), 0.45)
+
+    def test_drive_target_default_preserves_explicit_zero(self):
+        """Distinguish omitted targets from explicit zero."""
+        config = newton.ModelBuilder.JointDofConfig
+        self.assertEqual(config(limit_lower=1.0, limit_upper=2.0).target_pos, 1.5)
+        self.assertEqual(config(limit_lower=-1.0, limit_upper=2.0).target_pos, 0.0)
+        self.assertEqual(config(limit_lower=1.0, limit_upper=2.0, target_pos=0.0).target_pos, 0.0)
+
+        for kind in ("revolute", "prismatic"):
+            for target in (0.0, -0.08):
+                with self.subTest(kind=kind, inherited_target=target):
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.target_pos = target
+                    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                    joint = getattr(builder, f"add_joint_{kind}")(
+                        parent=-1,
+                        child=body,
+                        limit_lower=1.0,
+                        limit_upper=2.0,
+                    )
+                    self.assertEqual(builder.joint_target_q[builder.joint_q_start[joint]], target)
+
+    def test_nonfinite_drive_target_is_rejected(self):
+        """Reject nonfinite position targets instead of substituting a midpoint."""
+        for target in (math.nan, math.inf, -math.inf):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(ValueError, "target_pos must be finite"):
+                    newton.ModelBuilder.JointDofConfig(target_pos=target)
+
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are

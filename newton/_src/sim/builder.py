@@ -737,7 +737,7 @@ class ModelBuilder:
             limit_upper: float = MAXVAL,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
-            target_pos: float = 0.0,
+            target_pos: float | None = None,
             target_vel: float = 0.0,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
@@ -759,10 +759,10 @@ class ModelBuilder:
             self.limit_kd = limit_kd
             """The damping coefficient of the joint axis limits
             [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
-            self.target_pos = target_pos
+            self.target_pos = 0.0 if target_pos is None else target_pos
             """The target position of the joint axis.
-            If the initial `target_pos` is outside the limits,
-            it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
+            Explicit targets are preserved independently of joint limits, including preload targets.
+            If omitted, use zero when in range, otherwise the limit midpoint."""
             self.target_vel = target_vel
             """The target velocity of the joint axis."""
             self.target_ke = target_ke
@@ -783,8 +783,10 @@ class ModelBuilder:
             """Actuator mode for this DOF. Determines which actuators are installed (see :class:`JointTargetMode`).
             If None, the mode is inferred from gains and targets."""
 
-            if self.target_pos > self.limit_upper or self.target_pos < self.limit_lower:
+            if target_pos is None and (self.target_pos > self.limit_upper or self.target_pos < self.limit_lower):
                 self.target_pos = 0.5 * (self.limit_lower + self.limit_upper)
+            if not math.isfinite(self.target_pos):
+                raise ValueError("target_pos must be finite")
 
         @classmethod
         def create_unlimited(cls, axis: AxisType | Vec3) -> ModelBuilder.JointDofConfig:

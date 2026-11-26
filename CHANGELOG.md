@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Preserve explicit joint position targets outside joint limits, including USD preload targets, instead of replacing them with the limit midpoint. Omitted `JointDofConfig` targets retain their zero-or-midpoint default; revolute and prismatic builder methods preserve inherited `default_joint_cfg` targets. Reject nonfinite position targets. Callers relying on automatic recentering, including inherited default targets outside new limits, must supply the desired midpoint explicitly.
+
 <!-- towncrier release notes start -->
 
 ## [1.5.2] - 2026-09-09
