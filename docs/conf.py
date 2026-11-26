@@ -8,6 +8,7 @@
 
 import datetime
 import inspect
+import logging
 import os
 import pkgutil
 import re
@@ -180,6 +181,16 @@ intersphinx_mapping = {
     "warp": ("https://nvidia.github.io/warp/stable", None),
     "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
+
+
+def _tolerate_usd_inventory_failure(record: logging.LogRecord) -> bool:
+    """Report a failed fetch of the USD inventory as info: the host is unreliable and ``-W`` would fail the build."""
+    if record.levelno == logging.WARNING and intersphinx_mapping["usd"][0] in record.getMessage():
+        record.levelno, record.levelname = logging.INFO, "INFO"
+    return True
+
+
+logging.getLogger("sphinx.sphinx.ext.intersphinx").addFilter(_tolerate_usd_inventory_failure)
 
 # Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
 # ``pxr.*`` paths so intersphinx can resolve them against the USD inventory.
