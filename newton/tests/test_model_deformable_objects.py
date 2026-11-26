@@ -68,7 +68,7 @@ def test_mixed_model_exposes_deformable_ranges(test, device):
 class TestModelDeformableObjects(unittest.TestCase):
     def test_unknown_reference_names_suggest_builtin_enums(self):
         """Suggest enums for unregistered family names in builder and Model references."""
-        for name in ("curve", "surface", "volume", "missing"):
+        for name in ("curve", "surface", "volume", "point_set", "missing"):
             expected = f"Unknown custom attribute reference frequency {name!r}"
             if name != "missing":
                 expected += f"; to reference the built-in {name} domain, use Model.AttributeFrequency.{name.upper()}"
@@ -100,7 +100,12 @@ class TestModelDeformableObjects(unittest.TestCase):
     def test_explicit_deformable_reference_domains(self):
         """Keep enum references to each deformable family through finalization and replication."""
         prototype = newton.ModelBuilder()
-        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+        for family, add in (
+            ("curve", _add_curve),
+            ("surface", _add_surface),
+            ("volume", _add_volume),
+            ("point_set", _add_point_set),
+        ):
             add(prototype, label="asset")
             frequency = getattr(newton.Model.AttributeFrequency, family.upper())
             prototype.add_custom_attribute(
@@ -118,7 +123,7 @@ class TestModelDeformableObjects(unittest.TestCase):
                 if replicate:
                     builder.replicate(prototype, 2)
                 model = builder.finalize(device="cpu")
-                for family in ("curve", "surface", "volume"):
+                for family in ("curve", "surface", "volume", "point_set"):
                     name = f"{family}_reference"
                     np.testing.assert_array_equal(getattr(model, name).numpy(), [0, 1] if replicate else [0])
                     self.assertEqual(
@@ -135,7 +140,12 @@ class TestModelDeformableObjects(unittest.TestCase):
             "list": [0, -1],
             "tuple": (0, -1),
         }
-        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+        for family, add in (
+            ("curve", _add_curve),
+            ("surface", _add_surface),
+            ("volume", _add_volume),
+            ("point_set", _add_point_set),
+        ):
             add(prototype, label="asset")
             frequency = getattr(newton.Model.AttributeFrequency, family.upper())
             for kind, value in values.items():
@@ -156,7 +166,7 @@ class TestModelDeformableObjects(unittest.TestCase):
             else:
                 builder.replicate(prototype, 2)
             model = builder.finalize(device="cpu")
-            for family in ("curve", "surface", "volume"):
+            for family in ("curve", "surface", "volume", "point_set"):
                 for kind in values:
                     with self.subTest(method=method, family=family, kind=kind):
                         array = getattr(model, f"{family}_{kind}")
@@ -176,7 +186,12 @@ class TestModelDeformableObjects(unittest.TestCase):
             ("negative", wp.int32, -1, {}, [-1, -1, -1, -1]),
         )
         prototype = newton.ModelBuilder()
-        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+        for family, add in (
+            ("curve", _add_curve),
+            ("surface", _add_surface),
+            ("volume", _add_volume),
+            ("point_set", _add_point_set),
+        ):
             add(prototype, label="first")
             add(prototype, label="second")
             frequency = getattr(newton.Model.AttributeFrequency, family.upper())
@@ -230,7 +245,7 @@ class TestModelDeformableObjects(unittest.TestCase):
                     model = builder.finalize(device="cpu")
             else:
                 model = builder.finalize(device="cpu")
-            for family in ("curve", "surface", "volume"):
+            for family in ("curve", "surface", "volume", "point_set"):
                 for name, _, _, _, expected in cases:
                     with self.subTest(method=method, family=family, kind=name):
                         np.testing.assert_array_equal(
@@ -251,7 +266,12 @@ class TestModelDeformableObjects(unittest.TestCase):
     def test_family_attribute_frequencies_survive_replication(self):
         """Size model and state attributes by deformable objects rather than their elements."""
         prototype = newton.ModelBuilder()
-        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+        for family, add in (
+            ("curve", _add_curve),
+            ("surface", _add_surface),
+            ("volume", _add_volume),
+            ("point_set", _add_point_set),
+        ):
             add(prototype, label="asset")
             frequency = getattr(newton.Model.AttributeFrequency, family.upper())
             prototype.add_custom_attribute(
@@ -272,13 +292,13 @@ class TestModelDeformableObjects(unittest.TestCase):
         builder.replicate(prototype, 2)
         model = builder.finalize(device="cpu")
         state = model.state()
-        for family in ("curve", "surface", "volume"):
+        for family in ("curve", "surface", "volume", "point_set"):
             np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [17, 17])
             np.testing.assert_array_equal(getattr(state, f"{family}_enabled").numpy(), [1, 1])
 
     def test_custom_reference_registration_order(self):
         """Keep custom reference names unchanged across registration orders and reused declarations."""
-        for family in ("curve", "surface", "volume"):
+        for family in ("curve", "surface", "volume", "point_set"):
             reference = newton.ModelBuilder.CustomAttribute(
                 name="tag_reference",
                 dtype=wp.int32,
@@ -309,7 +329,12 @@ class TestModelDeformableObjects(unittest.TestCase):
 
     def test_deformable_reference_domains_survive_composition(self):
         """Keep built-in references distinct from same-named custom frequencies in either merge direction."""
-        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+        for family, add in (
+            ("curve", _add_curve),
+            ("surface", _add_surface),
+            ("volume", _add_volume),
+            ("point_set", _add_point_set),
+        ):
             for builtin_in_source in (False, True):
                 with self.subTest(family=family, builtin_in_source=builtin_in_source):
                     builtin = newton.ModelBuilder()
@@ -354,7 +379,12 @@ class TestModelDeformableObjects(unittest.TestCase):
 
     def test_conflicting_deformable_references_reject_merge(self):
         """Reject same-name attributes with different reference meanings before modifying the destination."""
-        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+        for family, add in (
+            ("curve", _add_curve),
+            ("surface", _add_surface),
+            ("volume", _add_volume),
+            ("point_set", _add_point_set),
+        ):
             for builtin_in_source in (False, True):
                 with self.subTest(family=family, builtin_in_source=builtin_in_source):
                     builtin, custom = newton.ModelBuilder(), newton.ModelBuilder()
