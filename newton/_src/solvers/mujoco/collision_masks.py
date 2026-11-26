@@ -830,24 +830,26 @@ def compile_newton_collision_groups(
     clique_count = int(np.count_nonzero(has_clique))
     # Single-shape positive groups only meet negative groups and share one bit for that.
     has_shared = negative_groups.shape[0] > 0 and clique_count < positive_size.shape[0]
-    positive_bit_count = clique_count + int(has_shared)
-    # Two negative groups collide through a bit in which their binary codes differ.
+    # Two negative groups collide through a bit in which their binary codes differ. The codes reuse
+    # the clique bits: a negative group meets a clique through its type or its affinity alike.
     code_bit_count = max(negative_groups.shape[0] - 1, 0).bit_length()
-    bit_count = positive_bit_count + code_bit_count
+    group_bit_count = max(clique_count, code_bit_count)
+    bit_count = group_bit_count + int(has_shared)
     if bit_count > 32:
         return None
 
     clique_bit = np.left_shift(1, np.cumsum(has_clique) - has_clique)
-    group_type = np.where(has_clique, clique_bit, (1 << clique_count) if has_shared else 0)
+    group_type = np.where(has_clique, clique_bit, (1 << group_bit_count) if has_shared else 0)
     group_affinity = np.where(has_clique, clique_bit, 0)
 
     collision_type = np.zeros(collision_groups.shape[0], dtype=np.int64)
     collision_affinity = np.zeros(collision_groups.shape[0], dtype=np.int64)
     collision_type[positive] = group_type[positive_group]
     collision_affinity[positive] = group_affinity[positive_group]
-    collision_type[negative] = (~negative_code & ((1 << code_bit_count) - 1)) << positive_bit_count
-    # Negative groups collide with every positive group.
-    collision_affinity[negative] = (negative_code << positive_bit_count) | ((1 << positive_bit_count) - 1)
+    negative_type = ~negative_code & ((1 << code_bit_count) - 1)
+    collision_type[negative] = negative_type
+    # Every other bit is in the affinity, so negative groups collide with every positive group.
+    collision_affinity[negative] = ((1 << bit_count) - 1) & ~negative_type
 
     return CollisionGraphCompileResult(
         collision_type=collision_type.astype(np.uint32),

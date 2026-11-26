@@ -1072,12 +1072,13 @@ Finding that result requires checking every shape pair, so models above 256
 selected shapes or 1,024 explicit excluded pairs skip this search. When the
 search is skipped or its rules do not fit in 32 bits, the solver encodes the
 collision groups alone and relies on body-wide excludes for the excluded pairs.
-The groups take one bit per positive group with more than one shape, one bit
-shared by all single-shape positive groups if there is a negative group, and
-``ceil(log2(n))`` bits for ``n`` negative groups. If they need more than 32
-bits, leave no bit for flexes, or an excluded pair between two bodies is not
-covered by an exclude, the solver uses the established legacy graph-color
-approximation, which may allow extra contacts.
+The groups take one bit per positive group with more than one shape, or
+``ceil(log2(n))`` bits for ``n`` negative groups if that is more, because the
+negative groups reuse the bits of the positive groups. One more bit is shared
+by all single-shape positive groups if there is a negative group. If they need
+more than 32 bits, leave no bit for flexes, or an excluded pair between two
+bodies is not covered by an exclude, the solver uses the established legacy
+graph-color approximation, which may allow extra contacts.
 
 .. _mujoco-margin-gap-mapping:
 

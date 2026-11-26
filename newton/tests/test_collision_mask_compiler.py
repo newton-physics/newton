@@ -307,7 +307,7 @@ class TestNewtonCollisionGraphCompiler(unittest.TestCase):
             verify_newton_collision_graph_compilation(groups, compile_newton_collision_groups(groups))
 
         # Negative groups reuse the bits of the positive groups.
-        groups = np.append(np.repeat(np.arange(1, 33, dtype=np.int32), 2), -1)
+        groups = np.append(np.repeat(np.arange(1, 33, dtype=np.int32), 2), (-1, -2))
         result = compile_newton_collision_groups(groups)
         verify_newton_collision_graph_compilation(groups, result)
         self.assertEqual(result.bit_count, 32)
