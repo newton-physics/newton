@@ -432,19 +432,34 @@ def _run_trajectory(model, solver, num_steps):
 
 
 def test_mass_refresh_cadence_follows_interval(test, device, solve_mode="serial"):
-    """Refresh every articulation's factorization on every ``interval``-th step only."""
-    model = _build_model(device)
-    solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=2)
+    """Keep eager and captured refresh masks on cadence, including a selected-world reset."""
+    model = _build_model(device, ground=False)
+    solver = SolverSteel(model, solve_mode=solve_mode, update_mass_matrix_interval=4)
     state_0 = _make_initial_state(model)
     state_1 = model.state()
-    pipeline = newton.CollisionPipeline(model)
-    contacts = pipeline.contacts()
     control = model.control()
-    for step_index, expected in enumerate(([1, 1], [0, 0], [1, 1], [0, 0])):
-        pipeline.collide(state_0, contacts)
-        solver.step(state_0, state_1, control, contacts, DT)
+    for step_index, expected in enumerate(([1, 1], [0, 0], [0, 0], [0, 0], [1, 1])):
+        solver.step(state_0, state_1, control, None, DT)
         state_0, state_1 = state_1, state_0
         test.assertEqual(solver._mass_update_mask.numpy().tolist(), expected, f"step {step_index}")
+
+    if wp.get_device(device).is_cuda:
+        # Capture a reuse step at phase 1; capture itself does not advance the device phase.
+        with wp.ScopedCapture(device) as capture:
+            solver.step(state_0, state_1, control, None, DT)
+        masks = []
+        for _ in range(5):
+            wp.capture_launch(capture.graph)
+            masks.append(solver._mass_update_mask.numpy().tolist())
+        test.assertEqual(masks, [[0, 0], [0, 0], [0, 0], [1, 1], [0, 0]])
+
+        # Only world 0 requests an extra refresh at phase 2; the shared cadence continues.
+        solver.reset(state_0, world_mask=wp.array([True, False, False], dtype=wp.bool, device=device))
+        masks = []
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+            masks.append(solver._mass_update_mask.numpy().tolist())
+        test.assertEqual(masks, [[1, 0], [0, 0], [1, 1]])
 
 
 def test_stale_factorization_stays_close_to_interval_one(test, device, solve_mode="serial"):
@@ -511,6 +526,11 @@ def test_captured_two_substep_replay_matches_eager(test, device, solve_mode="ser
         for _ in range(warmup_steps // 2):
             two_substeps(graph_solver, graph_a, graph_b, graph_control)
             two_substeps(eager_solver, eager_a, eager_b, eager_control)
+        if warmup_steps:
+            # A deliberate configuration jump makes a permanently stale factorization diverge clearly.
+            joint_q = np.tile(np.asarray(INITIAL_JOINT_Q, dtype=np.float32) + [0.8, -1.0, 0.6], 2)
+            graph_a.joint_q.assign(joint_q)
+            eager_a.joint_q.assign(joint_q)
         with wp.ScopedCapture(device) as capture:
             two_substeps(graph_solver, graph_a, graph_b, graph_control)
         for reset in (False, True):

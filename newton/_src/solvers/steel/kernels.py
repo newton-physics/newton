@@ -1840,7 +1840,6 @@ def refresh_masked_body_inertia(
     mass_update_mask: wp.array[int],
     body_q_com: wp.array[wp.transform],
     articulation_origin: wp.array[wp.vec3],
-    body_I_m: wp.array[wp.spatial_matrix],
     body_mass: wp.array[float],
     body_inertia: wp.array[wp.mat33],
     write_body_inertia_terms: int,
@@ -1863,9 +1862,10 @@ def refresh_masked_body_inertia(
         wp.transform_get_translation(X_sm) - articulation_origin[articulation],
         wp.transform_get_rotation(X_sm),
     )
-    body_I_s[child] = transform_spatial_inertia(X_sm_local, body_I_m[child])
+    # Match write_body_dynamics arithmetic so fused and unfused factorization see the same symmetric matrix.
+    com, inertia_origin = transform_com_inertia_terms(X_sm_local, body_mass[child], body_inertia[child])
+    body_I_s[child] = assemble_com_spatial_inertia(body_mass[child], com, inertia_origin)
     if write_body_inertia_terms != 0:
-        com, inertia_origin = transform_com_inertia_terms(X_sm_local, body_mass[child], body_inertia[child])
         body_inertia_terms[child, 0] = com[0]
         body_inertia_terms[child, 1] = com[1]
         body_inertia_terms[child, 2] = com[2]

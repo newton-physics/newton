@@ -2807,7 +2807,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._hinv_jt_kernel = "par_row"
         self._small_dof_threshold = _SMALL_DOF_THRESHOLD_DEFAULT
 
-        self._force_mass_update = False
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         self._coupling_iteration_restarts = True
@@ -8827,7 +8826,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._mass_update_mask,
                     state_aug._body_q_com,
                     self._articulation_origin,
-                    self._body_I_m,
                     model.body_mass,
                     model.body_inertia,
                     0,
@@ -8923,7 +8921,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=model.device,
             )
         self._mass_update_requested.zero_()
-        self._force_mass_update = False
 
     def _init_paired_response_kernels(self, model: Model) -> None:
         """Resolve the paired response, inverse-factorization and factor-coordinate solve kernels."""
@@ -10903,9 +10900,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=model.device,
             )
             if model.body_count:
-                # Materialize the body inertias at every publication: whatever makes the next step rebuild the
-                # mass matrix (its cadence, a reset request, a timestep change or a captured step's baked
-                # refresh flag) then reads inertias of its input configuration.
+                # Materialize body inertias at every publication so any device-side refresh request
+                # on the next step reads inertias of its input configuration.
                 wp.launch(
                     finalize_body_dynamics,
                     dim=model.body_count,
