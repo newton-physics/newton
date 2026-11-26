@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import warp as wp
 
@@ -134,7 +134,42 @@ class RenderConfig:
     """
 
     enable_ambient_lighting: bool = True
-    """Enable ambient lighting for the scene."""
+    """Enable the sky/ground dome when no HDRI override is active."""
+
+    enable_dome_lighting: bool = field(default=True, kw_only=True)
+    """Enable dome lighting for the ambient term.
+
+    Uses the HDRI set via :meth:`~newton.sensors.SensorCamera.set_dome_light`
+    if one was provided, otherwise uses the hemispheric ambient settings controlled by
+    :attr:`enable_ambient_lighting`. Set to ``False`` to use those settings
+    even when an environment has been supplied.
+    """
+
+    dome_shadow_samples: int = field(default=0, kw_only=True)
+    """Number of importance-sampled shadow directions per shaded surface sample.
+
+    Zero evaluates unshadowed diffuse irradiance. Positive counts sample the
+    environment in proportion to luminance and texel solid angle. Increasing
+    the count reduces frame-to-frame noise. Requires :attr:`enable_dome_lighting`.
+    """
+
+    dome_shadow_max_distance: float = field(default=0.0, kw_only=True)
+    """Finite, non-negative length [m] of dome shadow rays; ``0`` uses :attr:`max_distance`.
+
+    Dome occlusion is usually local (contact/ambient shadows), so capping the
+    shadow-ray length lets the BVH traversal terminate early and skips distant
+    geometry, which can substantially speed up rendering on open scenes. Smaller
+    values are faster but ignore occluders beyond the cap. Only used when
+    :attr:`dome_shadow_samples` > 0.
+    """
+
+    enable_dome_background: bool = field(default=False, kw_only=True)
+    """Show the selected dome map as the background for camera rays that miss all geometry.
+
+    Uses the explicit environment, or the sky/ground map from
+    :meth:`~newton.sensors.SensorCamera.set_ambient_light` when no HDRI override
+    is active. Only used when :attr:`enable_dome_lighting` is set.
+    """
 
     enable_particles: bool = True
     """Enable standalone particle rendering.
@@ -256,3 +291,30 @@ class TextureData:
 
     texture: wp.Texture2D
     repeat: wp.vec2f
+
+
+@wp.struct
+class DomeLight:
+    """HDRI dome (environment) lighting data for diffuse ambient and shadowed sampling.
+
+    Attributes:
+        spherical_harmonics: Nine order-2 diffuse-irradiance coefficients. Unused for two-texel hemispheric maps.
+        intensity: Scalar multiplier applied to the dome contribution.
+        environment_map: Equirectangular radiance map, shape ``[height, width]``, dtype ``vec3f``.
+        forward: Equirectangular basis forward axis (azimuth 0).
+        bitangent: Equirectangular basis bitangent axis (azimuth pi/2).
+        up: Equirectangular basis up axis (the pole).
+        row_cumulative_distribution: Marginal row CDF for importance sampling, shape ``[height]``.
+        column_cumulative_distribution: Per-row conditional column CDF, shape ``[height, width]``.
+        probability_density_scale: Single-element device array converting luminance to a solid-angle pdf.
+    """
+
+    spherical_harmonics: wp.array[wp.vec3f]
+    intensity: wp.float32
+    environment_map: wp.array2d[wp.vec3f]
+    forward: wp.vec3f
+    bitangent: wp.vec3f
+    up: wp.vec3f
+    row_cumulative_distribution: wp.array[wp.float32]
+    column_cumulative_distribution: wp.array2d[wp.float32]
+    probability_density_scale: wp.array[wp.float32]

@@ -92,7 +92,8 @@ class SensorCamera:
     sides with camera-facing normals.
 
     The scene is lit by the light from :meth:`create_default_light`, if any,
-    plus hemispheric ambient light (see :meth:`set_ambient_light`) when
+    plus dome lighting (see :meth:`set_dome_light`) when an environment is
+    supplied, or hemispheric ambient light (see :meth:`set_ambient_light`) when
     :attr:`RenderConfig.enable_ambient_lighting` is set.
 
     .. experimental::
@@ -903,6 +904,59 @@ class SensorCamera:
         """
         self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
 
+    def set_dome_light(
+        self, image: str | os.PathLike[str] | np.ndarray | wp.array, *, intensity: float = 1.0, rotation: float = 0.0
+    ) -> None:
+        """Set an HDRI dome light for diffuse image-based lighting.
+
+        The equirectangular environment supplies the scene's diffuse ambient
+        term. Directional lights created via :meth:`create_default_light` also contribute.
+
+        The dome is unshadowed by default. Set
+        :attr:`~newton.sensors.SensorCamera.RenderConfig.dome_shadow_samples` to
+        a positive count to cast that many importance-sampled shadow rays per
+        shaded surface sample. The resulting soft shadows vary from frame to frame.
+
+        Set :attr:`~newton.sensors.SensorCamera.RenderConfig.enable_dome_background`
+        to show the environment itself as the background for camera rays that
+        miss all geometry, instead of the render's clear color.
+
+        This enables ``enable_dome_lighting`` on :attr:`default_render_config`.
+        When passing a per-call ``render_config`` to :meth:`update`, set
+        :attr:`~newton.sensors.SensorCamera.RenderConfig.enable_dome_lighting`
+        on it as well.
+
+        Local HDR files must use Radiance RGBE with Y-major scanlines, either
+        flat or adaptive RLE. XYZE and old-style RLE files are unsupported.
+
+        Args:
+            image: Equirectangular environment, shape ``(H, W, C>=3)``.
+                Floating NumPy or Warp arrays contain linear radiance; integer
+                arrays contain sRGB. A local ``.hdr`` path or an LDR image path
+                or URL is also accepted.
+            intensity: Finite, non-negative multiplier applied to the dome contribution.
+            rotation: Finite azimuth offset [rad] about the scene up axis (yaw).
+
+        Raises:
+            ValueError: If the image is empty, malformed, has fewer than three
+                channels, or contains negative or non-finite radiance, or if
+                intensity or rotation is invalid.
+            OSError: If a local HDR image cannot be read.
+        """
+        self._render_context.set_dome_light(image, intensity=intensity, rotation=rotation)
+        self.default_render_config.enable_dome_lighting = True
+
+    def set_dome_light_color(self, color: tuple[float, float, float], *, intensity: float = 1.0) -> None:
+        """Set a flat, uniform-color dome light for diffuse image-based lighting.
+
+        Equivalent to passing a single RGB texel to :meth:`set_dome_light`.
+
+        Args:
+            color: Finite, non-negative linear RGB radiance, e.g. ``(0.5, 0.5, 0.5)``.
+            intensity: Finite, non-negative multiplier applied to the dome contribution.
+        """
+        self.set_dome_light(np.full((1, 1, 3), color, dtype=np.float32), intensity=intensity)
+
     def set_ambient_light(
         self,
         sky_color: Sequence[float] | wp.vec3f,
@@ -913,12 +967,19 @@ class SensorCamera:
         Surfaces facing the model's up axis receive *sky_color*, surfaces facing
         away receive *ground_color*, and other orientations blend between the
         two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
-        Changing the colors does not recompile the render kernel.
+        The two colors form a dome map with one texel per hemisphere. Unshadowed
+        shading blends them using the surface normal's component along the up axis.
+        Updating the active map's colors reuses the render kernel. This selects
+        the sky/ground map on :attr:`default_render_config`; a previously loaded
+        HDRI remains available for per-call render configs.
 
         Args:
-            sky_color: Linear RGB ambient radiance from above.
-            ground_color: Linear RGB ambient radiance from below. If ``None``,
-                *sky_color* is used, which gives uniform ambient light.
+            sky_color: Finite, non-negative linear RGB ambient radiance from above.
+            ground_color: Finite, non-negative linear RGB ambient radiance from
+                below. If ``None``, *sky_color* is used, which gives uniform light.
+
+        Raises:
+            ValueError: If a color contains negative or non-finite radiance.
 
         .. experimental::
 
@@ -927,6 +988,8 @@ class SensorCamera:
             cycle.
         """
         self._render_context.set_ambient_light(sky_color, ground_color)
+        if self._render_context._dome_light_set:
+            self.default_render_config.enable_dome_lighting = False
 
     def assign_checkerboard_material(
         self,

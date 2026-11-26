@@ -9,10 +9,12 @@ import warp as wp
 
 from ..geometry import Gaussian, GeoType
 from ..utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
+from . import dome as dome_lighting
 from . import lighting, raytrace, textures, tiling
 from .types import (
     AntiAliasing,
     ClearData,
+    DomeLight,
     MeshData,
     RenderConfig,
     RenderOrder,
@@ -93,6 +95,7 @@ def create_kernel(
 ) -> wp.Kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state, optix)
     sample_texture = textures.create_sample_texture_function(config)
+    sample_dome_shadow = dome_lighting.create_sample_dome_shadow_function(config, state, optix)
 
     with_normal = (
         state.render_color
@@ -110,6 +113,27 @@ def create_kernel(
             clear_normal=clear_data.clear_normal,
             clear_albedo=_srgb_packed_rgba_to_linear(clear_data.clear_albedo),
         )
+
+    @wp.func
+    def dome_background(dome: DomeLight, transform: wp.transformf, direction: wp.vec3f) -> wp.vec3f:
+        return (
+            dome_lighting.sample_env_direction(dome, wp.normalize(wp.transform_vector(transform, direction)))
+            * dome.intensity
+        )
+
+    @wp.func
+    def write_dome_background(
+        background: wp.vec3f,
+        out_index: int,
+        out_color: wp.array[wp.uint32],
+        out_hdr_color: wp.array[wp.vec3f],
+    ):
+        if wp.static(state.render_hdr_color):
+            out_hdr_color[out_index] = background
+        if wp.static(state.render_color):
+            if wp.static(config.output_color_space == ColorSpace.SRGB):
+                background = linear_to_srgb_wp(background)
+            out_color[out_index] = tiling.pack_rgba_to_uint32(background, 1.0)
 
     @wp.func
     def write_clear_outputs(
@@ -253,7 +277,11 @@ def create_kernel(
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
         light_colors: wp.array[wp.vec3f],
-        ambient_lighting: wp.array[wp.vec3f],
+        dome: DomeLight,
+        dome_shadow_seed: wp.array[wp.int32],
+        dome_shadow_sample_count: wp.int32,
+        ambient_light_enabled: wp.bool,
+        seed: wp.int32,
     ) -> ShadeResult:
         result = ShadeResult()
         result.albedo = wp.vec3f(0.0)
@@ -317,17 +345,50 @@ def create_kernel(
 
         shaded_color = closest_hit.color
         if not is_gaussian:
-            if wp.static(config.enable_ambient_lighting):
-                # ambient_lighting holds (sky radiance, ground radiance, up vector).
-                sky = ambient_lighting[0]
-                ground = ambient_lighting[1]
-                up = ambient_lighting[2]
+            if ambient_light_enabled:
+                up = dome.up
                 len_n = wp.length(closest_hit.normal)
-                n = closest_hit.normal if len_n > 0.0 else up
-                n = wp.normalize(n)
-                hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-                ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-                shaded_color = wp.cw_mul(albedo_color, ambient_color)
+                n = wp.normalize(closest_hit.normal if len_n > 0.0 else up)
+                if wp.static(config.enable_dome_lighting and config.dome_shadow_samples > 0):
+                    # Importance sampling targets bright regions of the environment.
+                    shadow_origin = hit_point + n * 1.0e-4
+                    rng = wp.rand_init(dome_shadow_seed[0], seed)
+                    inv_count = 1.0 / float(dome_shadow_sample_count)
+                    radiance_sum = wp.vec3f(0.0)
+                    # Keep the bound dynamic so Warp does not unroll the ray loop.
+                    for s in range(dome_shadow_sample_count):
+                        # Stratify rows to reduce variance at a fixed ray count.
+                        radiance_sum = radiance_sum + sample_dome_shadow(
+                            dome,
+                            bvh_shapes_size,
+                            bvh_shapes_id,
+                            bvh_shapes_group_roots,
+                            bvh_particles_size,
+                            bvh_particles_id,
+                            bvh_particles_group_roots,
+                            world_index,
+                            shape_enabled,
+                            shape_types,
+                            shape_sizes,
+                            shape_transforms,
+                            shape_source_ptr,
+                            particles_position,
+                            particles_radius,
+                            topology_particle_mask,
+                            triangle_mesh_id,
+                            triangle_mesh_group_roots,
+                            shadow_origin,
+                            n,
+                            (float(s) + wp.randf(rng)) * inv_count,
+                            wp.randf(rng),
+                            wp.randf(rng),
+                            wp.randf(rng),
+                        )
+                    dome_factor = radiance_sum * inv_count
+                    shaded_color = wp.cw_mul(albedo_color, dome_factor * dome.intensity)
+                else:
+                    irradiance = dome_lighting.eval_dome_irradiance(dome, n)
+                    shaded_color = wp.cw_mul(albedo_color, irradiance * dome.intensity)
 
             for light_index in range(light_count):
                 light_contribution = compute_lighting(
@@ -401,7 +462,11 @@ def create_kernel(
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
         light_colors: wp.array[wp.vec3f],
-        ambient_lighting: wp.array[wp.vec3f],
+        dome: DomeLight,
+        dome_shadow_seed: wp.array[wp.int32],
+        dome_shadow_sample_count: wp.int32,
+        ambient_light_enabled: wp.bool,
+        seed: wp.int32,
     ) -> RenderSample:
         result = RenderSample()
         result.hit = wp.bool(False)
@@ -440,6 +505,8 @@ def create_kernel(
             gaussians_data,
         )
         if not trace.hit:
+            if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                result.color = dome_background(dome, camera_transform, camera_ray_direction)
             return result
 
         closest_hit = trace.closest_hit
@@ -490,7 +557,11 @@ def create_kernel(
             light_positions,
             light_orientations,
             light_colors,
-            ambient_lighting,
+            dome,
+            dome_shadow_seed,
+            dome_shadow_sample_count,
+            ambient_light_enabled,
+            seed,
         )
         result.albedo = shade.albedo
         result.color = shade.color
@@ -548,7 +619,10 @@ def create_kernel(
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
         light_colors: wp.array[wp.vec3f],
-        ambient_lighting: wp.array[wp.vec3f],
+        dome: DomeLight,
+        dome_shadow_seed: wp.array[wp.int32],
+        dome_shadow_sample_count: wp.int32,
+        ambient_light_enabled: wp.bool,
         # Outputs
         out_color: wp.array[wp.uint32],
         out_depth: wp.array[wp.float32],
@@ -576,6 +650,7 @@ def create_kernel(
 
         pixels_per_view = img_width * img_height
         out_index = view_index * pixels_per_view + py * img_width + px
+        seed = out_index
 
         # With an explicit mapping, a valid entry is a world index in
         # ``[0, world_count)``. ``DISABLE_PRESERVE`` leaves the outputs untouched;
@@ -652,7 +727,11 @@ def create_kernel(
                 light_positions,
                 light_orientations,
                 light_colors,
-                ambient_lighting,
+                dome,
+                dome_shadow_seed,
+                dome_shadow_sample_count,
+                ambient_light_enabled,
+                seed,
             )
             if not sample.hit:
                 write_clear_outputs(
@@ -665,6 +744,8 @@ def create_kernel(
                     out_albedo,
                     out_hdr_color,
                 )
+                if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                    write_dome_background(sample.color, out_index, out_color, out_hdr_color)
                 return
 
             if wp.static(state.render_depth):
@@ -755,11 +836,21 @@ def create_kernel(
                     light_positions,
                     light_orientations,
                     light_colors,
-                    ambient_lighting,
+                    dome,
+                    dome_shadow_seed,
+                    dome_shadow_sample_count,
+                    ambient_light_enabled,
+                    seed,
                 )
                 if not sample.hit:
-                    if wp.static(state.render_color):
-                        color_sum += clear_color
+                    if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                        if wp.static(state.render_color):
+                            color_sum += wp.vec4f(sample.color[0], sample.color[1], sample.color[2], 1.0)
+                        if wp.static(state.render_hdr_color):
+                            hdr_color_sum += sample.color
+                    else:
+                        if wp.static(state.render_color):
+                            color_sum += clear_color
                     if wp.static(state.render_albedo):
                         albedo_sum += clear_albedo
                     continue
@@ -792,6 +883,11 @@ def create_kernel(
                     out_albedo,
                     out_hdr_color,
                 )
+                if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                    background = hdr_color_sum
+                    if wp.static(state.render_color):
+                        background = wp.vec3f(color_sum[0], color_sum[1], color_sum[2])
+                    write_dome_background(background / float(sample_count), out_index, out_color, out_hdr_color)
                 return
 
             if wp.static(state.render_depth):
@@ -870,6 +966,8 @@ def create_kernel(
                 )
                 if not trace.hit:
                     miss_count += 1
+                    if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                        shaded_sum += dome_background(dome, camera_transform, camera_rays[py, px, sample_index, 1])
                     continue
 
                 hit_count += 1
@@ -939,7 +1037,11 @@ def create_kernel(
                             light_positions,
                             light_orientations,
                             light_colors,
-                            ambient_lighting,
+                            dome,
+                            dome_shadow_seed,
+                            dome_shadow_sample_count,
+                            ambient_light_enabled,
+                            seed,
                         )
                         sample_color = shade.color
                         sample_albedo = shade.albedo
@@ -973,6 +1075,8 @@ def create_kernel(
                     out_albedo,
                     out_hdr_color,
                 )
+                if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                    write_dome_background(shaded_sum / float(sample_count), out_index, out_color, out_hdr_color)
                 return
 
             if wp.static(state.render_depth):
@@ -986,6 +1090,8 @@ def create_kernel(
 
             sample_scale = 1.0 / float(sample_count)
             miss_weight = float(miss_count)
+            if wp.static(config.enable_dome_lighting and config.enable_dome_background):
+                clear_color = wp.vec4f(0.0, 0.0, 0.0, 1.0)
             if wp.static(state.render_hdr_color):
                 out_hdr_color[out_index] = shaded_sum * sample_scale
             if wp.static(state.render_albedo):

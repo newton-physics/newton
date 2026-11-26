@@ -116,6 +116,8 @@ def fill_body_camera_transforms(
 
 class Example:
     def __init__(self, viewer: ViewerGL, args):
+        if not args.dome_hdri and args.dome_intensity != 1.0:
+            raise ValueError("--dome-hdri is required for HDRI intensity")
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
@@ -263,7 +265,12 @@ class Example:
         W = self.sensor_render_width
         H = self.sensor_render_height
         self.sensor_camera = SensorCamera(self.model)
-        self.sensor_camera.create_default_light(enable_shadows=True)
+        if args.dome_hdri:
+            self.sensor_camera.set_dome_light(args.dome_hdri, intensity=args.dome_intensity)
+        if args.dome_shadow_samples == 0:
+            self.sensor_camera.create_default_light(enable_shadows=True)
+        self.sensor_camera.default_render_config.dome_shadow_samples = args.dome_shadow_samples
+        self.sensor_camera.default_render_config.enable_dome_background = args.dome_background
         self.sensor_camera.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
         self.sensor_camera.default_render_config.enable_shadows = True
         self.sensor_camera.default_render_config.enable_textures = True
@@ -615,6 +622,24 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--dome-hdri",
+            help="Light the scene with an equirectangular .hdr image. By default the scene uses "
+            "sky/ground ambient lighting and a directional light.",
+        )
+        parser.add_argument(
+            "--dome-intensity",
+            type=float,
+            default=1.0,
+            help="HDRI dome brightness multiplier (requires --dome-hdri).",
+        )
+        parser.add_argument(
+            "--dome-shadow-samples",
+            type=int,
+            default=0,
+            help="Dome shadow rays per shaded sample. Positive counts replace the default directional light (default 0).",
+        )
+        parser.add_argument("--dome-background", action="store_true", help="Display the HDRI or sky/ground background.")
         parser.add_argument(
             "--ply",
             help="Gaussian filename.",

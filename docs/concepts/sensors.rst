@@ -121,6 +121,28 @@ attributes, and usage examples.
   ``model.bvh_build_shapes(state, backend="optix")`` and refit them with
   ``model.bvh_refit_shapes(state, backend="optix")``.
 
+Camera Dome Lighting
+--------------------
+
+Use :meth:`~newton.sensors.SensorCamera.set_dome_light` to light surfaces from an
+equirectangular environment. Floating-point arrays and local Radiance ``.hdr``
+files supply linear radiance. Integer arrays and low-dynamic-range image files
+supply sRGB colors. Arrays must be nonempty and their RGB values must be finite
+and non-negative. Use :meth:`~newton.sensors.SensorCamera.set_dome_light_color`
+for a uniform environment. Directional lights contribute alongside the dome.
+
+By default the camera uses a two-row, one-column sky/ground map. Its unshadowed
+diffuse response is the hemispheric blend of the two colors. Other map sizes use
+a spherical-harmonic approximation. Calling
+:meth:`~newton.sensors.SensorCamera.set_ambient_light` after setting an explicit
+dome switches the default render configuration back to hemispheric lighting.
+
+With ``enable_dome_lighting`` enabled, set ``dome_shadow_samples`` above zero
+for stochastic soft shadows, or enable ``enable_dome_background`` to display
+the environment behind geometry. Both options also work with the sky/ground map.
+Shadow samples change on each render, including CUDA graph replays. Configure
+dome lighting on the camera at runtime. The USD importer does not import dome lights.
+
 Camera Rays from USD and Calibration Data
 -----------------------------------------
 
