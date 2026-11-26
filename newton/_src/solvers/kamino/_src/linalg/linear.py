@@ -22,8 +22,9 @@ import warp as wp
 
 from .....core.types import override
 from . import conjugate, factorize
+from .blas import zero_dense_blocks
 from .conjugate_fused import MAX_BLOCKS_PER_ROW, build_row_index, build_transpose_index, make_fused_cr_kernel
-from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance
+from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance, validate_dense_matrix_shape
 from .sparse_matrix import (
     BlockSparseMatrices,
     allocate_block_sparse_from_dense,
@@ -51,6 +52,12 @@ __all__ = [
 ###
 # Interfaces
 ###
+
+
+def _matrix_storage_shape(A: DenseLinearOperatorData) -> tuple[int, int]:
+    if A.mat is not None:
+        return max(A.info.num_blocks, A.mat.shape[0]), max(A.info.max_dimension**2, A.mat.shape[1])
+    return A.info.matrix_shape
 
 
 class LinearSolver(ABC, Generic[ScalarType, IndexType]):
@@ -166,21 +173,21 @@ class LinearSolver(ABC, Generic[ScalarType, IndexType]):
     def compute(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Ingest matrix data and pre-compute any rhs-independent intermediate data."""
         if not self._operator.info.is_matrix_compatible(A):
-            raise ValueError("The provided flat matrix data array does not have enough memory!")
+            raise ValueError("The provided matrix data array has an incompatible dtype, shape or element stride.")
         self._compute_impl(A=A, **kwargs)
 
     def solve(self, b: wp.array[ScalarType], x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Solves the multi-linear systems `A @ x = b`."""
         if not self._operator.info.is_rhs_compatible(b):
-            raise ValueError("The provided flat rhs vector data array does not have enough memory!")
+            raise ValueError("The provided rhs vector data array has an incompatible dtype, size or element stride.")
         if not self._operator.info.is_input_compatible(x):
-            raise ValueError("The provided flat input vector data array does not have enough memory!")
+            raise ValueError("The provided input vector data array has an incompatible dtype, size or element stride.")
         self._solve_impl(b=b, x=x, **kwargs)
 
     def solve_inplace(self, x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Solves the multi-linear systems `A @ x = b` in-place, where `x` is initialized with rhs data."""
         if not self._operator.info.is_input_compatible(x):
-            raise ValueError("The provided flat input vector data array does not have enough memory!")
+            raise ValueError("The provided input vector data array has an incompatible dtype, size or element stride.")
         self._solve_inplace_impl(x=x, **kwargs)
 
 
@@ -425,9 +432,13 @@ class IterativeSolver(LinearSolver[ScalarType, IndexType]):
         """Solves the multi-linear systems `A @ x = b`."""
         if self._operator is not None:
             if not self._operator.info.is_rhs_compatible(b):
-                raise ValueError("The provided flat rhs vector data array does not have enough memory!")
+                raise ValueError(
+                    "The provided rhs vector data array has an incompatible dtype, size or element stride."
+                )
             if not self._operator.info.is_input_compatible(x):
-                raise ValueError("The provided flat input vector data array does not have enough memory!")
+                raise ValueError(
+                    "The provided input vector data array has an incompatible dtype, size or element stride."
+                )
         if zero_x:
             x.zero_()
         self._solve_impl(b=b, x=x, **kwargs)
@@ -475,8 +486,8 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         **kwargs: dict[str, Any],
     ):
         # Declare LLT-specific internal data
-        self._L: wp.array[ScalarType] | None = None
-        """A flat array containing the Cholesky factorization of each matrix block."""
+        self._L: wp.array2d[ScalarType] | None = None
+        """Cholesky factors, each stored in its own row."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
 
@@ -496,7 +507,7 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
     ###
 
     @property
-    def L(self) -> wp.array[ScalarType]:
+    def L(self) -> wp.array2d[ScalarType]:
         if self._L is None:
             raise ValueError("The factorization array has not been allocated!")
         return self._L
@@ -523,28 +534,30 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
 
         # Allocate the Cholesky factorization matrix and the
         # intermediate result buffer on the specified device
+        matrix_shape = _matrix_storage_shape(A)
         with wp.ScopedDevice(self._device):
-            self._L = wp.zeros(shape=(self._operator.info.total_mat_size,), dtype=self._dtype)
+            validate_dense_matrix_shape(matrix_shape, self._dtype)
+            self._L = wp.zeros(matrix_shape, dtype=self._dtype)
             self._y = wp.zeros(shape=(self._operator.info.total_vec_size,), dtype=self._dtype)
 
     @override
     def _reset_impl(self) -> None:
-        self._L.zero_()
+        info = self._operator.info
+        zero_dense_blocks(self._L, info.dim, info.dim, info.max_dimension**2)
         self._y.zero_()
         self._has_factors = False
 
     @override
-    def _factorize_impl(self, A: wp.array[ScalarType]) -> None:
+    def _factorize_impl(self, A: wp.array2d[ScalarType]) -> None:
         factorize.llt_sequential_factorize(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             A=A,
             L=self._L,
         )
 
     @override
-    def _reconstruct_impl(self, A: wp.array[ScalarType]) -> None:
+    def _reconstruct_impl(self, A: wp.array2d[ScalarType]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override
@@ -553,7 +566,6 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         factorize.llt_sequential_solve(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             b=b,
@@ -567,7 +579,6 @@ class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
         factorize.llt_sequential_solve_inplace(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             x=x,
@@ -626,8 +637,8 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             **kwargs: Additional arguments forwarded to :class:`DirectSolver`.
         """
         # Declare LLT-specific internal data
-        self._L: wp.array[ScalarType] | None = None
-        """A flat array containing the Cholesky factorization of each matrix block."""
+        self._L: wp.array2d[ScalarType] | None = None
+        """Cholesky factors, each stored in its own row."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
         self._retry_dim: wp.array[wp.int32] | None = None
@@ -662,7 +673,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
     ###
 
     @property
-    def L(self) -> wp.array[ScalarType]:
+    def L(self) -> wp.array2d[ScalarType]:
         if self._L is None:
             raise ValueError("The factorization array has not been allocated!")
         return self._L
@@ -689,28 +700,34 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
 
         # Allocate the Cholesky factorization matrix and the
         # intermediate result buffer on the specified device
+        matrix_shape = _matrix_storage_shape(A)
         with wp.ScopedDevice(self._device):
-            self._L = wp.zeros(shape=(self._operator.info.total_mat_size,), dtype=self._dtype)
+            validate_dense_matrix_shape(matrix_shape, self._dtype)
+            self._L = wp.zeros(matrix_shape, dtype=self._dtype)
             self._y = wp.zeros(shape=(self._operator.info.total_vec_size,), dtype=self._dtype)
             self._retry_dim = wp.zeros(shape=(self._operator.info.num_blocks,), dtype=wp.int32)
 
     @override
     def _reset_impl(self) -> None:
-        self._L.zero_()
+        info = self._operator.info
+        zero_dense_blocks(self._L, info.dim, info.dim, info.max_dimension**2)
         self._y.zero_()
         self._has_factors = False
 
     @override
-    def _factorize_impl(self, A: wp.array[ScalarType]) -> None:
+    def _factorize_impl(self, A: wp.array2d[ScalarType]) -> None:
         factorize.llt_blocked_factorize(
             kernel=self._factorize_kernel,
             num_blocks=self._operator.info.num_blocks,
             block_dim=self._factorize_block_dim,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             A=A,
             L=self._L,
         )
+        self._retry_failed_factors(A, self._operator.info.dim)
+
+    def _retry_failed_factors(self, A: wp.array2d[ScalarType], dim: wp.array[wp.int32]) -> None:
+        """Refactorizes the blocks of nonzero dimension in ``dim`` with a non-finite pivot, if enabled."""
         if self._failed_pivot_shift > 0.0:
             # Round-off can break near-singular blocks; refactorize only those,
             # since the per-block kernel exits immediately for zero dimensions.
@@ -720,13 +737,13 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             wp.launch(
                 factorize.flag_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.dim, info.mio, self._L, self._retry_dim],
+                inputs=[dim, info.dim, self._L, self._retry_dim],
                 device=self._device,
             )
             wp.launch(
                 factorize.shift_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.mio, self._retry_dim, self._failed_pivot_shift, A],
+                inputs=[info.dim, self._retry_dim, self._failed_pivot_shift, A],
                 device=self._device,
             )
             factorize.llt_blocked_factorize(
@@ -734,7 +751,6 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
                 num_blocks=info.num_blocks,
                 block_dim=self._factorize_block_dim,
                 dim=self._retry_dim,
-                mio=info.mio,
                 A=A,
                 L=self._L,
             )
@@ -742,12 +758,12 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             wp.launch(
                 factorize.shift_failed_llt_factors,
                 dim=retry_shape,
-                inputs=[info.dim, info.mio, self._retry_dim, -self._failed_pivot_shift, A],
+                inputs=[info.dim, self._retry_dim, -self._failed_pivot_shift, A],
                 device=self._device,
             )
 
     @override
-    def _reconstruct_impl(self, A: wp.array[ScalarType]) -> None:
+    def _reconstruct_impl(self, A: wp.array2d[ScalarType]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override
@@ -758,7 +774,6 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             num_blocks=self._operator.info.num_blocks,
             block_dim=self._solve_block_dim,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             b=b,
@@ -774,12 +789,38 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             num_blocks=self._operator.info.num_blocks,
             block_dim=self._solve_block_dim,
             dim=self._operator.info.dim,
-            mio=self._operator.info.mio,
             vio=self._operator.info.vio,
             L=self._L,
             y=self._y,
             x=x,
         )
+
+    ###
+    # Partial refactorization
+    ###
+
+    @property
+    def stride(self) -> wp.array[wp.int32]:
+        """The row stride of each block of :attr:`L`."""
+        return self._operator.info.dim
+
+    def refactorize(self, A: wp.array2d[ScalarType], dim: wp.array[wp.int32]) -> None:
+        """
+        Refactorizes the blocks with a nonzero dimension in ``dim``, and keeps the factors of the others.
+
+        Args:
+            A: The matrix blocks, one per row.
+            dim: The dimension of each block to refactorize, or zero to keep its factor, of shape ``(num_blocks,)``.
+        """
+        factorize.llt_blocked_factorize(
+            kernel=self._factorize_kernel,
+            num_blocks=self._operator.info.num_blocks,
+            block_dim=self._factorize_block_dim,
+            dim=dim,
+            A=A,
+            L=self._L,
+        )
+        self._retry_failed_factors(A, dim)
 
 
 ###
@@ -892,7 +933,6 @@ class ConjugateGradientSolver(IterativeSolver[ScalarType, IndexType]):
                 self._operator.mat,
                 self._batched_operator.active_dims,
                 self._operator.info.maxdim,
-                self._operator.info.mio,
                 self._operator.info.vio,
             ],
             outputs=[self._jacobi_preconditioner],
@@ -1004,7 +1044,6 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
                 self._operator.mat,
                 self._batched_operator.active_dims,
                 self._operator.info.maxdim,
-                self._operator.info.mio,
                 self._operator.info.vio,
             ],
             outputs=[self._jacobi_preconditioner],

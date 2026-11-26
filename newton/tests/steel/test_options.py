@@ -28,7 +28,7 @@ from newton.tests.steel._fixtures import (
     _set_box_velocities,
 )
 from newton.tests.steel._fixtures import run_fixture as run_compliance_fixture
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices, requires
 
 
 def _assert_bitwise(test, a, b, label):
@@ -118,6 +118,7 @@ def test_angular_damping_follows_in_place_edits(test, device):
     test.assertEqual(float(state_in.joint_qd.numpy()[5]), 0.0)
 
 
+@requires("pxr.Usd")
 def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     """Import the PhysX body and collision USD attributes into the steel namespace, and step with replaced arrays."""
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -151,8 +152,16 @@ def test_physx_attributes_import_from_usd_and_are_read_every_step(test, device):
     np.testing.assert_allclose(model.steel.rigid_body_max_angular_velocity.numpy(), [0.5 * np.pi], rtol=1.0e-6)
     np.testing.assert_allclose(model.steel.rigid_body_max_depenetration_velocity.numpy(), [1.5])
     np.testing.assert_allclose(model.steel.min_torsional_patch_radius.numpy(), [0.004])
+    # The radius selects torsional friction of strength mu * r in every solver
+    np.testing.assert_array_equal(
+        model.shape_material_friction_mode.numpy(), [newton.ShapeFrictionMode.SLIDING_TORSIONAL]
+    )
+    np.testing.assert_allclose(
+        model.shape_material_mu_torsional.numpy(), model.shape_material_mu.numpy() * 0.004, rtol=1.0e-6
+    )
     # Contact torsion is CUDA-only; this check covers the body attributes.
     model.steel.min_torsional_patch_radius.zero_()
+    model.shape_material_friction_mode.fill_(int(newton.ShapeFrictionMode.SLIDING))
 
     solver = SolverSteel(model)
     model.steel.rigid_body_angular_damping = wp.zeros(1, dtype=wp.float32, device=device)

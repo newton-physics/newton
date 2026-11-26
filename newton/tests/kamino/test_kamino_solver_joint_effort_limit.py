@@ -11,7 +11,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
@@ -19,6 +19,7 @@ from newton.tests.kamino.utils.solver_configs import (
     make_padmm_sparse_fused_config,
     make_single_iteration_config,
 )
+from newton.tests.unittest_utils import NewtonTestCase
 
 _BODY_MASS = 1.0
 _BODY_INERTIA = 1.0
@@ -94,9 +95,10 @@ def _step(
     return state_out
 
 
-class TestSolverKaminoJointEffortLimit(unittest.TestCase):
+class TestSolverKaminoJointEffortLimit(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -164,9 +166,10 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
                         self.assertAlmostEqual(float(velocities[world]), expected, delta=3.0e-4)
 
 
-class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
+class TestSolverKaminoJointEffortLimitImplicitPd(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -227,7 +230,7 @@ class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
                 continue
             for limit, requested, expected in cases:
                 config = config_factory()
-                config.dvi.use_schur_complement = requested
+                config.scc.use_schur_complement = requested
                 model = _build_revolute(limit, target_ke=10.0, target_kd=2.0, armatures=(0.011,) * 2)
                 solver = SolverKamino(model, config)
                 with self.subTest(config=config_name, limit=limit, requested=requested):
@@ -246,7 +249,7 @@ class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
         for config_name, config_factory in KAMINO_CONFIGS:
             if config_name not in PADMM_CONFIG_NAMES:
                 config = config_factory()
-                config.dvi.unilateral_solver = "apgd"
+                config.scc.unilateral_solver = "apgd"
                 configs.append((f"{config_name}_apgd", config))
         for config_name, config in configs:
             model = _build_revolute(
@@ -275,9 +278,10 @@ class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
                     self.assertAlmostEqual(float(velocities[world]), DT * effort / inertia, delta=0.002)
 
 
-class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
+class TestSolverKaminoJointEffortLimitWarmstart(NewtonTestCase):
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -363,7 +367,7 @@ class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
                             self.assertLess(warm_residual, cold_residual)
 
 
-class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
+class TestSolverKaminoJointEffortLimitDominantArmature(NewtonTestCase):
     """
     The effort and armature rows act on the same joint DoF. With ``armature / I = 1e5`` their
     body-space impulses nearly cancel, so a small relative error in either produces a large
@@ -372,6 +376,7 @@ class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
 
     def setUp(self):
         """Initialize the shared public Kamino test context."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
@@ -428,5 +433,6 @@ class TestSolverKaminoJointEffortLimitDominantArmature(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    newton.utils.setup_console_logging()
     setup_tests()
     unittest.main(verbosity=2)

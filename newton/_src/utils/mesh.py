@@ -13,6 +13,7 @@ import warp as wp
 
 from ..exceptions import NewtonWarning
 from ..geometry.types import Mesh
+from ..geometry.utils import _load_trimesh
 
 
 @wp.kernel
@@ -586,10 +587,10 @@ class MeshAdjacency:
     def compute_vertex_adjacency(
         particle_count: int,
         *,
-        edge_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
-        tri_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
-        spring_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
-        tet_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        edge_indices: wp.array[wp.int32] | np.ndarray | None = None,
+        tri_indices: wp.array[wp.int32] | np.ndarray | None = None,
+        spring_indices: wp.array[wp.int32] | np.ndarray | None = None,
+        tet_indices: wp.array[wp.int32] | np.ndarray | None = None,
     ) -> "MeshAdjacency":
         """Build a temporary adjacency over the given elements and its vertex-to-element CSR."""
         return MeshAdjacency(
@@ -1169,8 +1170,6 @@ def load_meshes_from_file(
     Returns:
         List of Mesh objects.
     """
-    import trimesh
-
     filename = os.fspath(filename)
     scale = np.asarray(scale, dtype=np.float32)
     base_dir = os.path.dirname(filename)
@@ -1371,9 +1370,9 @@ def load_meshes_from_file(
                 category=DeprecationWarning,
                 module=r"^collada\.",
             )
-            tri = trimesh.load(filename, force="mesh")
+            tri = _load_trimesh(filename, force="mesh")
     else:
-        tri = trimesh.load(filename, force="mesh")
+        tri = _load_trimesh(filename, force="mesh")
     tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
 
     meshes = []

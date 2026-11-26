@@ -5,7 +5,7 @@
 
 Shows how to programmatically create a variety of
 collision shapes using the newton.ModelBuilder() API.
-Supports XPBD (default), VBD, and Kamino DVI solvers.
+Supports XPBD (default), VBD, and Kamino SCC solvers.
 
 Success criteria:
 - Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.
@@ -50,6 +50,8 @@ class Example:
         else:
             builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
             builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
+            if self.solver_type == "xpbd":
+                builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
 
         # add ground plane
         builder.add_ground_plane()
@@ -115,12 +117,12 @@ class Example:
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model,
-                dynamics_solver="dvi",
+                dynamics_solver="scc",
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
             solver_config.dynamics.cull_speculative_contacts = False
-            solver_config.dvi.max_alternating_iterations = 2
+            solver_config.scc.max_alternating_iterations = 2
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)

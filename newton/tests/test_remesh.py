@@ -11,7 +11,8 @@ This test suite validates:
 Note: SurfaceReconstructor requires Open3D which is an optional dependency.
 """
 
-import importlib.util
+import importlib
+import re
 import unittest
 
 import numpy as np
@@ -27,12 +28,24 @@ from newton._src.geometry.remesh import (
     compute_camera_basis,
     compute_voxel_key,
 )
-
-# Check if Open3D is available for reconstruction tests
-OPEN3D_AVAILABLE = importlib.util.find_spec("open3d") is not None
+from newton.tests.unittest_utils import requires
 
 # Check if CUDA is available (required for Warp mesh raycasting)
 _cuda_available = wp.is_cuda_available()
+
+
+def _open3d_missing_library() -> str | None:
+    """Return the shared library an installed Open3D fails to load, e.g. libEGL on headless Linux."""
+    try:
+        importlib.import_module("open3d")
+    except (ImportError, OSError) as exc:
+        match = re.match(r"(\S+): cannot open shared object file", str(exc))
+        return match[1] if match else None
+    return None
+
+
+_missing_library = _open3d_missing_library()
+_skip_if_open3d_cannot_load = unittest.skipIf(_missing_library, f"Open3D cannot load {_missing_library}")
 
 
 def create_unit_cube_mesh(center: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -311,7 +324,9 @@ class TestPointCloudExtractor(unittest.TestCase):
             extractor.extract(vertices, bad_indices)
 
 
-@unittest.skipUnless(_cuda_available and OPEN3D_AVAILABLE, "Requires CUDA and Open3D")
+@requires("open3d")
+@_skip_if_open3d_cannot_load
+@unittest.skipUnless(_cuda_available, "Requires CUDA")
 class TestSurfaceReconstructor(unittest.TestCase):
     """Test the SurfaceReconstructor class."""
 
@@ -421,6 +436,37 @@ class TestSurfaceReconstructor(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             reconstructor.reconstruct(empty_points, empty_normals, verbose=False)
+
+
+@wp.kernel(module="unique")
+def _accumulate_point_sums(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    inv_voxel_size: float,
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
+    sum_pos_x: wp.array[wp.float32],
+    sum_pos_y: wp.array[wp.float32],
+    sum_pos_z: wp.array[wp.float32],
+    sum_norm_x: wp.array[wp.float32],
+    sum_norm_y: wp.array[wp.float32],
+    sum_norm_z: wp.array[wp.float32],
+    counts: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    point = points[tid]
+    normal = normals[tid]
+
+    key = compute_voxel_key(point, inv_voxel_size)
+    idx = hashtable_find_or_insert(key, keys, active_slots)
+    if idx >= 0:
+        wp.atomic_add(sum_pos_x, idx, point[0])
+        wp.atomic_add(sum_pos_y, idx, point[1])
+        wp.atomic_add(sum_pos_z, idx, point[2])
+        wp.atomic_add(sum_norm_x, idx, normal[0])
+        wp.atomic_add(sum_norm_y, idx, normal[1])
+        wp.atomic_add(sum_norm_z, idx, normal[2])
+        wp.atomic_add(counts, idx, 1)
 
 
 @unittest.skipUnless(_cuda_available, "VoxelHashGrid requires CUDA")
@@ -653,38 +699,8 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel(module="unique")
-        def accumulate_points(
-            points: wp.array[wp.vec3],
-            normals: wp.array[wp.vec3],
-            inv_voxel_size: float,
-            keys: wp.array[wp.uint64],
-            active_slots: wp.array[wp.int32],
-            sum_pos_x: wp.array[wp.float32],
-            sum_pos_y: wp.array[wp.float32],
-            sum_pos_z: wp.array[wp.float32],
-            sum_norm_x: wp.array[wp.float32],
-            sum_norm_y: wp.array[wp.float32],
-            sum_norm_z: wp.array[wp.float32],
-            counts: wp.array[wp.int32],
-        ):
-            tid = wp.tid()
-            point = points[tid]
-            normal = normals[tid]
-
-            key = compute_voxel_key(point, inv_voxel_size)
-            idx = hashtable_find_or_insert(key, keys, active_slots)
-            if idx >= 0:
-                wp.atomic_add(sum_pos_x, idx, point[0])
-                wp.atomic_add(sum_pos_y, idx, point[1])
-                wp.atomic_add(sum_pos_z, idx, point[2])
-                wp.atomic_add(sum_norm_x, idx, normal[0])
-                wp.atomic_add(sum_norm_y, idx, normal[1])
-                wp.atomic_add(sum_norm_z, idx, normal[2])
-                wp.atomic_add(counts, idx, 1)
-
         wp.launch(
-            accumulate_points,
+            _accumulate_point_sums,
             dim=3,
             inputs=[
                 wp_points,
@@ -780,38 +796,8 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel(module="unique")
-        def accumulate_points(
-            points: wp.array[wp.vec3],
-            normals: wp.array[wp.vec3],
-            inv_voxel_size: float,
-            keys: wp.array[wp.uint64],
-            active_slots: wp.array[wp.int32],
-            sum_pos_x: wp.array[wp.float32],
-            sum_pos_y: wp.array[wp.float32],
-            sum_pos_z: wp.array[wp.float32],
-            sum_norm_x: wp.array[wp.float32],
-            sum_norm_y: wp.array[wp.float32],
-            sum_norm_z: wp.array[wp.float32],
-            counts: wp.array[wp.int32],
-        ):
-            tid = wp.tid()
-            point = points[tid]
-            normal = normals[tid]
-
-            key = compute_voxel_key(point, inv_voxel_size)
-            idx = hashtable_find_or_insert(key, keys, active_slots)
-            if idx >= 0:
-                wp.atomic_add(sum_pos_x, idx, point[0])
-                wp.atomic_add(sum_pos_y, idx, point[1])
-                wp.atomic_add(sum_pos_z, idx, point[2])
-                wp.atomic_add(sum_norm_x, idx, normal[0])
-                wp.atomic_add(sum_norm_y, idx, normal[1])
-                wp.atomic_add(sum_norm_z, idx, normal[2])
-                wp.atomic_add(counts, idx, 1)
-
         wp.launch(
-            accumulate_points,
+            _accumulate_point_sums,
             dim=3,
             inputs=[
                 wp_points,
@@ -882,38 +868,8 @@ class TestVoxelHashGrid(unittest.TestCase):
         wp_points = wp.array(points_data, dtype=wp.vec3)
         wp_normals = wp.array(normals_data, dtype=wp.vec3)
 
-        @wp.kernel(module="unique")
-        def accumulate_points(
-            points: wp.array[wp.vec3],
-            normals: wp.array[wp.vec3],
-            inv_voxel_size: float,
-            keys: wp.array[wp.uint64],
-            active_slots: wp.array[wp.int32],
-            sum_pos_x: wp.array[wp.float32],
-            sum_pos_y: wp.array[wp.float32],
-            sum_pos_z: wp.array[wp.float32],
-            sum_norm_x: wp.array[wp.float32],
-            sum_norm_y: wp.array[wp.float32],
-            sum_norm_z: wp.array[wp.float32],
-            counts: wp.array[wp.int32],
-        ):
-            tid = wp.tid()
-            point = points[tid]
-            normal = normals[tid]
-
-            key = compute_voxel_key(point, inv_voxel_size)
-            idx = hashtable_find_or_insert(key, keys, active_slots)
-            if idx >= 0:
-                wp.atomic_add(sum_pos_x, idx, point[0])
-                wp.atomic_add(sum_pos_y, idx, point[1])
-                wp.atomic_add(sum_pos_z, idx, point[2])
-                wp.atomic_add(sum_norm_x, idx, normal[0])
-                wp.atomic_add(sum_norm_y, idx, normal[1])
-                wp.atomic_add(sum_norm_z, idx, normal[2])
-                wp.atomic_add(counts, idx, 1)
-
         wp.launch(
-            accumulate_points,
+            _accumulate_point_sums,
             dim=3,
             inputs=[
                 wp_points,
@@ -1034,7 +990,8 @@ class TestRemeshHelperFunctions(unittest.TestCase):
 
 
 @unittest.skipUnless(_cuda_available, "Remeshing requires CUDA")
-@unittest.skipUnless(OPEN3D_AVAILABLE, "SurfaceReconstructor requires Open3D")
+@_skip_if_open3d_cannot_load
+@requires("open3d")
 class TestRemeshUnifiedAPI(unittest.TestCase):
     """Test the unified remeshing API in utils.py with method='poisson'."""
 

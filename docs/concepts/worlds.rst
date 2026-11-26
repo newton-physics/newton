@@ -497,8 +497,9 @@ model memory grows with the catalog size plus the rows of all worlds, not with t
 
 A row takes everything authored on the variant shape it holds: geometry, the collision data derived
 from it, flags, color, opacity, materials, and model-assigned shape custom attributes. Apply domain
-randomization after selecting. A row keeps its label, world, collision group, and filter pairs, so
-the i-th colliders of all variants must share a collision group. Empty rows have
+randomization after selecting. A row keeps its label, world, collision group, friction mode, and
+filter pairs, so the i-th colliders of all variants must share a collision group and a
+:attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`. Empty rows have
 their collision and visibility flags cleared. Shapes added to the body directly stay in place for
 every variant.
 
@@ -511,11 +512,10 @@ select. Current limitations:
   compiles one geom layout for all worlds, so construct it before selecting different variants per
   world. It follows per-world ``solref``, ``solimp``, ``solmix``, and friction after a selection, but
   ``condim`` and ``priority`` stay as compiled, all worlds use world 0's site sizes, spatial tendons
-  cannot wrap around variant shapes, and its MuJoCo viewer is unavailable.
+  cannot wrap around variant shapes, and MuJoCo's viewer does not follow selections.
 - Variant shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
 - :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow selections after
-  the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises for
-  models with variants.
+  the next :meth:`~newton.Model.bvh_refit_shapes`.
 - ``ViewerGL``, ``ViewerViser``, and ``ViewerNull`` follow selections through
   :meth:`~newton.viewer.ViewerBase.notify_model_changed`; ``ViewerUSD``, ``ViewerRerun``,
   ``ViewerFile``, and ``ViewerRTX`` raise :class:`NotImplementedError` when notified of one.

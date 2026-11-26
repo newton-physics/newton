@@ -7,16 +7,21 @@ KAMINO: UNIT TESTS: CORE: SHAPES
 
 import unittest
 
+import newton
 from newton._src.geometry.types import GeoType
 from newton._src.solvers.kamino._src.core.shapes import _max_contacts_for_shape_pair_impl
-from newton.tests.kamino import setup_tests
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.unittest_utils import NewtonTestCase
 
 ###
 # Tests
 ###
 
 
-class TestMaxContactsForShapePair(unittest.TestCase):
+class TestMaxContactsForShapePair(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_catch_canonicalization_order_errors(self):
         """Verify the canonical implementation rejects every reversed shape pair.
 
@@ -37,6 +42,7 @@ class TestMaxContactsForShapePair(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

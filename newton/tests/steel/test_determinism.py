@@ -229,6 +229,7 @@ def _build_contact_scene(
     model.joint_velocity_limit.fill_(8.0)
     if torsion_radius > 0.0:
         model.steel.min_torsional_patch_radius.fill_(torsion_radius)
+        model.shape_material_friction_mode.fill_(int(newton.ShapeFrictionMode.SLIDING_TORSIONAL))
     if joint_friction > 0.0:
         jointed = np.repeat(model.joint_type.numpy(), np.diff(model.joint_qd_start.numpy())) != newton.JointType.FREE
         model.joint_friction.assign(np.where(jointed, joint_friction, 0.0).astype(np.float32))
@@ -663,7 +664,7 @@ def test_overflow_warning_names_deterministic_mode(test, device):
                 paths = []
                 for _ in range(2):
                     solver.step(state, model.state(), model.control(), contacts, 0.005)
-                    paths.append(solver._contact_path.numpy())
+                    paths.append(solver._contact_path.numpy().copy())
                 wp.synchronize_device(device)
             finally:
                 output = capture.end() if check_output else ""

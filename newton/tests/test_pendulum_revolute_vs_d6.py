@@ -7,11 +7,11 @@ import unittest
 import numpy as np
 
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
 class TestPendulumRevoluteVsD6(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "USD not available")
+    @requires("pxr.Usd")
     def test_pendulum_revolute_vs_d6_mujoco(self):
         # Load the USD file
         usd_path = os.path.join(os.path.dirname(__file__), "assets", "pendulum_revolute_vs_d6.usda")

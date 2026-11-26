@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -37,6 +38,7 @@ from .solver_kernels import (
     _store_dual_wrench,
     _update_splitting_dual,
     _write_integrator_body_inputs,
+    _write_lox_world_residual,
     _write_world_status,
 )
 from .types import LOXData, ProjectionAcceleration
@@ -105,6 +107,16 @@ def _world_thread_count(device: wp.DeviceLike, num_worlds: int, max_world_items:
 ###
 # Interfaces
 ###
+
+
+def _proximal_window_iterations(window: float, max_iterations: int) -> int:
+    """Return ``ceil(window * max_iterations)``, the splitting iterations of the proximal warm-start pull.
+
+    The product is shrunk by a few rounding errors first, so that a product such as ``0.1 * 30``, which
+    rounds just above three, keeps three iterations. A positive window gives at least one iteration, and
+    zero disables the pull.
+    """
+    return math.ceil(window * max_iterations * (1.0 - 4.0 * np.finfo(np.float64).eps))
 
 
 class LOXSolver:
@@ -505,6 +517,29 @@ class LOXSolver:
         self._store_dual_wrench()
         self._write_accepted_dynamics()
 
+    def write_world_residual(self, world_residual: wp.array[wp.float32]) -> None:
+        """Write the convergence residual of each world relative to the stopping tolerances.
+
+        The value is the largest tolerance-scaled residual of the last convergence check
+        of the latest solve, so values at most one satisfy every tolerance. Failed worlds
+        report infinity. Requires adaptive iterations; fixed iterations skip the check.
+
+        Args:
+            world_residual: Output array with at least ``num_worlds`` entries.
+
+        Raises:
+            RuntimeError: If the solver runs a fixed number of iterations.
+        """
+        if self._config.fixed_iterations:
+            raise RuntimeError("LOX reports no world residual with fixed iterations.")
+        wp.launch(
+            _write_lox_world_residual,
+            dim=self._model.info.num_worlds,
+            inputs=[self._data.status, self._data.residuals.r_total],
+            outputs=[world_residual],
+            device=self._device,
+        )
+
     def build_dual_solution(
         self,
         model: ModelKamino,
@@ -543,6 +578,12 @@ class LOXSolver:
             self._problem.data,
             self._config.gauss_seidel_max_colors,
             ProjectionAcceleration.from_string(self._config.projection_acceleration),
+            contact_proximal_regularization=self._config.contact_proximal_regularization,
+            contact_proximal_warmstart_scale=self._config.contact_proximal_warmstart_scale,
+            contact_proximal_target_iterations=_proximal_window_iterations(
+                self._config.contact_proximal_warmstart_window, self._config.max_iterations
+            ),
+            iteration_count=self._data.state.iteration_count,
         )
 
     def _initialize_splitting(
@@ -603,6 +644,7 @@ class LOXSolver:
                 residuals.r_cross_iterate,
                 residuals.r_unilateral,
                 residuals.r_lagged,
+                residuals.r_total,
                 residuals.r_primal,
                 residuals.r_dual,
                 self._problem.data.box_rows.world_residual_max,
@@ -639,6 +681,7 @@ class LOXSolver:
             contact_dead_zone=constraints.delta,
             structural_warmstart_scale=structural_warmstart_scale,
         )
+        self._projection.set_proximal_target()
 
     def _estimate_joint_penalty_scale(self, time_step: float, warn_failures: bool) -> None:
         """Seed the joint penalty scale from the current rigid state at the uniform ``time_step``.
@@ -785,7 +828,7 @@ class LOXSolver:
             return
         self._projection.project(
             self._config.projection_sweeps_per_iteration,
-            self._config.projection_anderson_recycle,
+            self._config.projection_acceleration_recycle,
             self._data.state.world_active,
             self._data.state.world_failed,
             self._model.bodies.wid,
@@ -935,6 +978,7 @@ class LOXSolver:
                 splitting.world_active,
                 splitting.world_converged,
                 iteration_condition,
+                residuals.r_total,
             ],
             device=self._device,
         )

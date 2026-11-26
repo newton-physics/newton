@@ -1,1 +1,0 @@
-Project the `friction_mode="coulomb_newton"` contact update of `SolverSteel` onto its friction cone. Its root search stopped within a tolerance, so a frictionless contact applied a small tangential impulse that spun up a sliding sphere.

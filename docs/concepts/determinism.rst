@@ -101,14 +101,17 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
      - Notes
    * - :class:`~solvers.SolverXPBD`
      - Yes
-     - Warp deterministic mode on the solver's atomic kernels.
+     - Warp deterministic mode on the solver's atomic kernels; rigid-contact
+       corrections are summed per body in contact order instead.
    * - :class:`~solvers.SolverSemiImplicit`
      - Yes
-     - Warp deterministic mode. With triangle contact enabled, large meshes
+     - Warp deterministic mode; rigid-contact forces are summed per body in
+       contact order instead. With triangle contact enabled, large meshes
        cannot be graph-captured in this mode (see `Performance`_).
    * - :class:`~solvers.SolverFeatherstone`
      - Yes
-     - Warp deterministic mode on the solver's atomic kernels.
+     - Warp deterministic mode on the solver's atomic kernels; rigid-contact
+       forces are summed per body in contact order instead.
    * - :class:`~solvers.SolverVBD`
      - Yes
      - Warp deterministic mode; body-particle contacts are gathered per
@@ -123,12 +126,13 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
        observable sums contact wrenches with atomics and is outside the
        guarantee. See ``python -m newton.examples steel_determinism_arms``.
    * - :class:`~solvers.SolverMuJoCo`
-     - CPU only
-     - The CPU backend (``use_mujoco_cpu=True``) is always deterministic. On
-       the MuJoCo Warp backend, ``deterministic`` currently fails to compile
-       MuJoCo Warp's kernels with Warp 1.19, and MuJoCo Warp does not yet
-       order its contacts or constraint rows. Tracked in
-       `#5042 <https://github.com/newton-physics/newton/issues/5042>`__.
+     - CPU; partial GPU
+     - The CPU backend (``use_mujoco_cpu=True``) is deterministic. Native
+       MuJoCo Warp backends receive ``DeterminismType.ALL`` before constants
+       are initialized, and select their supported deterministic kernels.
+       MuJoCo Warp still lacks contact and constraint sorting, so this
+       is not a bitwise trajectory guarantee. See
+       :ref:`mujoco-determinism` for configuration and downstream limits.
    * - :class:`~solvers.SolverStyle3D`
      - No
      - Accumulates cloth and contact forces with floating-point atomics.
@@ -166,6 +170,13 @@ and on whether the step runs eagerly or from a captured CUDA graph:
   the launch size times the per-thread record bound. Contact kernels launch over
   the whole contact buffer, so under graph replay their cost follows the buffer
   size rather than the number of contacts.
+- **Per-body contact sums.** :class:`~solvers.SolverXPBD`,
+  :class:`~solvers.SolverSemiImplicit`, and :class:`~solvers.SolverFeatherstone`
+  avoid recorded atomics for rigid contacts: each contact stores its result for
+  both bodies in its own slots, and a second kernel sums each body's slots in
+  contact order. The contacts are grouped by body with one integer sort per
+  step, so the rigid-contact cost no longer includes sorting worst-case record
+  buffers. Particle contacts and joints still use recorded atomics.
 - **Memory.** Record buffers are sized for the worst case and stay allocated for
   the lifetime of a captured graph.
 - **Solver-specific ordering.** :class:`~solvers.SolverSteel` orders its work

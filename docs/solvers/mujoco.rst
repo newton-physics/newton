@@ -8,7 +8,7 @@ MuJoCo Solver
 
 :class:`~newton.solvers.SolverMuJoCo` wraps `mujoco_warp
 <https://github.com/google-deepmind/mujoco_warp>`_ behind Newton's standard
-solver interface. Newton uses compatible-release pins (``~=``) on both ``mujoco``
+solver interface. Newton uses compatible-release pins (``~=``) on both ``mujoco-core``
 and ``mujoco-warp`` to keep the two version-aligned; see
 :github:`pyproject.toml` for the current pins.
 
@@ -31,6 +31,84 @@ section at the bottom collects the most useful anchor points.
    <https://mujoco.readthedocs.io/en/stable/APIreference/APItypes.html#mjdata>`_
    reference. ``mujoco_warp`` exposes the same fields on its
    GPU-resident analogues.
+
+
+.. _mujoco-determinism:
+
+Determinism
+-----------
+
+Select determinism at construction, before derived model constants are computed::
+
+    import warp as wp
+    from newton.solvers import SolverMuJoCo
+
+    solver = SolverMuJoCo(
+        model,
+        use_mujoco_contacts=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+    )
+
+Newton uses ``mujoco_warp.DeterminismType`` to map
+``NOT_GUARANTEED`` to ``NONE`` and ``RUN_TO_RUN`` to ``ALL`` on
+``solver.mjw_model.opt.deterministic`` immediately after model upload.
+``None`` inherits the Warp global mode at construction. Stronger modes such
+as ``GPU_TO_GPU`` are rejected on this native path. This option controls
+MuJoCo Warp execution, not the ``use_mujoco_cpu=True`` backend.
+
+The native backend selects its supported deterministic reductions and record
+bounds. Newton does not force Warp's global deterministic compilation onto
+every MJWarp kernel: that can fail on kernels that mix direct writes and
+atomic updates. Newton resets only the inherited ``deterministic`` option on
+MJWarp's source modules to ``NOT_GUARANTEED``, preserving backend-owned record
+bounds and other options. Native factories select deterministic reductions
+using the model flags. The temporary global configuration is restored on exit,
+including exceptions. Newton's contact-conversion kernels retain the requested
+Warp mode separately.
+
+``ATOMICS`` selects backend-authored reduction paths in
+smooth dynamics (including mass/inertia and force accumulation), supported
+constraint/solver operations, passive forces, derivatives, sleeping, and
+selected sensors. This is per-kernel coverage, not a promise that every
+operation in those stages is deterministic. ``CONTACTS`` and ``CONSTRAINT``
+request the ordering hooks described below. Newton neither adds missing
+backend sorts nor broadens native atomic coverage with global compilation.
+
+.. important::
+
+   This is a request for the backend's available determinism features, **not
+   a certification of bitwise-identical trajectories**. MuJoCo Warp
+   exposes ``CONTACTS``, ``CONSTRAINT``, and ``ATOMICS`` bits, but its contact
+   and constraint sorting functions are still unimplemented hooks. Reading
+   back ``ALL`` only confirms configuration. See `MJWarp issue #1925
+   <https://github.com/google-deepmind/mujoco_warp/issues/1925>`_ and the
+   separate proposed `contact sorting #1923
+   <https://github.com/google-deepmind/mujoco_warp/pull/1923>`_ and
+   `constraint sorting #1924
+   <https://github.com/google-deepmind/mujoco_warp/pull/1924>`_ changes.
+   Newton does not include those patches or infer their presence from the enum.
+
+Downstream callers must account for the following boundaries:
+
+* With ``use_mujoco_contacts=False``, also construct
+  ``newton.CollisionPipeline(model, deterministic=True)`` and pass its contacts
+  to the solver. The solver flag does not configure collision generation;
+  deterministic input contacts and conversion alone do not fix missing
+  backend constraint ordering.
+* Keep the device, backend/Warp versions, world count/order, solver settings,
+  initial state, and control sequence fixed when testing repeatability.
+  Cross-device, cross-version, cross-batch-size, and arbitrary-model equality
+  are not promised. Contact/constraint overflow invalidates such a check.
+* Passing a small repeated-rollout test only establishes that tested workload.
+  Check finite state and zero overflow as well as equality; equal NaNs are
+  not successful deterministic simulation. Eager and CUDA Graph paths need
+  their own validation on the deployed GPU stack.
+* Set the mode on construction. Mutating ``mjw_model.opt.deterministic`` later
+  does not rebuild earlier constants or captured graphs. The solver option
+  does not seed downstream policy RNGs or make external controllers deterministic.
+* Warp global/module compilation options are shared process state. Scoped
+  restoration supports sequential calls, not concurrent threads changing
+  determinism options or compiling conflicting solver configurations.
 
 
 Joint types
@@ -73,6 +151,26 @@ Joint types
    * - :attr:`~newton.JointType.ROD`
      - *unsupported*
      - Not forwarded to MuJoCo.
+
+.. _mjcf-merged-joints:
+
+MJCF import combines a body's hinge and slide joints into a single Newton
+joint, which applies the slides in the parent frame and then the hinges about
+a single anchor. The anchor is the point where the hinge axes meet. If they do
+not meet, or are all nearly parallel without lying on one line, the anchor is
+the first hinge's position, which changes the body's motion and logs a
+warning. A slide listed after hinges keeps its motion
+only if it is parallel to every hinge listed before it. Otherwise it is still
+applied before the hinges, which changes the body's motion and emits
+:class:`~newton.NewtonDeprecationWarning`; a future release will raise an
+error.
+
+Hinge axes meet if the point with the smallest summed squared distance to them
+lies within 1e-4 MJCF length units of every axis. Two axes are
+parallel if the angle between them is below 0.06 degrees. A body without
+hinges is anchored at its first slide's position. None of this applies to a
+root body whose joints are replaced through ``floating``, ``base_joint`` or
+``parent_body``.
 
 Joint reference values (``ref``)
 --------------------------------
@@ -119,6 +217,28 @@ MuJoCo's ``ref`` is the coordinate assigned to the authored pose;
 Newton stores the relative coordinate ``rest_q = springref - ref``,
 after conversion to meters or radians. If ``springref`` is omitted,
 MuJoCo defaults it to zero, giving ``rest_q = -ref``.
+A FREE joint's spring rests at the body's initial pose. As in MuJoCo, an MJCF
+``<joint type="free">`` takes joint attributes and default classes, while the
+``<freejoint/>`` shortcut ignores them.
+
+For hinge, slide, BALL, and FREE joints with MuJoCo DOFs, constructing
+:class:`~newton.solvers.SolverMuJoCo` resolves positive MJCF ``springdamper``
+or USD ``mjc:springdamper`` pairs once into core ``joint_stiffness`` and
+``joint_damping``.
+The attribute ``model.mujoco.dof_springdamper`` is a construction-time input:
+consumed positive pairs are reset to zero. ``notify_model_changed`` does not
+read it. Change the core gains for runtime edits; assign new pairs before
+constructing another solver to resolve them again.
+Positive pairs must be identical across a BALL or FREE joint's DOFs. Inconsistent
+per-DOF values or positive pairs on joints without MuJoCo DOFs, such as loop
+joints mapped to CONNECT constraints, raise ``ValueError``.
+Resolution uses each world's initial physical inertia and authored armature,
+excluding kinematic-lock regularization, and leaves ``joint_rest_q`` unchanged.
+Both backends initialize these passive gains in every model world.
+Positive pairs override explicit gains; nonpositive pairs retain them. After resolution,
+core edits remain authoritative through inertia updates and solver reconstruction;
+gains are not automatically retuned. Other solvers can use the resolved core
+values, but do not resolve MJCF ``springdamper`` themselves.
 
 .. deprecated:: 1.8
 
@@ -147,10 +267,9 @@ layouts coincide and ``springref`` equals ``rest_q``, so the old name remains a
 warning alias to :attr:`~newton.Model.joint_rest_q` for at least one minor
 release. The alias
 tracks ``rest_q``, so it no longer reports the absolute spring reference if
-``dof_ref`` is edited later. For other models, reads, assignments, and
-deletions raise an ``AttributeError`` with migration guidance. Replace runtime
-accesses with ``joint_rest_q``, subtract ``ref`` from legacy values, and index
-by :attr:`~newton.Model.joint_q_start`.
+``dof_ref`` is edited later. For other models the old name does not exist.
+Replace runtime accesses with ``joint_rest_q``, subtract ``ref`` from legacy
+values, and index by :attr:`~newton.Model.joint_q_start`.
 
 To change a spring at runtime, edit :attr:`~newton.Model.joint_stiffness`
 or :attr:`~newton.Model.joint_rest_q` and notify the solver with
@@ -408,14 +527,26 @@ response. See the implementation in
 :github:`newton/_src/solvers/mujoco/kernels.py` and its force-space contact tests
 in :github:`newton/tests/test_mujoco_solver.py`.
 
-With MuJoCo's default ``refsafe`` guard enabled, MuJoCo-Warp evaluates positive
-``solref`` using ``max(timeconst, 2 * dt)`` for the active constraint without
+With MuJoCo's default ``refsafe`` guard enabled and Euler, RK4, implicit, or
+implicitfast integration, MuJoCo-Warp evaluates positive ``solref`` using
+``max(timeconst, 2 * dt)`` for the active constraint without
 rewriting the stored value. Direct-format negative ``solref`` bypasses this
 clamp. Once a requested positive ``timeconst`` falls below that floor, raising
 the gains at a fixed damping ratio no longer hardens the effective response;
 reduce the step passed to :meth:`~newton.solvers.SolverMuJoCo.step` instead. See
 MuJoCo's `refsafe option
 <https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
+
+For overdamped Newton contacts with per-contact stiffness and damping, the
+adapter caps damping when the requested time constant falls below this floor.
+It adjusts the damping ratio to preserve stiffness. Underdamped contacts keep
+their existing conversion. If the critical-damping time constant is below the
+floor, MuJoCo can still soften the contact. Use a smaller timestep to retain
+the requested gains.
+With ``refsafe`` disabled or ``discrete`` integration, the adapter keeps the
+supplied positive damping.
+If you change the timestep, call :meth:`~newton.CollisionPipeline.collide` again
+to refresh the contact parameters.
 
 These ``SOLREF_MODE_*`` names describe internal mode values; they are not
 public Newton symbols. MJCF/USD import selects the appropriate authored/default
@@ -515,7 +646,7 @@ MJCF ``<dcmotor>`` actuators follow this MuJoCo-specific path. The importer uses
 MuJoCo's native parser to resolve electrical, controller, thermal, cogging, and
 LuGre parameters, including inherited defaults, into the existing actuator
 parameter arrays for both the CPU and MuJoCo-Warp backends. Importing these
-shortcuts requires the optional ``mujoco`` package and raises ``ImportError``
+shortcuts requires the optional ``mujoco-core`` package and raises ``ImportError``
 with installation guidance when it is unavailable. Install ``newton[sim]`` to
 include MuJoCo. Ordinary MJCF and compiled ``<general>`` actuator import do not
 require MuJoCo; parsing DC-motor shortcuts does not require MuJoCo-Warp.
@@ -539,12 +670,8 @@ their low-level arrays remain runtime-editable, including after saving and
 reimporting compiled MJCF. Compilation preserves the dynamics, not the shortcut's
 authoring-time parameter ownership.
 
-Actuator damping is preserved on both backends. MuJoCo-Warp 3.15 folds it into
-joint and tendon damping; Newton retains that contribution when publishing
-joint or tendon property updates. Actuator armature is preserved only on the
-native MuJoCo CPU backend (``use_mujoco_cpu=True``); the Warp backend emits a
-:class:`~newton.NewtonWarning` when it is nonzero. This limitation applies to all actuator
-types, not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
+Actuator damping and armature are preserved on both backends, for all actuator
+types. MJCF ``damping`` accepts one, two, or three coefficients:
 the first is stored in ``mujoco:actuator_damping`` and the remaining two in
 ``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing
 coefficients; otherwise omitted coefficients default to zero. Compiled USD rows can author
@@ -553,17 +680,13 @@ passive properties are set at solver construction, must be uniform across
 replicated worlds, and are not refreshed by ``notify_model_changed(ACTUATOR_PROPERTIES)``.
 The solver rejects mismatched passive properties or control signatures across worlds,
 including on compiled ``GENERAL`` rows. Worlds must also have matching actuator row counts.
-Warp's folded damping uses the construction-time transmission gear. For actuators
-with nonzero linear or polynomial damping, ``actuator_gear`` must match the compiled
-gear in every world and remain unchanged. Construction and eager property
-notifications reject mismatches; captured notifications retain the compiled gear.
-Recreate the solver to change these gears. Undamped Warp actuators still support
-per-world and runtime gear edits. Native CPU actuator gears remain runtime-editable.
+Both scale with the square of the transmission gear, so ``actuator_gear`` stays
+per-world and runtime-editable for damped actuators too.
 DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler"``;
 MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different
 trajectories with ``implicitfast``.
 
-When using ``separate_worlds=True``, corresponding high-level ``<dcmotor>``
+In multi-world models, corresponding high-level ``<dcmotor>``
 actuators (including those created by the helper) must have identical parameters because MuJoCo-Warp replicates one
 compiled template model across worlds.
 
@@ -751,6 +874,139 @@ already be enabled in the imported model.
     solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
 
 
+.. _mujoco-flexes:
+
+Particles and flexes
+--------------------
+
+:class:`~newton.solvers.SolverMuJoCo` simulates the springs, triangles, and
+tetrahedra of its model as MuJoCo
+`flexes <https://mujoco.readthedocs.io/en/stable/XMLreference.html#deformable-flex>`__.
+Like rigid bodies, deformables are simulated whenever they are in the model the
+solver receives; to split them between solvers, use
+:class:`~newton.solvers.experimental.coupled.SolverCoupled`, whose entries see
+only the particles they own. Elements whose particles all lack
+:attr:`~newton.ParticleFlags.ACTIVE` belong to another solver and are skipped.
+Particles that belong to no element, such as MPM grains, have no MuJoCo
+representation and are left untouched.
+
+Each particle of a converted element becomes a MuJoCo body with three slide
+joints placed at its initial position, and ``State.particle_q`` /
+``particle_qd`` are synchronized with those joints every step. Particles with
+zero mass or without :attr:`~newton.ParticleFlags.ACTIVE` get no joints. They
+are pinned at their ``particle_q`` in each world and follow it when it changes.
+:meth:`~newton.solvers.SolverMuJoCo.reset` restores flex particles with
+:attr:`~newton.StateFlags.PARTICLE_Q` and :attr:`~newton.StateFlags.PARTICLE_QD`.
+``State.particle_f`` is applied to the joints of simulated particles.
+
+Elements that no authored flex covers are grouped into one flex per
+dimension:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 20 55
+
+   * - Newton elements
+     - Flex
+     - Parameters
+   * - Tetrahedra
+     - 3D
+     - ``young`` and ``poisson`` from the Lamé parameters in ``tet_materials``.
+   * - Triangles
+     - 2D
+     - ``young`` and ``poisson`` from the Lamé parameters in ``tri_materials``,
+       with unit ``thickness`` and membrane (stretch) elasticity only.
+   * - Springs
+     - 1D
+     - With the ``"discrete"`` integrator, a constraint on the edge lengths of
+       springs with ``spring_stiffness``. With the other integrators,
+       ``edgestiffness`` and ``edgedamping`` from ``spring_stiffness`` and
+       ``spring_damping``. Stretch only: 1D flexes resist bending only when
+       ``young`` is set through ``add_flex``.
+
+MuJoCo's ``"discrete"`` integrator, the default for models with flexes, does
+not support 1D edge stiffness and damping, and MuJoCo recommends edge
+constraints in their place. Springs with a positive stiffness therefore keep
+their rest lengths there, as with ``edgeequality=True`` in ``add_flex``, and
+their stiffness and damping values are not used. The constraint covers every
+edge of a flex, so springs without stiffness that share a flex with stiff ones
+are constrained too, with a warning. To simulate the springs
+themselves, pass ``integrator="euler"`` or ``"rk4"``, or ``"implicitfast"``
+for models without elastic flexes. MuJoCo then applies edge stiffness and
+damping as explicit passive forces, so a spring chain with stiffness ``k`` and
+particle mass ``m`` is stable only for time steps below about
+``sqrt(m / k)``. Positive ``edgestiffness`` and ``edgedamping`` values passed
+to ``add_flex`` always reach MuJoCo, which rejects them with the ``"discrete"``
+integrator.
+
+A triangle whose particles all belong to a tetrahedral flex is skipped, so the
+surface triangles of a tetrahedral mesh do not form a second flex. Springs are
+always converted, as in Newton's other solvers. Springs whose particles all
+belong to a 2D or 3D flex, such as cloth springs, form a separate flex that
+does not collide, so it does not push the cloth apart.
+MuJoCo stores one material per flex, so non-uniform values are averaged with a
+warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
+friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
+each other and with shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`,
+including shapes that do not collide with other shapes. A flex collides with
+itself only when ``selfcollide`` is set through ``add_flex``. Flexes have
+sliding friction (MuJoCo ``condim`` 3) and priority 0. A flex contact uses the
+``condim`` of the side with the higher priority and, at equal priority, the
+higher ``condim`` of its flex and shape, so a
+:attr:`~newton.ShapeFrictionMode.NONE` shape makes flex contacts frictionless
+only if it has a positive ``mujoco:geom_priority``. Flex
+contacts require ``use_mujoco_contacts=True``; the solver rejects models with
+flexes otherwise. In exported contacts, the flex side has shape
+``-1``; :class:`~newton.sensors.SensorContact` and the viewer skip these
+contacts. With separate worlds, every world must have the same elements,
+element materials, particle masses, radii, and active flags, and authored
+flexes, because MuJoCo builds the flexes from the first world.
+
+To control a flex directly, use ``add_flex`` from
+:doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` on existing Newton
+tetrahedra, triangles, or springs. Each call creates a separate flex, so
+elements with different materials no longer need to be averaged. It also
+exposes MuJoCo-only settings such as 2D bending (``elastic2d``),
+self-collision, edge equality constraints (``edgeequality``), and per-flex
+contact parameters. Settings left as ``None`` are
+derived as in the table above.
+
+.. code-block:: python
+
+   from newton.solvers import mujoco
+
+   start = builder.tri_count
+   builder.add_cloth_grid(...)
+   mujoco.add_flex(
+       builder,
+       triangles=range(start, builder.tri_count),
+       elastic2d="both",
+       thickness=1.0e-3,
+       selfcollide="auto",
+   )
+
+When flexes are created, an ``"implicit"`` or ``"implicitfast"``
+integrator taken from the model's custom attributes or Newton's default is
+replaced by ``"discrete"``, because MuJoCo rejects flex elasticity with those
+integrators. Newton's
+triangle damping, drag, and lift, tetrahedron damping, and dihedral bending
+edges are not converted.
+
+Each flex particle adds three DOFs, and MuJoCo's default ``"newton"`` solver
+factorizes a dense matrix over all DOFs of a world, so its cost grows quickly
+with the particle count. Pass ``solver="cg"`` for flexes with more than a few
+dozen particles, as in the ``mujoco_flex`` example
+(``python -m newton.examples mujoco_flex``).
+
+.. note::
+
+   Flex support awaits a MuJoCo Warp release with
+   `google-deepmind/mujoco_warp@3cbc2f3 <https://github.com/google-deepmind/mujoco_warp/commit/3cbc2f3599a4f9143f36e6bfea2aa44639e3ac22>`__,
+   which brings flex performance improvements and fixes flexes resting about
+   ``gap`` below planes. Until then, set the ``gap`` of planes that support
+   flexes to zero.
+
+
 .. _mujoco-collision-pipeline:
 
 Collision pipeline
@@ -771,6 +1027,14 @@ accuracy as bodies move, and the solver warns at construction. Use
 ``integrator="implicitfast"`` or ``use_mujoco_contacts=True`` to avoid this
 limitation.
 
+Newton contacts also carry the surface velocity of meshes created with
+``enable_surface_velocity=True`` (see :class:`~newton.Mesh`), which the solver
+forwards to MuJoCo's per-contact ``surfacevel`` to drive the friction rows.
+They carry a linear velocity only, so torsional friction (``condim`` 4 and 6)
+treats a spinning mesh as still. MuJoCo's collision detection has no per-vertex
+surface velocity, so these meshes act as still surfaces with
+``use_mujoco_contacts=True``.
+
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 
@@ -788,7 +1052,7 @@ and the `geom mask attributes
 
 **Importing MJCF masks.**
 
-:func:`~newton.utils.parse_mjcf` resolves inherited ``contype`` and
+:meth:`~newton.ModelBuilder.add_mjcf` resolves inherited ``contype`` and
 ``conaffinity`` values and determines which shape pairs may collide. It stores
 the same result in Newton collision groups and explicit excluded pairs. The
 original 32-bit values are also retained as
@@ -796,7 +1060,7 @@ original 32-bit values are also retained as
 for a lossless round trip back to MuJoCo.
 
 A *mask domain* is the set of shapes whose mask bits were authored together.
-Each :func:`~newton.utils.parse_mjcf` call creates a new domain and records it
+Each :meth:`~newton.ModelBuilder.add_mjcf` call creates a new domain and records it
 in the internal ``model.mujoco.collision_mask_domain`` attribute. The domain
 is only a source label. It is not another collision mask and does not enable
 or disable contacts. When :meth:`~newton.ModelBuilder.add_builder` combines
@@ -853,8 +1117,9 @@ Margin and gap mapping
 :attr:`~newton.Model.shape_margin` maps to MuJoCo
 ``geom_margin`` and :attr:`~newton.Model.shape_gap` maps to ``geom_gap``;
 authored contact-pair values similarly map to ``pair_margin`` and ``pair_gap``.
-The margin mapping is subject to *Margin zeroing* below. The solver forwards gap
-values at construction and runtime property updates. MuJoCo reports surface
+The solver forwards margin and gap values at construction on both the CPU and
+MuJoCo Warp backends; runtime property updates apply only to the MuJoCo Warp
+backend. MuJoCo reports surface
 distances in ``(margin, margin + gap]`` as inactive contacts without contact
 force. See :ref:`margin and gap semantics
 <margin-gap-semantics>` for Newton's contact geometry and MuJoCo's `margin and
@@ -869,25 +1134,9 @@ import translation.
 
 **Multi-contact CCD.** Constructing
 :class:`~newton.solvers.SolverMuJoCo` with ``enable_multiccd=True``
-allows up to four contact points per geom pair instead of one. Pairs
-where either geom has non-zero MuJoCo ``geom_margin`` still fall back
-to a single contact regardless of the flag (see *Margin zeroing*
-below for how Newton's :attr:`~newton.Model.shape_margin` is forwarded
-to it). MuJoCo Warp currently remains single-contact for cylinder--box;
+allows up to four contact points per geom pair instead of one. MuJoCo Warp
+currently remains single-contact for cylinder--box;
 see :ref:`Geometry Pair Contact Behavior`.
-
-**Margin zeroing.** Earlier ``mujoco_warp`` releases rejected non-zero geom
-margins on box-box pairs (its default NATIVECCD path) and on any box/mesh pair
-when ``enable_multiccd=True``. MuJoCo Warp 3.17 accepts them, but the MuJoCo Warp
-backend of :class:`~newton.solvers.SolverMuJoCo` still zeroes ``geom_margin`` and
-``pair_margin`` model-wide at compile time whenever a box geom exists and NATIVECCD
-or multi-CCD is enabled, or whenever ``enable_multiccd=True`` is combined with mesh
-geoms; geoms and pairs with non-zero authored margins emit a warning when
-``use_mujoco_contacts=True``. The Newton model's :attr:`~newton.Model.shape_margin` array
-is left untouched, and when ``use_mujoco_contacts=False`` the authored
-margins are restored at runtime through ``update_geom_properties_kernel``.
-The CPU backend (``use_mujoco_cpu=True``) keeps the authored geom and pair
-margins, so its contacts can differ from the MuJoCo Warp backend's for such models.
 
 
 Contact pairs
@@ -904,9 +1153,9 @@ parsed into MuJoCo's geom-pair contact structures by
 Multi-world support
 -------------------
 
-Constructing :class:`~newton.solvers.SolverMuJoCo` with
-``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+For a model with multiple worlds, :class:`~newton.solvers.SolverMuJoCo`
+builds a shared MuJoCo topology across worlds via ``mujoco_warp``. The native
+MuJoCo CPU backend (``use_mujoco_cpu=True``) supports single-world models only.
 Bodies, joints, equality constraints, mimic relationships, primitive geoms,
 and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh,
 heightfield, and cone assets, scales, and convex-hull counts may differ across worlds. Collision
@@ -918,10 +1167,11 @@ per-world mesh scales are compiled into the MuJoCo assets, so changing their
 recreate the solver to resize them. The solver validates
 compatibility at construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic relationships cannot have
-a negative world index — assigning any of them to the global world
-raises ``ValueError``. Only shapes may live in the global world (-1);
-they are shared across all worlds without replication.
+In a multi-world model, bodies, joints, equality constraints, and mimic
+relationships cannot have a negative world index — assigning any of them to
+the global world raises ``ValueError``. Only shapes may live in the global
+world (-1); they are shared across all worlds without replication.
+Single-world models have no such restriction.
 
 
 Runtime state synchronization
@@ -948,6 +1198,11 @@ Request ``CONTACT_F`` with ``solver.observables(..., contacts=contacts)`` and pa
 the container to ``solver.step(..., observables=observables)``. Forces are written
 to ``observables.contact_f``; with ``use_mujoco_contacts=True``, the step also
 fills the supplied ``contacts`` with contact geometry. See :ref:`solver_observables`.
+
+For Newton contacts with thin-wall recovery, adhesion, or body-transmission
+actuators, construct the collision pipeline before the solver if using a custom contact capacity.
+When switching to a larger buffer, step once with it before capturing a CUDA
+graph so the solver can grow its contact mapping.
 
 Separated speculative contacts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1018,7 +1273,10 @@ Separate MuJoCo worlds read the entry of their Newton world. A single MuJoCo wor
 reads world ``0`` when that world owns bodies and the global entry otherwise, as in
 models built without :meth:`~newton.ModelBuilder.begin_world`, where importers store
 options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
-bodies of another Newton world receive their own gravity as a correction force.
+a MuJoCo world has one gravity, so dynamic global bodies that share it with world ``0``
+bodies must have the same gravity, or construction raises :class:`ValueError`.
+Later changes to either gravity entry or to a body's kinematic flag are not checked;
+such a MuJoCo world follows world ``0``.
 
 These values are read once during :class:`~newton.solvers.SolverMuJoCo`
 construction. Editing ``model.mujoco.<option>`` afterwards has no
@@ -1053,14 +1311,36 @@ attribute described below and requires ``island`` to remain enabled.
 Unknown flags and the Warp-unsupported
 ``override``, ``fwdinv``, ``diagexact``, ``midphase``, and ``autoreset``
 flags are warned about and ignored during MJCF import. ``filterparent``
-is also warned about and ignored because imported parent-child collision
-filters are not controlled by this flag.
+is not stored as a flag attribute: like ``gravity`` it changes the Newton
+model. The MJCF importer honors ``filterparent="disable"`` by creating the
+imported non-fixed joints with ``collision_filter_parent=False``, and the USD
+importer does the same for a PhysicsScene with ``mjc:flag:filterparent =
+false``, except for joints that author ``physics:collisionEnabled`` (that
+explicit value wins). Both follow the ``parse_mujoco_options`` gate.
+
+Newton's collision filter pairs decide which bodies may touch.
+:class:`~newton.solvers.SolverMuJoCo` always disables MuJoCo's own
+parent-child rule (``filterparent``) and exports the body pairs that Newton
+filters as contact excludes, or as per-slot collision masks for per-world mesh
+layouts. Since :class:`~newton.ModelBuilder` filters a joint's child weld group
+against its parent's weld group (see :doc:`/concepts/collisions`), a default
+model collides the same way in both pipelines, and a moving joint with
+``collision_filter_parent=False``, whether authored in the builder, imported
+from MJCF or USD, or coming from a USD joint with
+``physics:collisionEnabled=true``, lets its parent and child collide in MuJoCo
+as well. This does not extend to welds: MuJoCo merges the bodies of a fixed or
+zero-DOF tree joint into one weld body whose geoms never collide with each
+other, whatever the joint's flag, so such a pair touches only in Newton's own
+collision pipeline, where a weld with ``collision_filter_parent=False`` also
+keeps its two bodies in separate weld groups.
 
 ``gravity="disable"`` sets Newton's builder gravity to zero, affecting
 all solvers and content already added to the shared builder. Inside
 ``begin_world()`` / ``end_world()``, only that world's gravity is changed;
 outside a world, the global/default gravity is changed. A later import
 with ``gravity="enable"`` does not restore the previous gravity vector.
+
+.. _mujoco-sleeping:
 
 Sleeping
 --------
@@ -1202,6 +1482,35 @@ When importing MuJoCo-authored USD, opt into that mapping explicitly::
 Registering MuJoCo custom attributes alone enables the ``model.mujoco``
 namespace but does not map ``mjc:damping`` to the built-in property.
 
+.. _mujoco-friction-modes:
+
+Friction modes and ``condim``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
+``condim`` 1, 3, 4, and 6 import as :class:`~newton.ShapeFrictionMode`
+``NONE``, ``SLIDING``, ``SLIDING_TORSIONAL``, and ``SLIDING_TORSIONAL_ROLLING``,
+and the solver converts the modes back. USD ``mjc:condim`` maps through
+:class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
+custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
+per-shape values set in code override the friction mode at
+:meth:`~newton.ModelBuilder.finalize` with a deprecation warning, a changed
+default applies to shapes left at ``SLIDING``, and
+``model.mujoco.condim`` is a copy of the friction modes; values written to it
+are applied when it is next read or a solver is constructed.
+
+``SLIDING_ROLLING`` has no ``condim``. Its geom gets ``condim`` 6 and MuJoCo's
+minimum torsional coefficient of 1e-5 in place of ``mu_torsional``.
+MuJoCo resolves a contact between geoms of equal priority from the higher
+``condim`` and the larger coefficient of each friction component. With
+``use_mujoco_contacts=True``, a ``SLIDING_ROLLING`` shape therefore still gets
+torsional friction from the ``mu_torsional`` of the shape it touches, also when
+that shape's mode does not enable torsional friction. To avoid this, set
+``mu_torsional`` of the other shapes to zero, give the shape a higher
+``mujoco:geom_priority`` so that its own parameters apply, or use
+``use_mujoco_contacts=False``, where a contact has torsional friction only if
+one of its shapes enables it.
+
 
 Unsupported MuJoCo features
 ---------------------------
@@ -1221,8 +1530,8 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **Keyframes** (``<keyframe>``) — MuJoCo's saved-state / reset mechanism
   is not imported.
 - **Composite and flex** (``<composite>``, ``<flex>``) — MuJoCo's built-in
-  deformables and soft bodies. Newton has dedicated solvers for cloth,
-  MPM, and FEM; they are not part of the MuJoCo integration.
+  deformables are not imported. Newton particles, springs, triangles, and
+  tetrahedra can be converted to flexes instead (see `Particles and flexes`_).
 - **Skinned meshes** (``<skin>``) — visualization-only, not imported.
 - **User plugins** (``<plugin>``) — MuJoCo's plugin mechanism for custom
   passive forces or dynamics is not supported.
@@ -1260,6 +1569,36 @@ Caveats
   The solver creates MuJoCo masks that reproduce Newton's allowed collision
   pairs when they fit in 32 bits. See `Collision filtering`_ for the behavior
   of imported masks and the warned fallback used when the rules do not fit.
+
+
+.. _mujoco-viewer:
+
+MuJoCo viewer
+-------------
+
+MuJoCo's own viewer shows the model as ``SolverMuJoCo`` converted it, which helps
+when debugging the conversion. It needs ``pip install "mujoco-core[rendering]"``,
+and on macOS the script must be run with ``mjpython`` instead of ``python``.
+Stepping on the Warp backend only updates ``solver.mjw_data``, so copy one world
+into ``solver.mj_data`` before each ``viewer.sync()``:
+
+.. code-block:: python
+
+    import mujoco.viewer
+    import mujoco_warp
+
+    solver = newton.solvers.SolverMuJoCo(model)
+
+    with mujoco.viewer.launch_passive(solver.mj_model, solver.mj_data) as viewer:
+        while viewer.is_running():
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+            if not solver.use_mujoco_cpu:
+                mujoco_warp.get_data_into(solver.mj_data, solver.mj_model, solver.mjw_data, world_id=0)
+            viewer.sync()
+
+The viewer shows the geoms compiled at construction, so it does not follow body
+variant selections.
 
 
 .. _mujoco-kinematic-links-and-fixed-roots:
@@ -1426,7 +1765,10 @@ tendon limits using the current ``model.mujoco`` limit modes, gains, raw
 ``solref`` values, and ranges. Those pending edits are therefore published even
 without :attr:`~newton.ModelFlags.TENDON_PROPERTIES`. This includes joint
 inertial/reference updates and the broad joint-DOF, body, body-inertial, and
-actuator notifications. Publish tendon edits explicitly with
+actuator notifications. :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` recomputes
+constants, at the same cost, only for models with a spatial tendon or a
+site-based actuator transmission, whose reference constants depend on site and
+wrapping-geometry poses. Publish tendon edits explicitly with
 :attr:`~newton.ModelFlags.TENDON_PROPERTIES` before these updates rather than
 relying on them to preserve pending tendon-limit changes. Force-only joint
 notifications do not recompute constants and leave tendon limits unchanged.

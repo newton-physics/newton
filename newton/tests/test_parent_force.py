@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 
 
 class TestParentForce(unittest.TestCase):
@@ -91,8 +91,6 @@ def test_parent_force_solver_observables(test, device, solver_fn):
     solver = solver_fn(model)
     observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
-
-    test.assertIsNone(state_1.body_parent_f)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
@@ -121,8 +119,6 @@ def test_parent_force_solver_observables_xpbd(test, device):
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.kinds))
-
-    test.assertIsNone(state_1.body_parent_f)
     parent_f = observables.body_parent_f.numpy()[0]
     test.assertTrue(np.all(np.isfinite(parent_f)))
     test.assertGreater(np.linalg.norm(parent_f), 0.0)
@@ -245,28 +241,28 @@ for device in devices:
         "test_parent_force_static_pendulum_mjwarp",
         test_parent_force_static_pendulum,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
     add_function_test(
         TestParentForce,
         "test_parent_force_centrifugal_mjwarp",
         test_parent_force_centrifugal,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
     add_function_test(
         TestParentForce,
         "test_apply_body_f_mjwarp",
         test_apply_body_f,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
     add_function_test(
         TestParentForce,
         "test_parent_force_solver_observables_mjwarp",
         test_parent_force_solver_observables,
         devices=[device],
-        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+        solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
     )
 
     # Featherstone uses the same RNEA math under the hood, so the same

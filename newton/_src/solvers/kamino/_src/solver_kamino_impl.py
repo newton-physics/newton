@@ -59,11 +59,11 @@ from .kinematics.resets import (
 )
 from .linalg import ConjugateResidualSolver, ConjugateResidualSolverFused, IterativeSolver, LinearSolverNameToType
 from .solvers.common import WarmStartMode
-from .solvers.dvi import DVISolver
 from .solvers.fk import ForwardKinematicsSolver
 from .solvers.lox import LOXSolver
 from .solvers.metrics import SolutionMetrics
 from .solvers.padmm import PADMMSolver
+from .solvers.scc import SCCSolver
 from .solvers.warmstart import WarmstarterContacts, WarmstarterLimits
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class SolverKaminoImpl(SolverBase):
     options for the linear solver and preconditioning.
     """
 
-    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, "wp.array[wp.bool] | None"], None]
+    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, wp.array[wp.bool] | None], None]
     """Defines the type signature for reset callback functions."""
 
     StepCallbackType = Callable[["SolverKaminoImpl", StateKamino, StateKamino, ControlKamino, ContactsKamino], None]
@@ -158,9 +158,9 @@ class SolverKaminoImpl(SolverBase):
         if config.dynamics_solver == "padmm":
             warmstart_mode = config.padmm.warmstart_mode
             contact_warmstart_method = config.padmm.contact_warmstart_method
-        elif config.dynamics_solver == "dvi":
-            warmstart_mode = config.dvi.warmstart_mode
-            contact_warmstart_method = config.dvi.contact_warmstart_method
+        elif config.dynamics_solver == "scc":
+            warmstart_mode = config.scc.warmstart_mode
+            contact_warmstart_method = config.scc.contact_warmstart_method
         elif config.dynamics_solver == "lox":
             warmstart_mode = "containers"
             contact_warmstart_method = config.lox.contact_warmstart_method
@@ -276,6 +276,7 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Allocate the dual problem data on the device
+        uses_dense_scc = self._config.dynamics_solver == "scc" and not self._config.sparse_dynamics
         self._problem_fd: DualProblem | None = None
         if not uses_lox or (self._config.compute_solution_metrics and self._model.size.sum_of_max_total_cts > 0):
             self._problem_fd = DualProblem(
@@ -285,8 +286,8 @@ class SolverKaminoImpl(SolverBase):
                 contacts=contacts,
                 jacobians=self._jacobians,
                 config=problem_fd_config,
-                solver=None if uses_lox else linear_solver_type,
-                solver_kwargs=None if uses_lox else linear_solver_kwargs,
+                solver=None if uses_lox or uses_dense_scc else linear_solver_type,
+                solver_kwargs=None if uses_lox or uses_dense_scc else linear_solver_kwargs,
                 sparse=self._config.sparse_dynamics,
                 decouple_joint_dynamics=self._config.dynamics_solver == "padmm",
             )
@@ -316,23 +317,24 @@ class SolverKaminoImpl(SolverBase):
         elif self._config.dynamics_solver == "padmm":
             self._solver_fd = PADMMSolver(
                 model=self._model,
+                problem=self._problem_fd,
                 config=self._config.padmm,
                 warmstart=self._warmstart_mode,
                 use_acceleration=self._config.padmm.use_acceleration,
                 use_graph_conditionals=self._config.padmm.use_graph_conditionals,
                 collect_info=self._config.collect_solver_info,
             )
-        elif self._config.dynamics_solver == "dvi":
-            # DVI consumes Kamino's unified joint, limit, and contact
+        elif self._config.dynamics_solver == "scc":
+            # SCC consumes Kamino's unified joint, limit, and contact
             # DualProblem rather than rebuilding standalone constraint pipelines.
-            self._solver_fd = DVISolver(
+            self._solver_fd = SCCSolver(
                 model=self._model,
                 data=self._data,
                 limits=self._limits,
                 contacts=contacts,
                 jacobians=self._jacobians if isinstance(self._jacobians, SparseSystemJacobians) else None,
                 problem=self._problem_fd,
-                config=self._config.dvi,
+                config=self._config.scc,
                 warmstart=self._warmstart_mode,
                 collect_info=self._config.collect_solver_info,
             )
@@ -430,7 +432,7 @@ class SolverKaminoImpl(SolverBase):
         return self._solver_fd.data.status
 
     @property
-    def solver_fd(self) -> PADMMSolver | DVISolver | LOXSolver:
+    def solver_fd(self) -> PADMMSolver | SCCSolver | LOXSolver:
         """
         Returns the forward dynamics solver.
         """
@@ -946,7 +948,7 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(state_out.q_i, self._data.bodies.q_i)
         wp.copy(state_out.u_i, self._data.bodies.u_i)
         wp.copy(state_out.w_i, self._data.bodies.w_i)
-        wp.copy(state_out.w_i_e, self._data.bodies.w_e_i)
+        # External wrenches (w_i_e) are a step input and are never written to the output state.
         wp.copy(state_out.q_j, self._data.joints.q_j)
         wp.copy(state_out.q_j_p, self._data.joints.q_j_p)
         wp.copy(state_out.dq_j, self._data.joints.dq_j)

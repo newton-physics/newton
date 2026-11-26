@@ -4,7 +4,6 @@
 """Tests for Newton actuators."""
 
 import dataclasses
-import importlib.util
 import json
 import math
 import os
@@ -53,22 +52,13 @@ from newton.actuators import (
     parse_battery_prim,
 )
 from newton.selection import ArticulationView
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, get_test_devices, has_module, requires
 
-try:
+if has_module("pxr.Usd"):
     from pxr import Usd
 
-    HAS_USD = True
-except ImportError:
-    HAS_USD = False
 
-
-_HAS_ONNX = importlib.util.find_spec("onnx") is not None
-_HAS_TORCH = importlib.util.find_spec("torch") is not None
-_HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
-
-
-if _HAS_TORCH:
+if has_module("torch"):
     import torch as _torch
 
     class _LSTMNet(_torch.nn.Module):
@@ -754,7 +744,7 @@ def _delay_state_of(actuator_state):
     )
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralGRU(unittest.TestCase):
     """DriveNeuralGRU ONNX loading and Warp-NN inference."""
 
@@ -1039,9 +1029,16 @@ class TestDriveNeuralGRU(unittest.TestCase):
         np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
 
     def test_gru_without_bias(self):
-        """Evaluate a checkpoint whose GRU nodes carry no bias initializer."""
+        """Evaluate a bias-free GRU with inferred hidden size and internal Y_h."""
         metadata = self._metadata(self.FEATURES[:-1])
-        path = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+        source = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+
+        def omit_optional_fields(model):
+            gru = next(node for node in model.graph.node if node.op_type == "GRU")
+            del gru.attribute[next(i for i, attr in enumerate(gru.attribute) if attr.name == "hidden_size")]
+            del model.graph.output[1:]
+
+        path = self._mutate_gru(source, "no_optional_fields.onnx", omit_optional_fields)
         case = self._make_case(path, 2)
 
         effort, hidden = self._step(case)
@@ -1387,6 +1384,13 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         edits.append(("disconnected_output.onnx", disconnected_output, "does not reach"))
 
+        def mix_lanes(model):
+            effort = model.graph.output[0]
+            model.graph.node.append(helper.make_node("Softmax", [effort.name], ["mixed_effort"], axis=0))
+            effort.name = "mixed_effort"
+
+        edits.append(("lane_mixing.onnx", mix_lanes, "unsupported output operation.*Softmax"))
+
         for filename, edit, message in edits:
             with self.subTest(filename=filename):
                 path = self._mutate_gru(source, filename, edit)
@@ -1668,7 +1672,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         without_bias = build_model(self._save_gru("declared_none.onnx", metadata))
         self.assertEqual(without_bias.actuators[0].drive.custom_inputs, ())
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_model_builder_constructs_relative_onnx_usd_actuator(self):
         """Construct a finalized GRU actuator from a relative USD asset path."""
         model_path = self._save_gru("builder_gru.onnx")
@@ -1711,7 +1715,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(by_path[shared_path].num_actuators, 2)
         self.assertEqual(by_path[distinct_path].num_actuators, 1)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_usd_dispatches_onnx_asset_to_gru(self):
         """Dispatch a USD actuator prim with gru model_type to DriveNeuralGRU."""
         from pxr import Sdf
@@ -1736,8 +1740,84 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(parsed.drive_class, DriveNeuralGRU)
         self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
 
+    def test_gru_implicit_linearized(self):
+        """Linearize a stacked GRU for the implicit solve across recurrent steps."""
+        device = self.device
+        h = self.SAMPLE_DT
+        q0, qd0, target, target_vel = 0.2, 0.3, 1.0, -0.4
+        metadata = self._metadata(self.ALL_FEATURES)
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+        model = _build_pendulum(device)
+        state = model.state()
+        state.joint_q.assign(np.array([q0], dtype=np.float32))
+        state.joint_qd.assign(np.array([qd0], dtype=np.float32))
+        control = model.control()
+        control.joint_target_q.assign(np.array([target], dtype=np.float32))
+        control.joint_target_qd.assign(np.array([target_vel], dtype=np.float32))
+        control.bias_force = wp.full(1, 0.7, dtype=wp.float32, device=device)
+
+        path = self._save_gru("implicit_gru.onnx", metadata=metadata, layer_count=2)
+        drive = DriveNeuralGRU(path)
+        response = JointSpaceResponse(model)
+        actuator = Actuator(indices=wp.array([0], dtype=wp.uint32, device=device), drive=drive)
+
+        self.assertIsNone(drive._lin_params)
+        self.assertFalse(drive._net_input.requires_grad)
+        actuator.set_effort_mode_implicit(response=response)
+        # Reusing the same configuration must preserve the first solver's binding.
+        Actuator(indices=actuator.indices, drive=drive)
+        response.refresh(state)
+        sa, sb = actuator.state(), actuator.state()
+        reference = types.SimpleNamespace(
+            position=state.joint_q.numpy(),
+            velocity=state.joint_qd.numpy(),
+            target=control.joint_target_q.numpy(),
+            target_velocity=control.joint_target_qd.numpy(),
+            bias_force=control.bias_force.numpy(),
+            indices=np.array([0]),
+            pos_indices=np.array([0]),
+            target_indices=np.array([0]),
+            target_vel_indices=np.array([0]),
+            network=self._networks[path],
+        )
+        alpha = _response_at_state(model, state)[0, 0]
+        for step in range(2):
+            incoming_hidden = sa.drive_state.hidden.numpy()
+            expected_tau0, expected_hidden = self._expected(metadata, reference, hidden=incoming_hidden)
+            control.joint_f.zero_()
+            actuator.step(state, control, sa, sb, dt=h)
+
+            with self.subTest(step=step):
+                tau0, a, b, pq0, pqd0 = (float(v) for v in drive._lin_params.numpy()[0])
+                self.assertAlmostEqual(pq0, q0, delta=1e-6)
+                self.assertAlmostEqual(pqd0, qd0, delta=1e-6)
+                self.assertGreater(abs(a) + abs(b), 0.0)
+                self.assertAlmostEqual(tau0, float(expected_tau0[0]), delta=1e-5)
+                expected = (tau0 + a * h * pqd0) / (1.0 - alpha * h * (a * h + b))
+                self.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected, delta=abs(expected) * 1e-3 + 1e-6)
+                np.testing.assert_allclose(sb.drive_state.hidden.numpy(), expected_hidden, rtol=1e-5, atol=1e-6)
+
+                eps = 1e-3
+                for field, raw_slope, packed_slope in (
+                    ("position", drive._dtau_dq, a),
+                    ("velocity", drive._dtau_dqd, b),
+                ):
+                    values = getattr(reference, field)
+                    original = float(values[0])
+                    values[0] = original + eps
+                    plus = self._expected(metadata, reference, hidden=incoming_hidden)[0][0]
+                    values[0] = original - eps
+                    minus = self._expected(metadata, reference, hidden=incoming_hidden)[0][0]
+                    values[0] = original
+                    finite_difference = float(plus - minus) / (2.0 * eps)
+                    slope = float(raw_slope.numpy()[0])
+                    self.assertAlmostEqual(slope, finite_difference, delta=abs(finite_difference) * 0.02 + 1e-3)
+                    self.assertAlmostEqual(packed_slope, slope, delta=1e-6)
+
+            sa, sb = sb, sa
+
+
+@requires("onnx", "warp_nn")
 class TestDriveNeuralMLP(unittest.TestCase):
     """DriveNeuralMLP - load via model_path, call compute() directly."""
 
@@ -2172,7 +2252,7 @@ class TestDriveNeuralMLP(unittest.TestCase):
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
 
 
-@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+@requires("onnx", "warp_nn")
 class TestDriveNeuralLSTM(unittest.TestCase):
     """DriveNeuralLSTM - load via model_path, call compute() directly."""
 
@@ -2409,7 +2489,7 @@ class _TorchCheckpointTestMixin:
         return path
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@requires("torch")
 class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """DriveNeuralMLP loading from pt2 checkpoints."""
 
@@ -2516,7 +2596,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         np.testing.assert_allclose(forces.numpy(), expected.cpu().numpy(), rtol=1e-4, atol=1e-6)
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@requires("torch")
 class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """DriveNeuralLSTM loading from pt2 checkpoints."""
 
@@ -5122,6 +5202,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             expected[sl] = np.linalg.solve(J, h * f0) / h
         np.testing.assert_allclose(_arm_values(model, control.joint_f), expected, rtol=1e-3, atol=1e-3)
 
+    @requires(*MUJOCO_MODULES)
     def test_refresh_from_solve_captures_without_warmup(self):
         """refresh_from_solve captures and replays, with no warm-up call first.
 
@@ -5156,6 +5237,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             atol=1e-6,
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_factorization(self):
         """Fill the response from MuJoCo's per-step factorized inertia.
 
@@ -5215,6 +5297,7 @@ class TestJointSpaceResponse(unittest.TestCase):
         np.testing.assert_allclose(_arm_values(model, control.joint_f)[:n], expected, rtol=1e-3, atol=1e-3)
         _assert_worlds_match(self, model, control.joint_f, rtol=1e-4, atol=1e-4)
 
+    @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_free_and_ball_joints(self):
         """Verify refresh_from_solve converts MuJoCo's free and ball joint coordinates.
 
@@ -5266,6 +5349,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             response.inverse_blocks.numpy(), reference.inverse_blocks.numpy(), rtol=1e-4, atol=1e-5
         )
 
+    @requires(*MUJOCO_MODULES)
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
 
@@ -5415,7 +5499,7 @@ class TestActuatorBuilder(unittest.TestCase):
                 motor=MotorDC(array(0.5), array(2.0), array(12.0), supply_from_battery=array(0.0)),
             )
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd(self):
         """Load actuators from a USD stage and verify params after finalize.
 
@@ -5456,7 +5540,7 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.drive_class, DrivePD)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd_ignore_paths(self):
         """Actuator prims matched by ignore_paths are not registered."""
         test_dir = os.path.dirname(__file__)
@@ -5470,7 +5554,7 @@ class TestActuatorBuilder(unittest.TestCase):
         result2 = parse_usd(builder2, usd_path, ignore_paths=[".*Actuator"])
         self.assertEqual(result2["actuator_count"], 0)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_from_usd_schema_plugin_not_loaded(self):
         """parse_actuator_prim works when the USD schema plugin is not registered.
 
@@ -5719,7 +5803,7 @@ class TestActuatorBuilder(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(KeyError, f"'{name}' is not known"):
                 source.get_attribute_frequency(name)
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_motor_from_usd(self):
         """Servos with a DC motor, a delay, backlash and a battery, loaded from USD and replicated.
 
@@ -5796,7 +5880,7 @@ class TestActuatorBuilder(unittest.TestCase):
             drawn = (duty * supply * duty / 2.0).reshape(2, 3)[:, :2].sum(axis=1)
             supply = np.ravel([[6.0 - 0.5 * max(i, 0.0)] * 2 + [5.0] for i in drawn])
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_usd_unknown_actuator_schema_warns(self):
         """An unknown Newton actuator API token warns; registered tokens and their bases do not."""
         stage = Usd.Stage.CreateInMemory()
@@ -5824,7 +5908,7 @@ def Xform "World"
         self.assertEqual(len(messages), 1)
         self.assertIn("NewtonFooAPI", messages[0])
 
-    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    @requires("pxr.Usd")
     def test_usd_clamping_input_space(self):
         """Accept a newton:inputSpace equal to the space the clamp bounds and reject any other."""
         for input_space, valid in (("effort", True), ("duty", False)):
@@ -6344,6 +6428,7 @@ class TestStateReset(unittest.TestCase):
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
 )
+@requires(*MUJOCO_MODULES)
 class TestDelayGraphCapture(unittest.TestCase):
     """Verify delayed actuator is graph-safe with device-side write_idx.
 
@@ -6594,7 +6679,7 @@ class TestActuatorStateAssign(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "undeclared state attributes: extra"):
             Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
 
-    @unittest.skipUnless(_HAS_TORCH, "PyTorch is required")
+    @requires("torch")
     def test_assign_copies_torch_state_without_aliasing(self):
         """Copy Torch-backed drive state without aliasing the source tensors."""
         with _torch.inference_mode():
@@ -6727,7 +6812,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD, "pxr not installed")
+@requires("pxr.Usd")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -6811,7 +6896,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         return stage
 
-    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+    @requires("onnx")
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
         model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
@@ -6829,7 +6914,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(cls, ClampingDCMotor)
         self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
 
-    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+    @requires("onnx")
     def test_parse_lstm_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
         model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})

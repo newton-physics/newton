@@ -1,1 +1,0 @@
-Fix `ModelBuilder.add_urdf()` treating local `file://` URIs as XML sources or relative filenames, which left imported robots without meshes and textures. The `importers` extra now requires `resolve-robotics-uri-py>=0.5.1`.

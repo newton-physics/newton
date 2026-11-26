@@ -22,21 +22,14 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
-from ..utils.deprecation import RemovedAttribute, warn_deprecation
+from ..utils.deprecation import warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
-from .contacts import Contacts
 from .control import Control
 from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
 logger = logging.getLogger(__name__)
-
-_JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
-    "Model.joint_twist_lower and Model.joint_twist_upper are deprecated in Newton 1.7 and will be removed "
-    "in a future release. They were never populated or used by any solver; limit joint rotations with the "
-    "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
-)
 
 _COLLISION_EDGE_DEPRECATION_MSG = (
     "Model.{name} is deprecated in Newton 1.8 and will be removed in Newton 1.9. "
@@ -47,8 +40,8 @@ _COLLISION_EDGE_DEPRECATION_MSG = (
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..actuators.batteries import BatteryBase
+    from ..geometry.optix import OptixShapes
     from ..utils.heightfield import HeightfieldData
-    from .collide import CollisionPipeline
 
 
 _SHAPE_VARIANT_ATTRIBUTES = (
@@ -467,6 +460,14 @@ class Model:
         Coupled model views use it for the rows they synthesize.
         """
 
+        update_flags: int | None = field(default=None, compare=False)
+        """:class:`~newton.ModelFlags` announcing an edit of the attribute, or ``None`` when no flag
+        covers it; see :meth:`Model.get_attribute_update_flags`.
+
+        :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` sets it to
+        :attr:`ModelBuilder.CustomAttribute.update_flags <newton.ModelBuilder.CustomAttribute.update_flags>`.
+        """
+
         def __post_init__(self) -> None:
             if self.row_width < 1:
                 raise ValueError(f"Attribute row_width must be positive, got {self.row_width}")
@@ -484,6 +485,9 @@ class Model:
                 raise ValueError(f"Attribute compaction policy {self.compaction_policy!r} requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
+        "gravity": AttributeSpec(
+            AttributeFrequency.WORLD, compaction_policy="passthrough", update_flags=ModelFlags.MODEL_PROPERTIES
+        ),
         "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
         "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
         "tendon_start": AttributeSpec(
@@ -493,13 +497,19 @@ class Model:
         "tendon_guide_type": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_radius": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_orientation": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
-        "tendon_guide_mu": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_mu": AttributeSpec(AttributeFrequency.TENDON_GUIDE, update_flags=ModelFlags.TENDON_PROPERTIES),
         "tendon_guide_flags": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_offset": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_axis": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
-        "tendon_segment_compliance": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_segment_damping": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_segment_rest_length": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_compliance": AttributeSpec(
+            AttributeFrequency.TENDON_SEGMENT, update_flags=ModelFlags.TENDON_PROPERTIES
+        ),
+        "tendon_segment_damping": AttributeSpec(
+            AttributeFrequency.TENDON_SEGMENT, update_flags=ModelFlags.TENDON_PROPERTIES
+        ),
+        "tendon_segment_rest_length": AttributeSpec(
+            AttributeFrequency.TENDON_SEGMENT, update_flags=ModelFlags.TENDON_PROPERTIES
+        ),
         "tendon_segment_attachment_l_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
         "tendon_segment_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
         "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
@@ -508,10 +518,11 @@ class Model:
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_target_q": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
+        "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
         "particle_world": AttributeSpec(AttributeFrequency.PARTICLE, references=AttributeFrequency.WORLD),
         "particle_colors": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_world_start": AttributeSpec(
@@ -523,14 +534,17 @@ class Model:
             compaction_policy="color_groups",
         ),
         # bodies
-        "body_q": AttributeSpec(AttributeFrequency.BODY),
-        "body_qd": AttributeSpec(AttributeFrequency.BODY),
-        "body_com": AttributeSpec(AttributeFrequency.BODY),
-        "body_inertia": AttributeSpec(AttributeFrequency.BODY),
-        "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY),
-        "body_mass": AttributeSpec(AttributeFrequency.BODY),
-        "body_inv_mass": AttributeSpec(AttributeFrequency.BODY),
-        "body_flags": AttributeSpec(AttributeFrequency.BODY),
+        "body_q": AttributeSpec(
+            AttributeFrequency.BODY,
+            update_flags=ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
+        ),
+        "body_qd": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_PROPERTIES),
+        "body_com": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inertia": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inv_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_flags": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_PROPERTIES),
         "body_f": AttributeSpec(AttributeFrequency.BODY),
         "body_label": AttributeSpec(AttributeFrequency.BODY),
         "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD),
@@ -568,34 +582,37 @@ class Model:
         "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
         "shape_label": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_transform": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_transform": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_body": AttributeSpec(
             AttributeFrequency.SHAPE,
             references=AttributeFrequency.BODY,
         ),
         "shape_flags": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_gap": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu_torsional": AttributeSpec(
+            AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES
+        ),
+        "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_friction_mode": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_gap": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_is_solid": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_margin": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_is_solid": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_margin": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_source": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD),
         "shape_heightfield_index": AttributeSpec(
             AttributeFrequency.SHAPE,
@@ -658,9 +675,15 @@ class Model:
             references=AttributeFrequency.PARTICLE,
         ),
         "attachment_particle_body_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
-        "attachment_particle_body_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
-        "attachment_particle_body_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
-        "attachment_particle_body_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_stiffness": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "attachment_particle_body_damping": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "attachment_particle_body_enabled": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
         "attachment_particle_body_world": AttributeSpec(
             AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.WORLD,
@@ -706,13 +729,11 @@ class Model:
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT,
         ),
-        "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_X_p": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.CONSTRAINT_PROPERTIES),
+        "joint_X_p": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
+        "joint_X_c": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
-        "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
+        "joint_enabled": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
@@ -741,27 +762,55 @@ class Model:
             AttributeFrequency.JOINT_CONSTRAINT,
             compaction_policy="world_start",
         ),
-        "joint_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
+        "joint_q": AttributeSpec(AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
-        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_mode": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_damping": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_stiffness": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_rest_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
-        "joint_limit_lower": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_upper": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_armature": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        ),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.NONE),
+        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_PROPERTIES),
+        "joint_target_mode": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_target_ke": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_target_kd": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_damping": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_stiffness": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_rest_q": AttributeSpec(
+            AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+        ),
+        "joint_limit_lower": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_limit_upper": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_limit_ke": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_limit_kd": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_effort_limit": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_friction": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_velocity_limit": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
         # articulations and deprecated mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
@@ -839,9 +888,15 @@ class Model:
             AttributeFrequency.CONSTRAINT_MIMIC,
             references=AttributeFrequency.JOINT,
         ),
-        "constraint_mimic_coef0": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_coef1": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_enabled": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
+        "constraint_mimic_coef0": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "constraint_mimic_coef1": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "constraint_mimic_enabled": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
         "constraint_mimic_label": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
         "constraint_mimic_world": AttributeSpec(
             AttributeFrequency.CONSTRAINT_MIMIC,
@@ -893,7 +948,6 @@ class Model:
             """
             object.__setattr__(self, "_name", name)
             object.__setattr__(self, "_deprecated_aliases", {})
-            object.__setattr__(self, "_removed_attributes", {})
 
         def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
             """Add a deprecated attribute alias.
@@ -921,9 +975,6 @@ class Model:
             self._deprecated_aliases[name] = (getter, message)
 
         def __getattr__(self, name: str) -> Any:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                return removed.__get__(self)
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
@@ -933,9 +984,6 @@ class Model:
 
         def __setattr__(self, name: str, value: Any) -> None:
             if not name.startswith("_"):
-                removed = self.__dict__.get("_removed_attributes", {}).get(name)
-                if removed is not None:
-                    removed.__set__(self, value)
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
@@ -946,12 +994,6 @@ class Model:
                         return
                     raise AttributeError(f"Deprecated alias '{self._name}.{name}' does not support assignment")
             object.__setattr__(self, name, value)
-
-        def __delattr__(self, name: str) -> None:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                removed.__delete__(self)
-            object.__delattr__(self, name)
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
@@ -999,7 +1041,7 @@ class Model:
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array[wp.int32] | None = None
-        """Particle enabled state, shape [particle_count], int."""
+        """Particle flags (:class:`~newton.ParticleFlags`), shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array[wp.int32] | None = None
@@ -1062,6 +1104,12 @@ class Model:
         """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
         """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_friction_mode: wp.array[wp.int32] | None = None
+        """Shape friction mode, shape [shape_count], int.
+
+        Values are :class:`~newton.ShapeFrictionMode`. Solvers and the collision
+        pipeline may read the mode only when they are constructed: set it before
+        constructing them; changing it afterwards is not supported."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
@@ -1167,6 +1215,11 @@ class Model:
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
         self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
         """World-space shape transforms computed during shape BVH build/refit, shape ``[shape_count]`` [m, unitless quaternion]."""
+
+        self.optix_shapes: OptixShapes | None = None
+        """OptiX acceleration over selected shapes, the counterpart of :attr:`bvh_shapes` for
+        ``backend="optix"`` cameras and raycasts. Built by :meth:`bvh_build_shapes` with ``backend="optix"``. Experimental;
+        its contents may change without prior notice."""
 
         self.bvh_particles: wp.Bvh | None = None
         """BVH over particles. Built by :meth:`ModelBuilder.finalize` when particles are present."""
@@ -1595,8 +1648,6 @@ class Model:
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array[wp.float32] | None = None
         """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self._deprecated_joint_twist_lower: wp.array[wp.float32] | None = None
-        self._deprecated_joint_twist_upper: wp.array[wp.float32] | None = None
         self.joint_q_start: wp.array[wp.int32] | None = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start: wp.array[wp.int32] | None = None
@@ -1906,22 +1957,12 @@ class Model:
         self.custom_frequency_label_attributes: dict[str, str] = {}
         """Attribute keys containing labels for custom-frequency rows."""
 
-        self._requested_state_attributes: set[str] = set()
-        self._collision_pipeline: CollisionPipeline | None = None
-        # cached collision pipeline
-        self._requested_contact_attributes: set[str] = set()
-
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
         Attribute values remain normal Python attributes on the model. This
         registry describes their indexing, ownership, and reference semantics.
         """
-
-        # Deprecated solver-produced State attributes remain registered for
-        # compatibility with request_state_attributes().
-        for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
-            self.attribute_specs[full_name] = Model.AttributeSpec(getattr(Model.AttributeFrequency, template.frequency))
 
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {
             name: spec.frequency for name, spec in self.attribute_specs.items()
@@ -2122,13 +2163,6 @@ class Model:
         """Resolve existing built-in aliases without changing the supplied declaration."""
         return Model._REFERENCE_ALIASES.get(references, references)
 
-    # ----- Removed joint-target aliases -------------------------------------
-    # Tombstones so that assigning the 1.3-era names fails loudly instead of
-    # creating an unused instance attribute whose targets are never applied.
-
-    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
-    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
-
     @property
     def mesh_edge_indices(self) -> wp.array[wp.vec2i] | None:
         """Packed collision-edge vertex pairs, shape [total_edge_count].
@@ -2208,36 +2242,6 @@ class Model:
         self._shape_edge_range = value
 
     @property
-    def joint_twist_lower(self) -> wp.array[wp.float32] | None:
-        """Joint lower twist limit [rad], shape [joint_count], float. Never populated.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._deprecated_joint_twist_lower
-
-    @joint_twist_lower.setter
-    def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._deprecated_joint_twist_lower = value
-
-    @property
-    def joint_twist_upper(self) -> wp.array[wp.float32] | None:
-        """Joint upper twist limit [rad], shape [joint_count], float. Never populated.
-
-        .. deprecated:: 1.7
-            Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
-        """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._deprecated_joint_twist_upper
-
-    @joint_twist_upper.setter
-    def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._deprecated_joint_twist_upper = value
-
-    @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
         ``(joint_count + 1,)``. Aliases :attr:`joint_q_start`.
@@ -2250,6 +2254,8 @@ class Model:
         *,
         bvh_constructor: str | None = None,
         shape_flags: ShapeFlags = ShapeFlags.VISIBLE,
+        backend: Literal["warp", "optix"] = "warp",
+        optix_extent: float | None = None,
     ) -> None:
         """Build or rebuild the shape BVH stored on this model.
 
@@ -2259,14 +2265,48 @@ class Model:
         ``bvh_constructor`` or after structural changes. For ordinary state
         changes, use :meth:`bvh_refit_shapes`.
 
+        With ``backend="optix"``, builds :attr:`optix_shapes` instead, which ``backend="optix"``
+        cameras and raycasts trace. It is independent of the shape BVH and is not built by
+        :meth:`ModelBuilder.finalize`. Each world's shapes must stay within the cube of half-width
+        ``optix_extent`` about the origin, measured by the bounding sphere of each shape's
+        build-time bounds; a refit hides shapes that leave it and sets ``optix_shapes.out_of_cell``
+        on the device. Changing shape scales requires a rebuild. Building is several times slower than the
+        Warp BVH build and refitting is somewhat slower, so build once and refit each frame.
+
         Args:
             state: Current simulation state with body transforms.
             bvh_constructor: Warp BVH construction algorithm. Valid choices
                 are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
-                Warp's device-dependent default.
+                Warp's device-dependent default. Must be ``None`` with ``backend="optix"``.
             shape_flags: Mask of :class:`~newton.ShapeFlags`; a shape is
                 included in the BVH if any of its flags are set in the mask.
+            backend: ``"warp"`` builds :attr:`bvh_shapes`; ``"optix"`` builds
+                :attr:`optix_shapes` (experimental).
+            optix_extent: Half-width [m] of the region each world's shapes may occupy with
+                ``backend="optix"``. Defaults to twice the farthest reach of any non-plane shape
+                from the origin at build time, and at least 1 m. Larger values leave room for
+                motion but lower precision, since worlds are packed further apart in float32.
+
+        Raises:
+            ValueError: If ``backend`` is unknown, ``bvh_constructor`` is given with ``backend="optix"``,
+                ``optix_extent`` is given with ``backend="warp"``, or ``optix_extent`` is not positive.
+            RuntimeError: If ``backend="optix"`` and ``newton[optix]`` is not installed, or OptiX
+                does not support the model or device.
+
+        .. experimental::
+            The ``backend`` argument and the OptiX backend may change without prior notice.
         """
+        if backend == "optix":
+            if bvh_constructor is not None:
+                raise ValueError("bvh_constructor is not supported with backend='optix'")
+            if optix_extent is not None and not optix_extent > 0.0:
+                raise ValueError(f"optix_extent must be positive, got {optix_extent}")
+            self._optix_build_shapes(state, shape_flags, optix_extent)
+            return
+        if backend != "warp":
+            raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+        if optix_extent is not None:
+            raise ValueError("optix_extent requires backend='optix'")
         from ..geometry.bvh import (  # noqa: PLC0415
             SHAPE_BOUNDS_BLOCK_DIM,
             compute_bvh_group_roots,
@@ -2365,7 +2405,7 @@ class Model:
         )
         self._mark_inactive_bvh_shapes()
 
-    def bvh_refit_shapes(self, state: State) -> None:
+    def bvh_refit_shapes(self, state: State, *, backend: Literal["warp", "optix"] = "warp") -> None:
         """Refit the shape BVH stored on this model for the current state.
 
         The shape BVH is built automatically by :meth:`ModelBuilder.finalize`.
@@ -2374,9 +2414,28 @@ class Model:
         the BVH in place, and marks the leaves of empty variant rows (see
         :meth:`select_body_variants`) so that ray queries skip them.
 
+        With ``backend="optix"``, refits :attr:`optix_shapes` instead, which must have been built
+        with ``bvh_build_shapes(state, backend="optix")``. The OptiX refit cannot be recorded in a
+        CUDA graph.
+
         Args:
             state: Current simulation state with body transforms.
+            backend: ``"warp"`` refits :attr:`bvh_shapes`; ``"optix"`` refits
+                :attr:`optix_shapes` (experimental).
+
+        Raises:
+            ValueError: If ``backend`` is unknown.
+            RuntimeError: If the shapes have not been built for ``backend``, or ``backend="optix"``
+                during CUDA graph capture.
+
+        .. experimental::
+            The ``backend`` argument and the OptiX backend may change without prior notice.
         """
+        if backend == "optix":
+            self._optix_refit_shapes(state)
+            return
+        if backend != "warp":
+            raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
         from ..geometry.bvh import (  # noqa: PLC0415
             compute_shape_bvh_bounds_launch,
             compute_shape_world_transforms_launch,
@@ -2420,6 +2479,162 @@ class Model:
             outputs=[self._bvh_shape_active_leaves],
             device=self.device,
         )
+
+    def _optix_build_shapes(self, state: State, shape_flags: ShapeFlags, extent: float | None) -> None:
+        """Build :attr:`optix_shapes`; see :meth:`bvh_build_shapes`."""
+        try:
+            from ..geometry import optix  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError("Building OptiX shapes requires the newton[optix] extra") from exc
+        from ..geometry.bvh import (  # noqa: PLC0415
+            SHAPE_BOUNDS_BLOCK_DIM,
+            compute_enabled_shapes,
+            compute_shape_bvh_bounds,
+            compute_shape_local_bounds,
+            compute_shape_world_transforms,
+        )
+        from ..geometry.types import GeoType  # noqa: PLC0415
+
+        optix.check_supported(self)
+        self.optix_shapes = None
+        device = self.device
+        shape_count = self.shape_count
+
+        enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
+        num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel=compute_enabled_shapes,
+            dim=shape_count,
+            inputs=[
+                self.shape_type,
+                self.shape_flags,
+                int(shape_flags),
+                self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
+                enabled,
+                num_enabled,
+            ],
+            device=device,
+        )
+        enabled = enabled[: int(num_enabled.numpy()[0])]
+        transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
+        if shape_count:
+            wp.launch(
+                kernel=compute_shape_world_transforms,
+                dim=shape_count,
+                inputs=[state.body_q, self.shape_body, self.shape_transform, transforms],
+                device=device,
+            )
+
+        # World-space bounds size the cell that holds each world.
+        local_bounds = wp.empty((shape_count, 2), dtype=wp.vec3f, device=device)
+        wp.launch_tiled(
+            kernel=compute_shape_local_bounds,
+            dim=shape_count,
+            block_dim=SHAPE_BOUNDS_BLOCK_DIM,
+            inputs=[self.shape_type, self.shape_source_ptr, self.gaussians_data, local_bounds],
+            device=device,
+        )
+        lowers = wp.zeros(enabled.shape[0], dtype=wp.vec3f, device=device)
+        uppers = wp.zeros(enabled.shape[0], dtype=wp.vec3f, device=device)
+        groups = wp.zeros(enabled.shape[0], dtype=wp.int32, device=device)
+        wp.launch(
+            kernel=compute_shape_bvh_bounds,
+            dim=enabled.shape[0],
+            inputs=[
+                enabled.shape[0],
+                self.world_count + 1,
+                self.shape_world,
+                enabled,
+                self.shape_type,
+                self.shape_scale,
+                transforms,
+                local_bounds,
+                lowers,
+                uppers,
+                groups,
+            ],
+            device=device,
+        )
+
+        types = self.shape_type.numpy() if shape_count else np.empty(0, dtype=np.int32)
+        # Convex hulls and heightfields are traced as their triangle meshes.
+        types = np.where(np.isin(types, (GeoType.CONVEX_MESH, GeoType.HFIELD)), GeoType.MESH, types).astype(np.int32)
+        enabled = enabled.numpy().astype(np.int32)
+        # Bounding spheres about the shape origins.
+        origins = transforms.numpy()[enabled, :3]
+        radii = np.zeros(shape_count, dtype=np.float32)
+        radii[enabled] = np.linalg.norm(
+            np.maximum(np.abs(lowers.numpy() - origins), np.abs(uppers.numpy() - origins)), axis=1
+        )
+        # Planes are intersected analytically, outside the cells.
+        bounded = types[enabled] != GeoType.PLANE
+        reach = np.abs(origins).max(axis=1, initial=0.0) + radii[enabled]
+        enabled = np.sort(enabled)
+        shape_world = self.shape_world.numpy() if shape_count else np.empty(0, dtype=np.int32)
+        plane = types[enabled] == GeoType.PLANE
+        instance_shapes = enabled[~plane]
+        world_plane_shapes = enabled[plane & (shape_world[enabled] >= 0)]
+        world_plane_shapes = world_plane_shapes[np.argsort(shape_world[world_plane_shapes], kind="stable")]
+        plane_worlds = shape_world[world_plane_shapes]
+        world_planes = np.full((self.world_count, np.bincount(plane_worlds).max(initial=0)), -1, dtype=np.int32)
+        world_planes[plane_worlds, np.arange(len(plane_worlds)) - np.searchsorted(plane_worlds, plane_worlds)] = (
+            world_plane_shapes
+        )
+        grid = int(np.ceil((self.world_count + 1) ** (1.0 / 3.0)))
+        while grid**3 < self.world_count + 1:
+            grid += 1
+        geometry, traversables = optix.build_shape_geometry(self, enabled, types)
+        shapes = optix.OptixShapes(
+            id=0,
+            accel=None,
+            geometry=geometry,
+            shape_types=wp.array(types, dtype=wp.int32, device=device),
+            shape_world_transforms=transforms,
+            shape_traversables=traversables,
+            instance_shapes=wp.array(instance_shapes, dtype=wp.int32, device=device),
+            instances=wp.empty(len(instance_shapes), dtype=optix.wo.Instance, device=device),
+            shape_radii=wp.array(radii, dtype=wp.float32, device=device),
+            planes=tuple(int(si) for si in enabled[plane & (shape_world[enabled] < 0)]),
+            world_planes=wp.array(world_planes, dtype=wp.int32, device=device),
+            # Room for shapes to move.
+            extent=extent or max(2.0 * float(reach[bounded].max(initial=0.0)), 1.0),
+            out_of_cell=wp.zeros(1, dtype=wp.int32, device=device),
+            grid=grid,
+            world_count=self.world_count,
+            has_global_instances=bool(np.any(shape_world[instance_shapes] < 0)),
+        )
+        optix.compute_optix_shape_instances_launch(self, shapes)
+        if shapes.has_instances:
+            shapes.accel = optix.wo.Accel(
+                [optix.wo.instances(shapes.instances, shapes.geometry)],
+                flags=optix.wo.BuildFlags.ALLOW_UPDATE | optix.wo.BuildFlags.PREFER_FAST_BUILD,
+            )
+            shapes.id = shapes.accel.id
+        self.optix_shapes = shapes
+
+    def _optix_refit_shapes(self, state: State) -> None:
+        """Refit :attr:`optix_shapes`; see :meth:`bvh_refit_shapes`."""
+        from ..geometry.bvh import compute_shape_world_transforms  # noqa: PLC0415
+        from ..geometry.optix import compute_optix_shape_instances_launch  # noqa: PLC0415
+
+        shapes = self.optix_shapes
+        if shapes is None:
+            raise RuntimeError(
+                "Model.bvh_refit_shapes(backend='optix') requires "
+                "Model.bvh_build_shapes(backend='optix') to have been called first."
+            )
+        if self.device.stream.is_capturing:
+            raise RuntimeError("Model.bvh_refit_shapes(backend='optix') does not support CUDA graph capture")
+        if self.shape_count:
+            wp.launch(
+                kernel=compute_shape_world_transforms,
+                dim=self.shape_count,
+                inputs=[state.body_q, self.shape_body, self.shape_transform, shapes.shape_world_transforms],
+                device=self.device,
+            )
+        compute_optix_shape_instances_launch(self, shapes)
+        if shapes.accel is not None:
+            shapes.accel.refit()
 
     def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
         """Each variant row with each variant shape it can hold, on the host."""
@@ -2570,8 +2785,6 @@ class Model:
             The state object.
         """
 
-        requested = self.get_requested_state_attributes()
-
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
@@ -2601,41 +2814,10 @@ class Model:
             s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
             s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
 
-        self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
-
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
-
-    def _add_requested_state_attributes(
-        self,
-        state: State,
-        requested: list[str],
-        requires_grad: bool = False,
-    ) -> None:
-        """Allocate optional built-in state attributes requested by name."""
-        for full_name in requested:
-            template = State.EXTENDED_ATTRIBUTE_TEMPLATES.get(full_name)
-            if template is None:
-                continue
-
-            frequency = getattr(Model.AttributeFrequency, template.frequency)
-            value = wp.zeros(
-                self._attribute_frequency_count(frequency),
-                dtype=template.dtype,
-                device=self.device,
-                requires_grad=requires_grad,
-            )
-            if ":" in full_name:
-                namespace_name, attr_name = full_name.split(":", 1)
-                namespace = getattr(state, namespace_name, None)
-                if namespace is None:
-                    namespace = Model.AttributeNamespace(namespace_name)
-                    setattr(state, namespace_name, namespace)
-                setattr(namespace, attr_name, value)
-            else:
-                setattr(state, full_name, value)
 
     def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
         if isinstance(frequency, str):
@@ -2667,6 +2849,7 @@ class Model:
             requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
             clone_variables: If True, clone the control input arrays; if False, use references.
+                With ``False``, :attr:`Control.particle_target_q` is ``None``.
 
         Returns:
             The initialized control object.
@@ -2688,6 +2871,8 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
+            if self.particle_count:
+                c.particle_target_q = wp.clone(self.particle_q, requires_grad=requires_grad)
         else:
             c.joint_target_q = self.joint_target_q
             c.joint_target_qd = self.joint_target_qd
@@ -2993,180 +3178,6 @@ class Model:
             )
         return self.rigid_contact_max, self.soft_contact_max
 
-    def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
-        """
-        Initialize a :class:`CollisionPipeline` for this model.
-
-        This method creates a default collision pipeline for the model. The pipeline is cached on
-        the model for subsequent use by :meth:`collide`.
-
-        Args:
-            enable_rigid_soft_full_surface_contact: Size the soft-contact buffer for the full-surface
-                EDGE/FACE passes (see :meth:`collide`).
-        """
-        from .collide import CollisionPipeline  # noqa: PLC0415
-
-        self._collision_pipeline = CollisionPipeline(
-            self,
-            broad_phase="explicit",
-            enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact,
-        )
-
-    def contacts(
-        self: Model,
-        collision_pipeline: CollisionPipeline | None = None,
-    ) -> Contacts:
-        """
-        Create and return a :class:`Contacts` object for this model.
-
-        .. deprecated:: 1.5
-
-            Create a :class:`CollisionPipeline` and call
-            :meth:`CollisionPipeline.contacts` instead.
-
-        This method initializes a collision pipeline with default arguments (when not already
-        cached) and allocates a contacts buffer suitable for storing collision detection results.
-        Call :meth:`collide` to run the collision detection and populate the contacts object.
-
-        Note:
-            Rigid contact gaps are controlled per-shape via :attr:`Model.shape_gap`, which is populated
-            from ``ModelBuilder.ShapeConfig.gap`` [m] during model building. If a shape doesn't specify a gap [m],
-            it defaults to ``builder.rigid_gap`` [m]. To adjust contact gaps [m], set them before calling
-            :meth:`ModelBuilder.finalize`.
-        Returns:
-            The contact object containing collision information.
-        """
-        warnings.warn(
-            "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        if collision_pipeline is not None:
-            self._collision_pipeline = collision_pipeline
-        if self._collision_pipeline is None:
-            self._init_collision_pipeline()
-
-        return self._collision_pipeline.contacts()
-
-    def collide(
-        self,
-        state: State,
-        contacts: Contacts | None = None,
-        *,
-        collision_pipeline: CollisionPipeline | None = None,
-        enable_rigid_soft_full_surface_contact: bool = False,
-    ) -> Contacts:
-        """
-        Generate contact points for the particles and rigid bodies in the model using the default collision
-        pipeline.
-
-        .. deprecated:: 1.5
-
-            Create a :class:`CollisionPipeline` and call
-            :meth:`CollisionPipeline.collide` instead.
-
-        Args:
-            state: The current simulation state.
-            contacts: The contacts buffer to populate (will be cleared first). If None, a new
-                contacts buffer is allocated via :meth:`contacts`.
-            collision_pipeline: Optional collision pipeline override.
-            enable_rigid_soft_full_surface_contact: When ``True``, additionally run the triangle-driven
-                soft EDGE/FACE passes that detect soft edge / face vs rigid contacts the per-particle
-                SDF path misses, written into the E/F ranges of ``Contacts.soft_contact_*``. Default
-                ``False`` reproduces the per-particle behaviour bit-for-bit. This flag is applied when
-                the collision pipeline is allocated (its soft-contact buffer must be sized for the extra
-                records), so it takes effect only on the first ``collide()``/``contacts()`` call that
-                creates the pipeline. Passing ``True`` once a pipeline sized without it is cached raises
-                ``ValueError``. Participating mesh/convex shapes must also have volume SDFs provisioned via
-                :meth:`ModelBuilder.ShapeConfig.configure_sdf` (e.g. ``configure_sdf(force_sdf=True)`` on
-                ``default_shape_cfg``) before finalize, or pipeline construction raises.
-        """
-        warnings.warn(
-            "Model.collide() is deprecated; create a CollisionPipeline and call "
-            "pipeline.collide(state, contacts) instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        if collision_pipeline is not None:
-            self._collision_pipeline = collision_pipeline
-        if self._collision_pipeline is None:
-            self._init_collision_pipeline(enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact)
-        elif (
-            enable_rigid_soft_full_surface_contact
-            and not self._collision_pipeline.enable_rigid_soft_full_surface_contact
-        ):
-            raise ValueError(
-                "enable_rigid_soft_full_surface_contact=True requires a collision pipeline initialized with "
-                "the flag so its soft-contact buffer is sized for the edge/face passes, but the cached "
-                "pipeline was built with it disabled. Pass a fresh collision_pipeline=, or enable the flag "
-                "on the first collide()/contacts() call that allocates the pipeline."
-            )
-
-        if contacts is None:
-            contacts = self._collision_pipeline.contacts()
-
-        self._collision_pipeline.collide(state, contacts)
-        return contacts
-
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced state attributes.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_state_attributes(*attributes)
-
-    def _request_state_attributes(self, *attributes: str) -> None:
-        """Register legacy state fields after the entry point emits its warning."""
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
-
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced contact attributes.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_contact_attributes(*attributes)
-
-    def _request_contact_attributes(self, *attributes: str) -> None:
-        """Register legacy contact fields after the entry point emits its warning."""
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
-    def get_requested_contact_attributes(self) -> set[str]:
-        """
-        Get the set of requested contact attribute names.
-
-        Returns:
-            The set of requested contact attributes.
-        """
-        return self._requested_contact_attributes
-
     def _add_custom_attributes(
         self,
         destination: object,
@@ -3231,6 +3242,8 @@ class Model:
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
         references: Model.AttributeFrequency | str | None = None,
+        *,
+        update_flags: int | None = None,
     ):
         """
         Add a custom attribute to the model.
@@ -3253,10 +3266,15 @@ class Model:
                 ``"body"`` and ``"world"`` are also supported. Use enums for
                 ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
                 to custom frequencies.
+            update_flags: :class:`~newton.ModelFlags` announcing an edit of a model-assigned
+                attribute, or ``None`` when no flag covers it. See :meth:`get_attribute_update_flags`.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
+            ValueError: If ``update_flags`` is given for an attribute not assigned to the model.
         """
+        if update_flags is not None and assignment not in (None, Model.AttributeAssignment.MODEL):
+            raise ValueError(f"Attribute '{name}': only model-assigned attributes declare update flags")
         if isinstance(attrib, wp.array) and attrib.device != self.device:
             raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
@@ -3303,6 +3321,7 @@ class Model:
                 frequency=frequency,
                 assignment=assignment,
                 references=reference_frequency,
+                update_flags=update_flags,
             ),
         )
 
@@ -3324,6 +3343,74 @@ class Model:
         if spec is None:
             raise KeyError(f"Attribute frequency of '{name}' is not known")
         return spec.frequency
+
+    def get_attribute_update_flags(self, name: str) -> ModelFlags | int | None:
+        """Get the flags that announce an edit of a model attribute to solvers.
+
+        Solvers cache data derived from some model attributes, such as MuJoCo's per-world geom
+        properties derived from :attr:`shape_material_mu`. After editing a model attribute in place,
+        pass the returned flags to :meth:`~newton.solvers.SolverBase.notify_model_changed`. Solvers
+        that read the attribute directly ignore the flags. Custom attributes report the flags
+        declared in :attr:`ModelBuilder.CustomAttribute.update_flags
+        <newton.ModelBuilder.CustomAttribute.update_flags>`, for example by the solver that registered
+        them.
+
+        Example:
+
+            .. testcode::
+
+                import newton
+
+                builder = newton.ModelBuilder()
+                newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_shape_sphere(builder.add_body(), radius=0.1)
+                model = builder.finalize(device="cpu")
+
+                print(model.get_attribute_update_flags("shape_material_mu").name)
+                print(model.get_attribute_update_flags("mujoco:solref").name)
+                print(model.get_attribute_update_flags("shape_material_friction_mode"))
+
+            .. testoutput::
+
+                SHAPE_PROPERTIES
+                SHAPE_PROPERTIES
+                None
+
+        Args:
+            name: Name of the model attribute: a built-in attribute such as ``"shape_material_mu"``, or a
+                custom attribute as ``"namespace:name"``, such as ``"mujoco:solref"``.
+
+        Returns:
+            :class:`~newton.ModelFlags`, or an ``int`` when several flags are needed.
+            :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` when solvers read the attribute at every
+            step. ``None`` when no flag covers the attribute, for example because solvers read it only
+            at construction, as for topology and indices; recreate solvers that cache it.
+
+        Raises:
+            KeyError: If the model has no attribute ``name``. :class:`~newton.State`,
+                :class:`~newton.Control`, and :class:`~newton.Contacts` attributes are not covered.
+        """
+        spec = self._attribute_spec(name)
+        if spec is not None and spec.assignment is not None:
+            # Custom attribute with a declared assignment.
+            if spec.assignment != Model.AttributeAssignment.MODEL:
+                raise KeyError(
+                    f"Attribute '{name}' is assigned to {spec.assignment.name}; only model attributes report update flags"
+                )
+        else:
+            # Check a deprecated alias through its target so the query does not warn.
+            target = spec.alias_of if spec is not None and spec.alias_of is not None else name
+            namespace, _, attribute = target.rpartition(":")
+            owner = getattr(self, namespace, None) if namespace else self
+            if owner is None or not hasattr(owner, attribute):
+                raise KeyError(f"No model attribute '{name}' exists")
+        flags = None if spec is None else spec.update_flags
+        if flags is None:
+            return None
+        try:
+            return ModelFlags(flags)
+        except ValueError:  # several flags
+            return int(flags)
 
     def get_custom_frequency_count(self, frequency: str) -> int:
         """
@@ -3372,5 +3459,4 @@ class Model:
         if self.joint_count:
             attributes.extend(("joint_q", "joint_qd"))
 
-        attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes

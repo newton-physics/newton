@@ -1,9 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import sys as _sys
-import warnings as _warnings
-
 # ==================================================================================
 # core
 # ==================================================================================
@@ -66,6 +63,7 @@ from ._src.sim import (  # noqa: E402
     ModelBuilder,
     ModelFlags,
     Rod,
+    ShapeFrictionMode,
     State,
     StateFlags,
     TendonGuide,
@@ -93,6 +91,7 @@ __all__ += [
     "ModelBuilder",
     "ModelFlags",
     "Rod",
+    "ShapeFrictionMode",
     "State",
     "StateFlags",
     "TendonGuide",
@@ -145,15 +144,3 @@ from ._src.diagnostics import install_console_fallback as _install_console_fallb
 
 _install_console_fallback()
 del _install_console_fallback
-
-if _sys.version_info < (3, 11):
-    # Show the interpreter migration notice even under Python's default filters.
-    with _warnings.catch_warnings():
-        if not _sys.warnoptions:
-            _warnings.simplefilter("default", NewtonDeprecationWarning)
-        _warnings.warn(
-            "Support for Python 3.10 is deprecated and will be removed in Newton 1.9. "
-            "Please upgrade to Python 3.11 or newer.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )

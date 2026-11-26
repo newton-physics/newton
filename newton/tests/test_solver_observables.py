@@ -17,7 +17,7 @@ import newton
 from newton.selection import ArticulationView
 from newton.sensors import SensorContact
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_test_devices, requires
 from newton.viewer import ViewerNull
 
 
@@ -291,6 +291,7 @@ class TestSolverObservables(unittest.TestCase):
         self.assertEqual(observables.get_attribute_frequency("body_qdd"), frequency.BODY)
         self.assertEqual(observables.get_attribute_frequency("pressure"), frequency.CONTACT_RIGID)
         self.assertEqual(observables.get_attribute_frequency("contact_f"), frequency.CONTACT)
+        self.assertEqual(observables.get_attribute_frequency("solver_residual"), frequency.WORLD)
         self.assertFalse(hasattr(ContactSolver, "CONTACT_OBSERVABLE_FLAGS"))
 
     def test_missing_observable_declaration(self):
@@ -568,6 +569,7 @@ class TestSolverObservables(unittest.TestCase):
         mujoco.mjw_data = SimpleNamespace(naconmax=3)
         kamino = object.__new__(newton.solvers.SolverKamino)
         newton.solvers.SolverBase.__init__(kamino, self.model)
+        kamino._config = newton.solvers.SolverKamino.Config()
         kamino._contact_observable_state = None
         kamino._collision_detector_kamino = object()
         kamino._contacts_kamino = SimpleNamespace(model_max_contacts_host=3)
@@ -706,7 +708,7 @@ def test_alternating_contacts_production_and_consumption(test, device):
     observables = solver.observables({kinds.CONTACT_F, kinds.BODY_PARENT_F}, contacts=contacts_large)
     force = observables.select({kinds.CONTACT_F})
     body = observables.select({kinds.BODY_PARENT_F})
-    sensor = SensorContact(model, sensing_shapes="box", request_contact_attributes=False)
+    sensor = SensorContact(model, sensing_shapes="box")
     viewer = ViewerNull()
     viewer.set_model(model)
     viewer.show_contacts = True
@@ -738,27 +740,6 @@ def test_alternating_contacts_production_and_consumption(test, device):
             with test.assertRaisesRegex(ValueError, "different Contacts"):
                 viewer.log_contacts(other, state_0, observables=force)
             state_0, state_1 = state_1, state_0
-
-
-def test_oversized_observables_fill_legacy_force(test, device):
-    """Copy only the step contacts' rows into the deprecated force array."""
-    kinds = newton.solvers.SolverBase.ObservableKind
-    model = _make_resting_box(device)
-    contacts_large = newton.CollisionPipeline(model, rigid_contact_max=64, soft_contact_max=0).contacts()
-    with test.assertWarns(DeprecationWarning):
-        model.request_contact_attributes("force")
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=16, soft_contact_max=0)
-    contacts = pipeline.contacts()
-    test.assertEqual(contacts.force.shape, (16,))
-    solver = newton.solvers.SolverXPBD(model)
-    observables = solver.observables({kinds.CONTACT_F}, contacts=contacts_large)
-    state_0, state_1 = model.state(), model.state()
-    pipeline.collide(state_0, contacts)
-    solver.step(state_0, state_1, None, contacts, 1.0 / 240.0, observables=observables)
-    rows = observables.contact_f.numpy()
-    test.assertGreater(np.abs(rows).sum(), 0.0)
-    np.testing.assert_array_equal(contacts.force.numpy(), rows[:16])
-    np.testing.assert_array_equal(rows[16:], 0.0)
 
 
 def test_owned_and_external_pipelines(test, device):
@@ -804,6 +785,7 @@ def test_owned_and_external_pipelines(test, device):
                 np.testing.assert_array_equal(rows[soft_start + 1 :], 0.0)
 
 
+@requires(*MUJOCO_MODULES)
 def test_native_solvers_follow_step_contacts(test, device):
     """Export MuJoCo and Kamino geometry and forces to the buffer each step uses."""
     builder = newton.ModelBuilder()
@@ -813,7 +795,7 @@ def test_native_solvers_follow_step_contacts(test, device):
     builder.add_ground_plane()
     builder.end_world()
     model = builder.finalize(device=device)
-    sensor = SensorContact(model, sensing_shapes="ball", request_contact_attributes=False)
+    sensor = SensorContact(model, sensing_shapes="ball")
     kamino_native = newton.solvers.SolverKamino.Config(use_collision_detector=True)
     for native, make_solver in (
         (False, lambda: newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)),
@@ -846,7 +828,6 @@ devices = get_test_devices()
 for _name, _func in (
     ("test_external_and_private_admm_pipelines", test_external_and_private_admm_pipelines),
     ("test_alternating_contacts_production_and_consumption", test_alternating_contacts_production_and_consumption),
-    ("test_oversized_observables_fill_legacy_force", test_oversized_observables_fill_legacy_force),
     ("test_owned_and_external_pipelines", test_owned_and_external_pipelines),
     ("test_native_solvers_follow_step_contacts", test_native_solvers_follow_step_contacts),
 ):

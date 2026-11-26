@@ -10,10 +10,10 @@ import numpy as np
 import warp as wp
 
 import newton.usd as usd
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import requires
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+@requires("pxr.Usd")
 class TestUsdTransforms(unittest.TestCase):
     def test_scale_does_not_decompose_rotation(self):
         """Extract scale without constructing and decomposing an unused rotation."""

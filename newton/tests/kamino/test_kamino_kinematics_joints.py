@@ -10,13 +10,14 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton import JointTargetMode, ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointActuationType, compute_joints_data
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils.testing import build_unary_revolute_joint_test
 
 logger = logging.getLogger(__name__)
@@ -140,24 +141,14 @@ def set_joint_follower_body_state(model: ModelKamino, data: DataKamino):
 ###
 
 
-class TestKinematicsJoints(unittest.TestCase):
+class TestKinematicsJoints(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_01_single_revolute_joint(self):
         # Construct the model description
@@ -550,6 +541,7 @@ class TestKinematicsJoints(unittest.TestCase):
 
 if __name__ == "__main__":
     # Test setup
+    newton.utils.setup_console_logging()
     setup_tests()
 
     # Run all tests

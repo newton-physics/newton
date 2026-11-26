@@ -31,10 +31,12 @@ from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_
 from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     capture_with_cuda_driver,
     get_selected_cuda_test_devices,
     get_test_devices,
+    requires,
 )
 
 # --- Configuration ---
@@ -65,14 +67,16 @@ cuda_devices = get_selected_cuda_test_devices()
 scan_devices = get_test_devices()
 
 solvers = {
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-        model,
-        use_mujoco_cpu=False,
-        use_mujoco_contacts=False,
-        njmax=500,
-        nconmax=200,
-        solver="newton",
-        ls_iterations=100,
+    "mujoco_warp": requires(*MUJOCO_MODULES)(
+        lambda model: newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            use_mujoco_contacts=False,
+            njmax=500,
+            nconmax=200,
+            solver="newton",
+            ls_iterations=100,
+        )
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
 }
@@ -142,7 +146,7 @@ def _test_hydro_voxel_record_roundtrip(
 
 
 def test_triangle_fraction_rotations(test, device):
-    """Verify triangle coverage is invariant to the distinct vertex rotation."""
+    """Preserve triangle coverage under vertex rotation and changes of scale."""
     depths_np = np.array(
         [
             [1.0, 2.0, 3.0],
@@ -153,10 +157,16 @@ def test_triangle_fraction_rotations(test, device):
             [1.0, -2.0, -3.0],
             [-2.0, 1.0, -3.0],
             [-2.0, -3.0, 1.0],
+            [0.0, -2.0, -3.0],
+            [-2.0, 0.0, -3.0],
+            [-2.0, -3.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
         ],
         dtype=np.float32,
     )
-    num_inside_np = np.array([0, 3, 1, 1, 1, 2, 2, 2], dtype=np.int32)
+    num_inside_np = np.sum(depths_np < 0.0, axis=1, dtype=np.int32)
     expected = np.array(
         [
             0.0,
@@ -167,9 +177,20 @@ def test_triangle_fraction_rotations(test, device):
             11.0 / 12.0,
             11.0 / 12.0,
             11.0 / 12.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
         ]
     )
 
+    # Submillimeter contact depths must cover the same fraction as meter-scale depths.
+    scales = np.array([1.0, 1.0e-5, 1.0e-20, 1.0e20], dtype=np.float32)
+    depths_np = (scales[:, None, None] * depths_np).reshape(-1, 3)
+    num_inside_np = np.tile(num_inside_np, len(scales))
+    expected = np.tile(expected, len(scales))
     fractions = wp.empty(len(depths_np), dtype=wp.float32, device=device)
     wp.launch(
         _test_triangle_fraction_rotations,
@@ -1367,35 +1388,19 @@ def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_c
     test.assertTrue(np.all(distances < 0.0))
 
 
-def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_contacts):
-    """Preserve and warn about a deprecated margin contact area override."""
+def test_hydroelastic_speculative_contact_stiffness(test, device, reduce_contacts):
+    """Give speculative contacts the pair's series stiffness times the fixed activation area."""
     model, state, _ = _build_margin_gap_boxes(device)
-    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
-        newton.CollisionPipeline(
-            model,
-            broad_phase="explicit",
-            rigid_contact_max=20000,
-            sdf_hydroelastic_config=HydroelasticSDF.Config(
-                margin_contact_area=1.0e-2,
-                reduce_contacts=reduce_contacts,
-                pre_prune_contacts=reduce_contacts,
-                buffer_fraction=1.0,
-            ),
-        )
-
-    margin_contact_area = 0.02
-    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
-        pipeline = newton.CollisionPipeline(
-            model,
-            broad_phase="explicit",
-            rigid_contact_max=20000,
-            sdf_hydroelastic_config=HydroelasticSDF.Config(
-                margin_contact_area=margin_contact_area,
-                reduce_contacts=reduce_contacts,
-                pre_prune_contacts=reduce_contacts,
-                buffer_fraction=1.0,
-            ),
-        )
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=reduce_contacts,
+            pre_prune_contacts=reduce_contacts,
+            buffer_fraction=1.0,
+        ),
+    )
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
     count = int(contacts.rigid_contact_count.numpy()[0])
@@ -1403,11 +1408,12 @@ def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_con
     k_eff = 1.0e8 * 2.0e8 / (1.0e8 + 2.0e8)
     np.testing.assert_allclose(
         contacts.rigid_contact_stiffness.numpy()[:count],
-        margin_contact_area * k_eff,
+        1.0e-2 * k_eff,
         rtol=1.0e-5,
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
     """Keep speculative contacts inactive until they enter the margin band."""
     model, state_0, body_b = _build_margin_gap_boxes(device)
@@ -2197,16 +2203,13 @@ def test_translational_friction_invariance(test, device):
 
 def test_exported_margin_stiffness_matches_shape_series_combination(test, device):
     """Verify exported margin stiffness uses the pairwise series combination."""
-    margin_contact_area = 0.0125
-    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
-        config = HydroelasticSDF.Config(
-            reduce_contacts=True,
-            pre_prune_contacts=False,
-            anchor_contact=False,
-            margin_contact_area=margin_contact_area,
-            buffer_fraction=1.0,
-            buffer_mult_contact=2,
-        )
+    config = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        pre_prune_contacts=False,
+        anchor_contact=False,
+        buffer_fraction=1.0,
+        buffer_mult_contact=2,
+    )
     model, _, state_0, _, _, pipeline, _, _ = build_stacked_cubes_scene(
         device=device,
         solver_fn=solvers["xpbd"],
@@ -2247,7 +2250,7 @@ def test_exported_margin_stiffness_matches_shape_series_combination(test, device
     shape_kh = model.shape_material_kh.numpy()
     k_a = shape_kh[shape0[margin_mask]]
     k_b = shape_kh[shape1[margin_mask]]
-    expected_stiffness = margin_contact_area * (k_a * k_b) / (k_a + k_b)
+    expected_stiffness = 1.0e-2 * (k_a * k_b) / (k_a + k_b)
     np.testing.assert_allclose(
         stiffness[margin_mask],
         expected_stiffness,
@@ -2257,6 +2260,7 @@ def test_exported_margin_stiffness_matches_shape_series_combination(test, device
     )
 
 
+@requires(*MUJOCO_MODULES)
 def test_mujoco_hydroelastic_penetration_depth(test, device):
     """Test that hydroelastic penetration depth matches expectation.
 
@@ -2835,16 +2839,16 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
-    "test_hydroelastic_margin_contact_area_is_deprecated_reduced",
-    test_hydroelastic_margin_contact_area_is_deprecated,
+    "test_hydroelastic_speculative_contact_stiffness_reduced",
+    test_hydroelastic_speculative_contact_stiffness,
     devices=cuda_devices,
     reduce_contacts=True,
 )
 
 add_function_test(
     TestHydroelastic,
-    "test_hydroelastic_margin_contact_area_is_deprecated_unreduced",
-    test_hydroelastic_margin_contact_area_is_deprecated,
+    "test_hydroelastic_speculative_contact_stiffness_unreduced",
+    test_hydroelastic_speculative_contact_stiffness,
     devices=cuda_devices,
     reduce_contacts=False,
 )

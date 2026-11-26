@@ -4,6 +4,7 @@
 """Steel as a rigid entry of the experimental coupled solvers."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -18,7 +19,13 @@ from newton.solvers.experimental.coupled import (
     SolverCoupledProxy,
 )
 from newton.tests.steel._fixtures import set_torsion_radius
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
+    add_function_test,
+    get_cuda_test_devices,
+    get_test_devices,
+    requires,
+)
 
 DT = 1.0 / 480.0
 
@@ -99,7 +106,7 @@ def _coupled(model, boxes, rigid_factory=_steel, *, iterations=1, mode="lagged",
             ),
             SolverCoupledProxy.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=10, rigid_compliant_alm=True),
+                solver=lambda v: SolverVBD(model=v, iterations=10),
                 particles=list(range(model.particle_count)),
             ),
         ],
@@ -279,6 +286,7 @@ def test_contact_feedback_is_consumed_exactly(test, device):
     test.assertLess(float(rollout.state_0.particle_qd.numpy()[:, 2].mean()), -0.05)
 
 
+@requires(*MUJOCO_MODULES)
 def test_box_lands_on_cloth_like_mujoco(test, device):
     """Land a box on a pinned cloth within 2 mm of the MuJoCo source."""
     final = {}
@@ -509,7 +517,9 @@ def test_unsupported_options_raise(test, device):
         if torsion_radius:
             set_torsion_radius(model, torsion_radius)
         # ADMM treats a NotImplementedError from its effective-mass query as an unsupported hook.
-        with test.assertRaisesRegex(NotImplementedError, name):
+        with warnings.catch_warnings(), test.assertRaisesRegex(NotImplementedError, name):
+            # SolverVBD and the coupler apply sliding friction to the shapes that a torsion radius makes torsional.
+            warnings.filterwarnings("ignore", "Solver.* does not support torsional", newton.NewtonWarning)
             _admm(model, box, rod_bodies, lambda v, kwargs=kwargs: _steel(v, **kwargs))
         # Without a coupler a view is ordinary standalone use.
         model, _, _ = _build_box_rod(device, rod=False)
@@ -557,6 +567,7 @@ def test_articulated_effective_mass(test, device):
     np.testing.assert_allclose(out_inertia.numpy()[0], model.body_inertia.numpy()[link] * scale, rtol=1.0e-4)
 
 
+@requires(*MUJOCO_MODULES)
 def test_effective_mass_offset_com(test, device):
     """Measure endpoints from an offset COM, match MuJoCo at the COM, and treat an immobile point as free."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -790,9 +801,7 @@ def _admm(model, box, rod_bodies, rigid_factory=_steel, *, iterations=3, gamma=0
             SolverCoupled.Entry(name="rigid", solver=rigid_factory, bodies=[box], joints=box_joints),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(
-                    model=v, iterations=8, rigid_compliant_alm=True, rigid_contact_history=False
-                ),
+                solver=lambda v: SolverVBD(model=v, iterations=8, rigid_contact_history=False),
                 bodies=rod_bodies,
                 joints=[j for j in range(model.joint_count) if j not in box_joints],
             ),
@@ -931,7 +940,7 @@ def test_unsupported_roles_raise(test, device):
         entries=[
             SolverCoupledProxy.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=4, rigid_compliant_alm=True),
+                solver=lambda v: SolverVBD(model=v, iterations=4),
                 bodies=[soft_box],
                 joints=[1],
             ),
