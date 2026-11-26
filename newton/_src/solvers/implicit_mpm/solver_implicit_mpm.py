@@ -1536,6 +1536,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="young_modulus",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1546,6 +1547,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="poisson_ratio",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1556,6 +1558,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="damping",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1566,6 +1569,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="hardening",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1576,6 +1580,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="friction",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1586,6 +1591,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="yield_pressure",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1596,6 +1602,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="tensile_yield_ratio",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1606,6 +1613,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="yield_stress",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1616,6 +1624,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="hardening_rate",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1626,6 +1635,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="softening_rate",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1636,6 +1646,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="dilatancy",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1646,6 +1657,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="viscosity",
+                update_flags=newton.ModelFlags.MODEL_PROPERTIES,
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1742,6 +1754,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         enable_timers: bool = False,
     ):
         super().__init__(model)
+        self._raise_if_kinematic_particles()
         if model._has_body_variants:
             # The collider merges every particle-colliding shape of a body at setup.
             raise NotImplementedError("SolverImplicitMPM does not support body variants.")
@@ -1926,7 +1939,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             collider_meshes: Warp triangular meshes used as colliders.
             collider_body_ids: For dynamic colliders, per-mesh body ids.
             collider_margins: Per-mesh signed distance offsets (m).
-            collider_friction: Per-mesh Coulomb friction coefficients.
+            collider_friction: Per-mesh Coulomb friction coefficients. They replace the shapes' values,
+                also for shapes whose friction mode is :attr:`~newton.ShapeFrictionMode.NONE`.
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold (m).
             collider_particle_ids: For deformable mesh colliders, model particle ids corresponding to each mesh vertex.
@@ -2442,6 +2456,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # Particle materials are rebuilt on the host.
+        return int(ModelFlags.MODEL_PROPERTIES)
 
     @override
     def coupling_eval_gravity_acceleration(

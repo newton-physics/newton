@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 ###
 
 __all__ = [
-    "APGDData",
     "AndersonData",
     "AndersonRowsData",
     "BoxRows",
@@ -46,6 +45,7 @@ __all__ = [
     "LOXResiduals",
     "LOXStatus",
     "LOXSystemData",
+    "NesterovData",
     "ProjectionAcceleration",
     "ProjectionData",
     "SpatialContactBlocks",
@@ -67,8 +67,8 @@ class ProjectionAcceleration(IntEnum):
     NONE = 0
     """Plain projection sweeps."""
 
-    APGD = 1
-    """Restarted Nesterov extrapolation; requires the Jacobi schedule."""
+    NESTEROV = 1
+    """Restarted Nesterov extrapolation."""
 
     ANDERSON = 2
     """One safeguarded Anderson direction per projection sweep."""
@@ -813,8 +813,8 @@ class AndersonData:
         """Whether the safeguard of each world must check the next map."""
 
 
-class APGDData:
-    """Momentum state of APGD-accelerated Jacobi projection.
+class NesterovData:
+    """Momentum state of Nesterov-accelerated projection.
 
     Args:
         problem_data: Rows and body data of the LOX problem.
@@ -826,12 +826,13 @@ class APGDData:
         box_capacity = problem_data.box_rows.capacity
         rows = problem_data.contact_rows
         spatial = rows.angular_reaction is not None
-        self.theta = wp.ones(world_count, dtype=wp.float32, device=device)
-        """Momentum parameter of each world."""
-        self.beta = wp.zeros(world_count, dtype=wp.float32, device=device)
-        """Extrapolation factor of each world."""
-        self.restart_dot = wp.zeros(world_count, dtype=wp.float32, device=device)
-        """Restart criterion of each world."""
+        self.theta = wp.ones((2, world_count), dtype=wp.float32, device=device)
+        """Momentum parameter of each world, read and written alternately by the row-parallel extrapolations;
+        the first row holds it between projections."""
+        self.history = wp.zeros(world_count, dtype=wp.int32, device=device)
+        """Whether each world holds the row history of the previous splitting iteration."""
+        self.restart_dot = wp.zeros((2, world_count), dtype=wp.float32, device=device)
+        """Restart criterion of each world, accumulated and cleared alternately."""
         self.box_trial = wp.zeros(box_capacity, dtype=wp.float32, device=device)
         """Extrapolated trial reaction of each box row."""
         self.box_previous = wp.zeros(box_capacity, dtype=wp.float32, device=device)
@@ -844,6 +845,8 @@ class APGDData:
         """Extrapolated trial angular reaction of each contact, with spatial friction."""
         self.angular_previous = wp.zeros(rows.capacity, dtype=wp.vec3f, device=device) if spatial else None
         """Angular reaction of each contact at the previous sweep, with spatial friction."""
+        self.twist_previous = wp.zeros(problem_data.num_bodies, dtype=vec6f, device=device)
+        """Projected twist of each body at the previous sweep."""
 
 
 class ProjectionData:
@@ -884,8 +887,8 @@ class ProjectionData:
         """Per-body correction accumulated by one sweep, zero between sweeps."""
         self.anderson = AndersonData(problem_data) if acceleration == ProjectionAcceleration.ANDERSON else None
         """Anderson acceleration state, if selected."""
-        self.apgd = APGDData(problem_data) if acceleration == ProjectionAcceleration.APGD else None
-        """APGD acceleration state, if selected."""
+        self.nesterov = NesterovData(problem_data) if acceleration == ProjectionAcceleration.NESTEROV else None
+        """Nesterov acceleration state, if selected."""
 
 
 class LOXSystemData:

@@ -97,32 +97,6 @@ def _is_uniform_scale(scale, rel_tol: float = 1.0e-6) -> bool:
     return hi - lo <= rel_tol * max(abs(lo), abs(hi))
 
 
-def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
-    """Warn when a rigid body prim has an improper (mirrored) world transform.
-
-    Improper transforms (negative determinant) have no unique rotation
-    decomposition: the USD physics parser's ``rotation`` and
-    ``usd.get_transform()`` may absorb the reflection on different axes, and
-    their disagreement becomes a spurious constant rotation injected into the
-    imported body and joint frames via the incoming-xform rebase.
-
-    Args:
-        usd_prim: The rigid body ``Usd.Prim``.
-        key: Prim path string used in the warning message.
-        xform_cache: ``UsdGeom.XformCache`` for world transform lookup.
-    """
-    if xform_cache.GetLocalToWorldTransform(usd_prim).GetDeterminant() < 0.0:
-        warnings.warn(
-            f"Rigid body prim {key} has a mirrored (negative-determinant) "
-            "world transform. Imported body and joint frames may acquire a "
-            "spurious rotation. Bake the reflection into the mesh geometry "
-            "(negate vertices, flip triangle winding) and re-author the body "
-            "with a proper transform before import.",
-            NewtonWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class _CableAttachmentCandidate:
     """Cable endpoint and rigid target that may share an articulation."""
@@ -166,6 +140,7 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
+    legacy_ignore_paths: bool = False,
     return_deformable_results: bool = False,
     allow_unsafe_torch_checkpoints: bool = False,
 ) -> dict[str, Any]:
@@ -257,14 +232,18 @@ def parse_usd(
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         verbose: If True, log additional information about the parsed USD file. Default is False.
-        ignore_paths: A list of regular expressions matching prim paths to ignore.
+        ignore_paths: A list of regular expressions matched against the start of each prim path (:func:`re.match`).
+            Rigid bodies and joints are imported as if the matching prims were not on the stage. A joint to an
+            ignored body is dropped, and bodies that lose their connection to the rest of an articulation stay
+            in the model with their own base joint, chosen by ``floating`` and ``base_joint`` as for any body
+            without a joint. Add their paths to ``ignore_paths`` to drop them as well.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
         enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path: The USD path to import, defaults to "/". Bound physics materials
             outside this subtree are resolved without importing unrelated bodies
             or shapes.
-        joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
+        joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD; an articulation that is split into several parts lists its joints part by part, the part attached to the world first. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
@@ -311,6 +290,19 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
+        legacy_ignore_paths: Temporary migration option. If True, an ``ignore_paths`` match that cuts an
+            articulation is handled as in earlier releases: a joint to a body ignored by
+            a path without ``.*`` is attached to the world instead of being dropped, and with
+            ``bodies_follow_joint_ordering=True`` a body left without joints is not imported when its
+            articulation keeps other joints. With ``bodies_follow_joint_ordering=False`` such a body is
+            imported in an articulation labeled like the articulation root, without the root's custom
+            attributes, instead of one labeled with the body path. Defaults to False.
+
+            .. deprecated:: 1.9
+                Enabling this temporary flag emits a :class:`~newton.NewtonDeprecationWarning`. Add the bodies
+                that should be dropped to ``ignore_paths``, and use ``floating=False`` or ``base_joint`` to
+                attach the remaining bodies to the world.
+
         return_deformable_results: If True, include the experimental deformable entries in the
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -449,6 +441,12 @@ def parse_usd(
 
         warn_deprecation(_ALLOW_UNSAFE_TORCH_CHECKPOINTS_DEPRECATION_MSG)
 
+    if legacy_ignore_paths:
+        warn_deprecation(
+            "legacy_ignore_paths=True is deprecated. Add the bodies that should be dropped to ignore_paths, and "
+            "use floating=False or base_joint to attach the remaining bodies to the world."
+        )
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
@@ -562,6 +560,31 @@ def parse_usd(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
     ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
+    if non_regex_ignore_paths and not legacy_ignore_paths:
+        # Excluding a joint, or a body that other joints refer to, cuts an articulation before Newton
+        # sees it, and the joints of a missing body would attach to the world. Parse these prims and
+        # let ignore_paths filter them like the other matches.
+        joint_bodies = {
+            str(body)
+            for _, descs in ret_dict.values()
+            for desc in descs
+            if isinstance(desc, UsdPhysics.JointDesc)
+            for body in (desc.body0, desc.body1)
+        }
+
+        def cuts_articulation(path: str) -> bool:
+            if any(body == path or body.startswith(f"{path}/") for body in joint_bodies):
+                return True
+            prim = stage.GetPrimAtPath(path) if Sdf.Path.IsValidPathString(path) else None
+            return bool(prim) and prim.IsA(UsdPhysics.Joint)
+
+        filtered_paths = {path for path in non_regex_ignore_paths if cuts_articulation(path)}
+        if filtered_paths:
+            # PhysicsScenes are not filtered by ignore_paths, so keep the ones found outside these paths.
+            scenes = ret_dict.get(UsdPhysics.ObjectType.Scene, ((), ()))
+            native_exclude_paths = [path for path in native_exclude_paths if path not in filtered_paths]
+            ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
+            ret_dict[UsdPhysics.ObjectType.Scene] = scenes
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
@@ -829,6 +852,7 @@ def parse_usd(
         return tetmesh_cache[prim_path]
 
     bodies_with_visual_shapes: set[int] = set()
+    body_site_frame_cache = {}
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -932,6 +956,28 @@ def parse_usd(
             rel_mat = prim_world_mat
 
         xform_pos, xform_rot, scale = wp.transform_decompose(rel_mat)
+        if is_site and body_xform is not None:
+            # Subtracting the float32 world positions above loses small site offsets
+            # far from the origin. Redo the subtraction in USD double precision and
+            # rotate it into the builder's body frame, with the incoming/rebase
+            # rotation applied to body_xform undone so both are in USD world axes.
+            cached_frame = body_site_frame_cache.get(parent_body_id)
+            if cached_frame is None:
+                body_rot = body_xform.q
+                if incoming_world_xform is not None:
+                    body_rot = wp.quat_inverse(incoming_world_xform.q) * body_rot
+                if articulation_root_xform is not None:
+                    body_rot = articulation_root_xform.q * body_rot
+                body_quat = Gf.Quatd(float(body_rot[3]), float(body_rot[0]), float(body_rot[1]), float(body_rot[2]))
+                body_prim = stage.GetPrimAtPath(_get_rigid_body_ancestor_path(prim))
+                cached_frame = (
+                    body_quat.GetNormalized().GetInverse(),
+                    xform_cache.GetLocalToWorldTransform(body_prim).ExtractTranslation(),
+                )
+                body_site_frame_cache[parent_body_id] = cached_frame
+            body_quat_inv, body_world_pos = cached_frame
+            offset = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation() - body_world_pos
+            xform_pos = wp.vec3(*body_quat_inv.Transform(offset))
         xform = wp.transform(xform_pos, xform_rot)
 
         shape_id = -1
@@ -1158,7 +1204,6 @@ def parse_usd(
             if incoming_xform is not None:
                 origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
-        _warn_mirrored_body_transform(prim, path, xform_cache)
 
         is_kinematic = rigid_body_desc.kinematicBody
         linear_velocity = wp.transform_vector(origin, wp.vec3(*rigid_body_desc.linearVelocity))
@@ -1794,6 +1839,7 @@ def parse_usd(
             base_joint=base_joint,
             enable_self_collisions=enable_self_collisions,
             ignore_paths=ignore_paths,
+            legacy_ignore_paths=legacy_ignore_paths,
             collect_schema_attrs=collect_schema_attrs,
             verbose=verbose,
             warn_invalid_desc=warn_invalid_desc,
@@ -2004,7 +2050,7 @@ def parse_usd(
             inertia_tensor_val = (
                 usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
             )
-            has_inertia_tensor = inertia_tensor_val is not None
+            has_inertia_tensor = inertia_tensor_val is not None and len(inertia_tensor_val) > 0
             if has_inertia_tensor:
                 if len(inertia_tensor_val) != 6:
                     warnings.warn(
@@ -2967,7 +3013,7 @@ def parse_usd(
         if not any(re.match(pattern, battery_path) for pattern in ignore_paths):
             battery = parse_battery_prim(stage.GetPrimAtPath(battery_path))
         if battery is None:
-            raise ValueError(f"Actuators reference '{battery_path}' in 'newton:battery', which is not a battery prim")
+            raise ValueError(f"Actuators reference '{battery_path}' in 'newton:supply', which is not a battery prim")
         batteries[battery_path] = battery
     for path, battery in batteries.items():
         if path in battery_actuators:

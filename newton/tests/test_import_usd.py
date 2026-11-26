@@ -48,9 +48,6 @@ from newton.tests.unittest_utils import (
 devices = get_test_devices()
 
 
-_MIRRORED_BODY_WARNING = (
-    r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
-)
 _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ values but frequency"
 
 
@@ -1844,6 +1841,53 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), builder.default_joint_cfg.limit_ke, places=4)
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
+
+    @requires("pxr.Usd")
+    def test_physics_scene_declaration_keeps_solver_update_flags(self):
+        """Merge a PhysicsScene declaration of a solver attribute with its registration, in either order."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+    custom float newton:mujoco:gravcomp = 0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "Collision" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+        for register_first in (True, False):
+            with self.subTest(register_first=register_first):
+                builder = newton.ModelBuilder()
+                if register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage)
+                if not register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(
+                    model.get_attribute_update_flags("mujoco:gravcomp"), newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                )
 
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_unauthored_usd_solreflimit_uses_mujoco_default(self):
@@ -4404,6 +4448,55 @@ def Xform "NotPSD" (
         self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
 
     @requires("pxr.Usd")
+    def test_newton_inertia_empty_is_no_opinion(self):
+        """An authored empty newton:inertia defers to physics:diagonalInertia without a warning."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "EmptyTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 3.0
+    float3 physics:diagonalInertia = (0.5, 1.0, 1.5)
+    double[] newton:inertia = []
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        warning_messages = [str(w.message) for w in caught]
+        self.assertFalse(any("newton:inertia" in m for m in warning_messages), warning_messages)
+
+        body_id = builder.body_label.index("/EmptyTensor")
+        self.assertAlmostEqual(builder.body_mass[body_id], 3.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(inertia, np.diag([0.5, 1.0, 1.5]), atol=1e-5)
+
+    @requires("pxr.Usd")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
         from pxr import Sdf, Usd, UsdPhysics
@@ -5961,6 +6054,92 @@ def Xform "Articulation" (
         self.assertAlmostEqual(rolling, 0.08, places=4)
 
     @requires("pxr.Usd")
+    def test_shape_friction_mode_parsing(self):
+        """Select the shape friction mode from authored MuJoCo, PhysX, and Newton attributes."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        from newton._src.usd.schemas import (  # noqa: PLC0415
+            SchemaResolverMjc,
+            SchemaResolverNewton,
+            SchemaResolverPhysx,
+        )
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_material(name, attributes):
+            material = UsdShade.Material.Define(stage, f"/Materials/{name}")
+            UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+            material.GetPrim().ApplyAPI("NewtonMaterialAPI")
+            for attribute, value in attributes.items():
+                material.GetPrim().CreateAttribute(attribute, Sdf.ValueTypeNames.Float).Set(value)
+            return material
+
+        materials = {
+            "torsional": define_material("Torsional", {"newton:torsionalFriction": 0.02}),
+            "rolling": define_material("Rolling", {"newton:rollingFriction": 0.01}),
+            "both": define_material("Both", {"newton:torsionalFriction": 0.02, "newton:rollingFriction": 0.01}),
+        }
+        mode = newton.ShapeFrictionMode
+        cases = {
+            "Default": ({}, None, mode.SLIDING),
+            "MjcFrictionless": ({"mjc:condim": 1}, None, mode.NONE),
+            "MjcRolling": ({"mjc:condim": 6}, None, mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadius": ({"physxCollision:minTorsionalPatchRadius": 0.01}, None, mode.SLIDING_TORSIONAL),
+            "NewtonTorsional": ({}, "torsional", mode.SLIDING_TORSIONAL),
+            "NewtonRolling": ({}, "rolling", mode.SLIDING_ROLLING),
+            "NewtonBoth": ({}, "both", mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadiusRolling": (
+                {"physxCollision:minTorsionalPatchRadius": 0.01},
+                "rolling",
+                mode.SLIDING_TORSIONAL_ROLLING,
+            ),
+            "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.SLIDING_TORSIONAL),
+            "MjcColliderIgnoresPhysxRadius": (
+                {"mjc:condim": 3, "physxCollision:minTorsionalPatchRadius": 0.01},
+                None,
+                mode.SLIDING,
+            ),
+            "MaterialRaisesMode": ({"mjc:condim": 1}, "torsional", mode.SLIDING_TORSIONAL),
+        }
+        for i, (name, (attributes, material, _expected)) in enumerate(cases.items()):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            body.AddTranslateOp().Set((float(i), 0.0, 0.0))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            for attribute, value in attributes.items():
+                value_type = Sdf.ValueTypeNames.Int if isinstance(value, int) else Sdf.ValueTypeNames.Float
+                collider.GetPrim().CreateAttribute(attribute, value_type).Set(value)
+            if name.startswith("MjcCollider"):
+                collider.GetPrim().AddAppliedSchema("MjcCollisionAPI")
+            if material is not None:
+                UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(materials[material], "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(
+            stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc(), SchemaResolverPhysx()]
+        )
+        model = builder.finalize()
+
+        friction_mode = model.shape_material_friction_mode.numpy()
+        for name, (_attributes, _material, expected) in cases.items():
+            with self.subTest(name):
+                shape = result["path_shape_map"][f"/World/{name}/Collider"]
+                self.assertEqual(friction_mode[shape], expected)
+
+        # The PhysX patch radius r sets the torsional coefficient to mu * r, also next to an authored rolling one
+        for name in ("PhysxPatchRadius", "PhysxPatchRadiusRolling"):
+            shape = result["path_shape_map"][f"/World/{name}/Collider"]
+            self.assertAlmostEqual(
+                float(model.shape_material_mu_torsional.numpy()[shape]),
+                0.01 * float(model.shape_material_mu.numpy()[shape]),
+                places=6,
+            )
+
+    @requires("pxr.Usd")
     def test_bound_material_supplies_the_friction_pair(self):
         """A bound material sets mu and mu_static together: staticFriction counts only above dynamicFriction,
         an unauthored one (UsdPhysics default 0) does not fall back to the builder default mu_static, and an
@@ -7378,15 +7557,7 @@ def Xform "Articulation" (
                 UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            # This fixture deliberately covers negative scale. Record only its
-            # expected diagnostic while preserving the ambient warning policy.
-            warnings.filterwarnings("always", message=_MIRRORED_BODY_WARNING, category=UserWarning)
-            result = builder.add_usd(stage)
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.NewtonWarning)
-        self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
+        result = builder.add_usd(stage)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
             for mass_name, _author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
