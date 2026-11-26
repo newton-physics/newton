@@ -115,6 +115,39 @@ def _on_mesh_surface(mesh_id: wp.uint64, local: wp.vec3, scale: wp.vec3, inverse
 
 
 @wp.func
+def _aabb_surface_too_thick(wall_id: wp.uint64, wall_scale: wp.vec3, probe_extent: wp.vec3) -> bool:
+    """Reject a small mesh when all of its triangles lie on distant AABB planes."""
+    mesh = wp.mesh_get(wall_id)
+    # Keep the scan bounded to the size of a triangulated box.
+    if mesh.indices.shape[0] > 36 or mesh.points.shape[0] > 36 or mesh.points.shape[0] == 0:
+        return False
+    lower = mesh.points[0]
+    upper = lower
+    for i in range(1, mesh.points.shape[0]):
+        lower = wp.min(lower, mesh.points[i])
+        upper = wp.max(upper, mesh.points[i])
+    probe_radius = 0.5 * wp.length(probe_extent)
+    # The rays reach half the probe radius. Leave slack for reconstruction
+    # of hit points on the wall and the minimum ray start offset.
+    extent = wp.cw_mul(upper - lower, wall_scale)
+    magnitude = wp.max(wp.cw_mul(wp.max(wp.abs(lower), wp.abs(upper)), wall_scale))
+    if wp.min(extent) <= wp.max(probe_radius, 1.0e-8) + 2.0e-6 * magnitude:
+        return False
+    for i in range(0, mesh.indices.shape[0], 3):
+        a = mesh.points[mesh.indices[i]]
+        b = mesh.points[mesh.indices[i + 1]]
+        c = mesh.points[mesh.indices[i + 2]]
+        on_face = bool(False)
+        for axis in range(3):
+            on_face = on_face or (
+                a[axis] == b[axis] and a[axis] == c[axis] and (a[axis] == lower[axis] or a[axis] == upper[axis])
+            )
+        if not on_face:
+            return False
+    return True
+
+
+@wp.func
 def planar_exit(
     wall_id: wp.uint64,
     probe_id: wp.uint64,
@@ -541,6 +574,8 @@ def get_compute_planar_recovery_contacts(writer_func):
             bounds_upper = center + projection
             overlap = wp.min(wp.min(bounds_upper, local_upper[wall]) - wp.max(bounds_lower, local_lower[wall]))
             if overlap <= minimum_overlap:
+                continue
+            if _aabb_surface_too_thick(wall_id, wall_scale, probe_upper - probe_lower):
                 continue
             hit = planar_exit(
                 wall_id,
