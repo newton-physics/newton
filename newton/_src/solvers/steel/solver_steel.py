@@ -8333,8 +8333,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         and invalid load coefficients were ignored, so discard the output, repair the coefficients
         and :meth:`reset`. Also raises while the friction coefficients of the last
         ``SHAPE_PROPERTIES`` notification, times ``contact_friction_scale``, include one that is not
-        finite in float32; such a notification raises at once unless it was captured, and the
-        shapes it flags have no friction until a notification with finite coefficients. With
+        finite in float32; such a notification raises at once unless it was captured. The solver
+        uses zero as the coefficient of each flagged shape until a notification with finite
+        coefficients, so discard the output since the notification and repair the coefficients. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
         the last :meth:`reset`; a failing captured step restored its output motion arrays to the
         input, while a failing eager step raised from :meth:`step`. Torsion rows dropped for
