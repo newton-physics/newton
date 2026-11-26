@@ -794,7 +794,7 @@ def rotate_matrix_rows(
     val = mat_values.dtype(0.0)
     for k in range(nodes_per_elt):
         row_k = element * nodes_per_elt + k
-        block_k = wps.bsr_block_index(row_k, col, mat_offsets, mat_columns)
+        block_k = wps.bsr_block_index(row_k, col, mat_offsets, mat_columns, mat_row_counts)
         if block_k != -1:
             val += ev[elt_node, k] * mat_values[block_k]
 
@@ -910,7 +910,7 @@ def rotate_matrix_columns(
     val = mat_values.dtype(0.0)
     for k in range(nodes_per_elt):
         col_k = element * nodes_per_elt + k
-        block_k = wps.bsr_block_index(row, col_k, mat_offsets, mat_columns)
+        block_k = wps.bsr_block_index(row, col_k, mat_offsets, mat_columns, mat_row_counts)
         if block_k != -1:
             val += ev[elt_node, k] * mat_values[block_k]
 
