@@ -451,14 +451,15 @@ class JointSpaceResponse:
         *dof_map* has a different width than the model's DOF layout; that first
         call resizes the scratch buffers.
 
-        With :class:`~newton.solvers.SolverMuJoCo`, which factorizes its inertia
-        each step when constructed with ``run_qacc_smooth=True``::
+        With :class:`~newton.solvers.SolverMuJoCo`, whose step leaves its inertia
+        unfactorized by default::
 
             def solve_inverse(x, y):
                 mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
 
             # Simulation loop
+            mujoco_warp.factor_m(solver.mjw_model, solver.mjw_data)
             response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
         Args:

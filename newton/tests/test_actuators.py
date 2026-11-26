@@ -512,23 +512,23 @@ def _mujoco_solver(test_case: unittest.TestCase, model: newton.Model) -> newton.
     That is what makes MuJoCo reorder the DOFs, and the solver says so on
     conversion.
     """
-    # run_qacc_smooth=True keeps the per-step factorization that _mujoco_solve reads.
     if model.articulation_count and len(_arm_dofs(model)) != model.joint_dof_count:
         with test_case.assertWarnsRegex(UserWarning, "standalone world roots"):
-            return newton.solvers.SolverMuJoCo(model, disable_contacts=True, run_qacc_smooth=True)
-    return newton.solvers.SolverMuJoCo(model, disable_contacts=True, run_qacc_smooth=True)
+            return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+    return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
 
 
-def _mujoco_solve(
-    solver: newton.solvers.SolverMuJoCo,
-) -> Callable[[wp.array2d[float], wp.array2d[float]], None]:
-    """``(x, y) -> x = M^-1 y`` backed by MuJoCo's per-step factorization."""
+def _refresh_from_mujoco(
+    response: JointSpaceResponse, solver: newton.solvers.SolverMuJoCo, state: newton.State | None = None
+) -> None:
+    """Refresh *response* from the inertia of MuJoCo's last step, factorized here."""
     import mujoco_warp
 
     def solve_inverse(x: wp.array2d[float], y: wp.array2d[float]) -> None:
         mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
-    return solve_inverse
+    mujoco_warp.factor_m(solver.mjw_model, solver.mjw_data)
+    response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=state)
 
 
 def _response_at_state(model: newton.Model, state: newton.State) -> np.ndarray:
@@ -5222,11 +5222,10 @@ class TestJointSpaceResponse(unittest.TestCase):
         _set_arm(model, state.joint_q, [0.3, -0.8])
         solver = _mujoco_solver(self, model)
         solver.step(state, model.state(), model.control(), None, 0.01)
-        solve_inverse = _mujoco_solve(solver)
 
         response = JointSpaceResponse(model)  # fresh: nothing allocated by a prior call
         with wp.ScopedCapture(device) as capture:
-            response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+            _refresh_from_mujoco(response, solver)
         wp.capture_launch(capture.graph)
 
         reference = JointSpaceResponse(model)
@@ -5240,9 +5239,9 @@ class TestJointSpaceResponse(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_response_from_mujoco_factorization(self):
-        """Fill the response from MuJoCo's per-step factorized inertia.
+        """Fill the response from the factorized inertia of MuJoCo's last step.
 
-        MuJoCo refactorizes its inertia at the step-start pose every step, so --
+        MuJoCo recomputes its inertia at the step-start pose every step, so --
         unlike the compile-time, diagonal-only ``dof_invweight0`` -- the recovered
         inverse tracks inertial coupling at the current configuration. Checks
         :meth:`JointSpaceResponse.refresh_from_solve` against a host-side
@@ -5272,7 +5271,7 @@ class TestJointSpaceResponse(unittest.TestCase):
         self.assertEqual(solver.mj_model.nv * worlds, model.joint_dof_count)
 
         mjc_response = JointSpaceResponse(model)
-        mjc_response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        _refresh_from_mujoco(mjc_response, solver)
         response_newton = mjc_response.inverse_blocks.numpy()[0, :n, :n]
 
         # The solver's mass matrix must agree with the response's own dense recompute.
@@ -5287,7 +5286,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             kp=wp.array(np.tile(kp, worlds), dtype=float, device=device),
             kd=wp.array(np.tile(kd, worlds), dtype=float, device=device),
         )
-        response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        _refresh_from_mujoco(response, solver)
         np.testing.assert_allclose(response.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
         control.joint_f.zero_()
         actuator.step(state, control, dt=h)
@@ -5343,7 +5342,7 @@ class TestJointSpaceResponse(unittest.TestCase):
         solver.step(state, model.state(), model.control(), None, 1.0e-6)
 
         response = JointSpaceResponse(model)
-        response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof, state=state)
+        _refresh_from_mujoco(response, solver, state)
         reference = JointSpaceResponse(model)
         reference.refresh(state)
         np.testing.assert_allclose(
@@ -5385,13 +5384,12 @@ class TestJointSpaceResponse(unittest.TestCase):
             )
 
             self.assertEqual(solver.mj_model.nv, model.joint_dof_count)
-            solve_m = _mujoco_solve(solver)
 
             def update_response(state_prev: newton.State) -> None:
                 if use_qm:
                     # Full inverse response from the solver's factorization at the
                     # pose of the step that just ran — same staleness as refresh().
-                    response.refresh_from_solve(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
+                    _refresh_from_mujoco(response, solver)
                 else:
                     response.refresh(state_prev)
 

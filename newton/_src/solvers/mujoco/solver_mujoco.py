@@ -4802,11 +4802,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 compiled MuJoCo model free of unused welds.
             run_qacc_smooth: If ``False`` (default), MuJoCo Warp starts its Newton solver from the
                 previous step's acceleration and skips the unconstrained acceleration ``qacc_smooth``
-                and the factorization of the inertia matrix, which makes the step faster. Pass ``True``
-                when reading ``mjw_data.qacc_smooth`` or that factorization (``mujoco_warp.solve_m``)
-                after a step; both are stale otherwise. MuJoCo Warp computes both regardless with the
-                CG solver, noslip iterations, warmstart disabled, no solver iterations, or ``njmax=0``,
-                and native MuJoCo (``use_mujoco_cpu=True``) always does.
+                and the factorization of the inertia matrix, which makes the step faster. Both are
+                then stale after a step: pass ``True`` to read ``mjw_data.qacc_smooth``, and call
+                ``mujoco_warp.factor_m`` before ``mujoco_warp.solve_m``. MuJoCo Warp computes both
+                regardless with the CG solver, noslip iterations, warmstart disabled, no solver
+                iterations, or ``njmax=0``, and native MuJoCo (``use_mujoco_cpu=True``) always does.
 
         """
         if update_data_interval is not None:
