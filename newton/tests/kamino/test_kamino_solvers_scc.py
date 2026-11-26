@@ -3057,8 +3057,17 @@ class TestSCCSolver(NewtonTestCase):
         velocity[:, :] = 0.0
         cache.velocity.assign(velocity)
 
+        backend = solver._solver_kamino.solver_fd
+        warmstart = backend.warmstart
+
+        def check_restored_reaction(*, contacts, **kwargs):
+            self.assertAlmostEqual(float(contacts.reaction.numpy()[0, 2]), 10000.0, delta=0.01)
+            warmstart(contacts=contacts, **kwargs)
+
         pipeline.collide(state_1, contacts)
-        solver.step(state_1, state_0, control=None, contacts=contacts, dt=1e-3)
+        with mock.patch.object(backend, "warmstart", side_effect=check_restored_reaction) as probe:
+            solver.step(state_1, state_0, control=None, contacts=contacts, dt=1e-3)
+        probe.assert_called_once()
         self.assertEqual(int(solver._contacts_kamino.data.matched_slots.numpy()[0]), 0)
 
         contact_count = int(solver._contacts_kamino.model_active_contacts.numpy()[0])

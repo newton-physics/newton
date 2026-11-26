@@ -270,8 +270,11 @@ def _resolve_contact_matches(
     previous_stream: wp.array[wp.int32],
     previous_slots: wp.array[wp.int32],
     matched_slots: wp.array[wp.int32],
+    solved_generation: wp.array[wp.int32],
 ):
     cid = wp.tid()
+    if cid == 0:
+        solved_generation[0] = generation[0]
     matched_slots[cid] = -1
     if cid >= count[0] or previous_stream[0] != stream:
         return
@@ -310,6 +313,7 @@ class ContactMatchMap:
         self._device = device
         self._streams: WeakKeyDictionary[Contacts, int] = WeakKeyDictionary()
         self._next_stream = 1
+        self._solved_generation = wp.empty(1, dtype=wp.int32, device=device)
         self._previous_generation = wp.full(1, GENERATION_SENTINEL, dtype=wp.int32, device=device)
         self._previous_stream = wp.zeros(1, dtype=wp.int32, device=device)
         # Sized up front for the model's contact buffers so CUDA graph capture does not allocate.
@@ -346,12 +350,13 @@ class ContactMatchMap:
                 self._previous_stream,
                 self._previous_slots,
                 matched_slots,
+                self._solved_generation,
             ],
             device=self._device,
         )
         return stream
 
-    def update(self, source: Contacts | None, contacts: ContactsKamino, stream: int) -> None:
+    def update(self, contacts: ContactsKamino, stream: int) -> None:
         """Record the source slots for the newly solved contact set."""
         if stream == 0:
             self._previous_stream.zero_()
@@ -364,7 +369,8 @@ class ContactMatchMap:
             inputs=[
                 contacts.model_active_contacts,
                 contacts.remap,
-                source.contact_generation,
+                # A post-step callback may already have reused the source buffer.
+                self._solved_generation,
                 stream,
                 self._previous_generation,
                 self._previous_stream,

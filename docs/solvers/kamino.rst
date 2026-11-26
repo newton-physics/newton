@@ -70,9 +70,11 @@ Contact warm starts carry each contact's reaction from the previous step to
 its match. When the contacts passed to :meth:`~newton.solvers.SolverKamino.step`
 come from a :class:`~newton.CollisionPipeline` created with
 ``contact_matching="latest"`` or ``"sticky"``, Kamino uses the pipeline's match
-indices. Otherwise, including with Kamino's native collision detector, Kamino
-matches its contacts against the previous step with the same contact matcher
-and its default thresholds.
+indices when they refer to the last contact set Kamino solved. If collision
+detection advances past that set, contacts without a valid match start with
+zero reaction. When the pipeline has contact matching disabled or Kamino uses
+its native collision detector, Kamino matches contacts against the previous
+step using the default thresholds.
 
 .. deprecated:: 1.9
 

@@ -1363,7 +1363,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         )
 
         if self._contact_match_map is not None:
-            self._contact_match_map.update(contacts, self._contacts_kamino, contact_stream)
+            self._contact_match_map.update(self._contacts_kamino, contact_stream)
 
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.SOLVER_RESIDUAL):
             self._solver_kamino.solver_fd.write_world_residual(observables.solver_residual)

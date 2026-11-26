@@ -178,11 +178,11 @@ intersphinx_mapping = {
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp/stable", None),
-    "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
+    "usd": ("https://openusd.org/release", None),
 }
 
 # Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
-# ``pxr.*`` paths so intersphinx can resolve them against the USD inventory.
+# ``pxr.*`` paths in the generated Python API reference.
 # Note: this only affects annotations processed by autodoc, not autosummary stubs.
 autodoc_type_aliases = {
     "Usd.Prim": "pxr.Usd.Prim",

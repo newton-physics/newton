@@ -1806,6 +1806,18 @@ class TestSolverKaminoImpl(NewtonTestCase):
         self.assertGreater(count, 0)
         np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], -1)
 
+        def collide_after_solve(_solver, _state_in, _state_out, _control, _contacts):
+            # The first collision pass is skipped by the solver.
+            pipeline.collide(state_out, contacts)
+            pipeline.collide(state_out, contacts)
+
+        with mock.patch.object(solver._solver_kamino, "_post_step_cb", collide_after_solve):
+            solver.step(state_in, state_out, None, contacts, 1e-3)
+        solver.step(state_out, state_in, None, contacts, 1e-3)
+        count = int(native.model_active_contacts.numpy()[0])
+        self.assertGreater(count, 0)
+        np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], -1)
+
     def test_11_warmstart_contacts_without_pipeline_matches(self):
         """Match contacts that arrive without pipeline matches and warm-start them."""
         single = newton.ModelBuilder()
