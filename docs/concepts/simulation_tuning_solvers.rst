@@ -391,8 +391,11 @@ repository examples spend tuning effort, not a shared solver API.
        scenes where many objects rest, and costs a few extra launches per
        step when nothing sleeps. An island sleeps once its bodies' speeds, checked
        at the end of each step, stay within both thresholds for
-       ``sleep_quiet_time``. With the default contact order the residual motion
-       of a resting stack can keep it awake; a deterministic contact order
+       ``sleep_quiet_time``. Articulations with nonzero drive gains or passive
+       springs (nonzero ``joint_stiffness`` on a PRISMATIC, REVOLUTE or D6 tree
+       joint) stay awake at any speed, even when the spring is unloaded. With
+       the default contact order the residual motion of a resting stack can
+       keep it awake; a deterministic contact order
        (``CollisionPipeline(deterministic=True)``) may reduce that motion, and
        when angular motion is the limiting condition a larger
        ``sleep_angular_threshold``, such as 0.3 rad/s, lets islands sleep with

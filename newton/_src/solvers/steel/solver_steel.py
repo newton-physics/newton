@@ -1554,6 +1554,9 @@ class SolverSteel(SolverBase, CouplingInterface):
     scenery shared by all worlds, or add the body to every world.
 
     Treat row and contact-buffer overflow as a sizing error and raise those capacities until no world is flagged.
+    The capacities are set at construction and :meth:`reset` clears the flags without restoring the simulation state,
+    so to recover, discard the output of the flagged steps, restore a state from before the overflow, and construct a
+    new solver (and capture new graphs) with larger capacities.
     The unsolvable cross-world contacts above set the same flag, and no capacity clears them. Which
     contacts keep their rows is described under ``deterministic``. As that set changes, a contact that penetrated
     while it had no rows is pushed out by the position correction when it regains them, which can add energy and
