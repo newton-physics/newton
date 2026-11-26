@@ -119,17 +119,18 @@ class _PipelineDetector:
     def __init__(self, solver: SolverKamino):
         self._solver = solver
         self._state = solver.model.state()
+        self._body_q_in = wp.clone(self._state.body_q)
         self._horizon = 0.0
         self._detect = True
 
     def prepare(self, state_in: State, horizon: float, detect: bool = True):
-        """Capture the velocities, speculative horizon, and detection toggle for the next :meth:`collide` call.
+        """Capture the input poses, speculative horizon, and detection toggle for the next :meth:`collide` call.
 
         Without detection, the existing contacts in :attr:`SolverKamino.contacts` are evaluated at the intermediate
         poses, since their points are body-local.
         """
-        if self._state.body_qd is not None:
-            wp.copy(self._state.body_qd, state_in.body_qd)
+        if self._body_q_in is not None:
+            wp.copy(self._body_q_in, state_in.body_q)
         self._horizon = horizon
         self._detect = detect
 
@@ -143,11 +144,21 @@ class _PipelineDetector:
             body_q_com=data.bodies.q_i,
             body_q=self._state.body_q,
         )
+        # NOTE: The twists include those carried to welded bodies, in Newton's ``body_qd`` convention.
+        if self._state.body_qd is not None:
+            wp.copy(self._state.body_qd, data.bodies.u_i)
 
         # Detect with Newton and convert to Kamino contacts
         if self._detect:
             solver._run_rigid_collision(self._state, self._horizon)
         solver._convert_newton_contacts(self._state, solver.contacts, contacts)
+
+    def rebase_to_input(self):
+        """Express the contacts detected at the intermediate poses in the input body frames."""
+        if self._detect and self._body_q_in is not None:
+            self._solver._kamino.rebase_contacts_newton(
+                self._solver.model, self._solver.contacts, self._state.body_q, self._body_q_in
+            )
 
 
 ###
@@ -1028,15 +1039,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
-            if self.model.rigid_contact_max is None or (
-                self.model.rigid_contact_max == 0 and not self.model._contact_capacity_initialized
-            ):
-                estimated_contacts = _estimate_rigid_contact_max(model)
-                # Write back to the model to ensure the CollisionPipeline capacity is consistent.
-                model.rigid_contact_max = ((estimated_contacts + world_count - 1) // world_count) * world_count
+            if collision_pipeline is not None:
+                # Match the owned pipeline, which need not publish its capacity to the model
+                rigid_contact_max = collision_pipeline.rigid_contact_max
+            else:
+                if self.model.rigid_contact_max is None or (
+                    self.model.rigid_contact_max == 0 and not self.model._contact_capacity_initialized
+                ):
+                    estimated_contacts = _estimate_rigid_contact_max(model)
+                    # Write back to the model to ensure the CollisionPipeline capacity is consistent.
+                    model.rigid_contact_max = ((estimated_contacts + world_count - 1) // world_count) * world_count
+                rigid_contact_max = model.rigid_contact_max
 
             # Round up to the nearest multiple of the world count to account for Kamino's per world capacity.
-            world_max_contacts = [(model.rigid_contact_max + world_count - 1) // world_count] * world_count
+            world_max_contacts = [(rigid_contact_max + world_count - 1) // world_count] * world_count
             self._contacts_kamino = self._kamino.ContactsKamino(
                 # TODO: model=self._model_kamino,
                 capacity=world_max_contacts,
@@ -1423,6 +1439,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             detector=midpoint_detector or self._detector,
             dt=dt,
         )
+        if midpoint_detector is not None:
+            midpoint_detector.rebase_to_input()
 
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.SOLVER_RESIDUAL):
             self._solver_kamino.solver_fd.write_world_residual(observables.solver_residual)

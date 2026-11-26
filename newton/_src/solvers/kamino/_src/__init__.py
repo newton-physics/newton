@@ -30,6 +30,7 @@ from .geometry.contacts import (
     ContactsKamino,
     convert_contacts_kamino_to_newton,
     convert_contacts_newton_to_kamino,
+    rebase_contacts_newton,
 )
 from .geometry.detector import CollisionDetector
 from .solver_kamino_impl import SolverKaminoImpl
@@ -61,6 +62,7 @@ __all__ = [
     "convert_model_joint_actuation",
     "convert_model_joint_transforms",
     "convert_model_materials",
+    "rebase_contacts_newton",
     "refresh_masked_body_inertia",
     "reset_body_acceleration",
     "validate_model_structural_updates",

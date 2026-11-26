@@ -1112,6 +1112,65 @@ class TestSolverKaminoOwnedPipeline(NewtonTestCase):
                 self.assertGreater(np.linalg.norm(expected), 1.0)
                 np.testing.assert_allclose(force, expected, atol=1e-3)
 
+    def test_moreau_contact_export_matches_internal_detection(self):
+        """Export midpoint contacts of rotating bodies in the input frames, like the internal detector."""
+        results = []
+        for owned in (False, True):
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+            SolverKamino.register_custom_attributes(builder)
+            for x in (-0.095, 0.095):
+                body = builder.add_body(
+                    xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
+                    mass=1.0,
+                    com=wp.vec3(0.01, 0.0, 0.0),
+                    inertia=UNIT_INERTIA,
+                    lock_inertia=True,
+                )
+                builder.add_shape_sphere(body, radius=0.1)
+            model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+            config = SolverKamino.Config(integrator="moreau", use_collision_detector=not owned)
+            config.dynamics.cull_speculative_contacts = False
+            solver = SolverKamino(
+                model, config=config, collision_pipeline=newton.CollisionPipeline(model) if owned else None
+            )
+            contacts = solver.contacts if owned else newton.CollisionPipeline(model).contacts()
+            observables = solver.observables(
+                contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+            )
+            state_in, state_out = model.state(), model.state()
+            state_in.body_qd.assign(
+                np.array([[1.0, 0.0, -0.2, 0.0, 30.0, 0.0], [-1.0, 0.0, 0.2, 0.0, -30.0, 0.0]], dtype=np.float32)
+            )
+            body_q_in = state_in.body_q.numpy()
+            solver.step(state_in, state_out, None, None if owned else contacts, 0.02, observables=observables)
+
+            # Reconstruct the world-space surface points on shape0 from the input poses.
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            self.assertEqual(count, 1)
+            shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
+            margin0 = float(contacts.rigid_contact_margin0.numpy()[0])
+            offset_scale = (margin0 - float(model.shape_margin.numpy()[shape0])) / margin0 if margin0 else 0.0
+            local = contacts.rigid_contact_point0.numpy()[0] + contacts.rigid_contact_offset0.numpy()[0] * offset_scale
+            body_q = body_q_in[model.shape_body.numpy()[shape0]]
+            pose = wp.transform(wp.vec3(*body_q[:3]), wp.quat(*body_q[3:]))
+            point = np.array(wp.transform_point(pose, wp.vec3(*local)))
+            results.append((shape0, point, observables.contact_f.numpy()[0]))
+
+        (shape_native, point_native, wrench_native), (shape_owned, point_owned, wrench_owned) = results
+        self.assertEqual(shape_owned, shape_native)
+        self.assertGreater(np.linalg.norm(wrench_native[3:]), 0.1)
+        np.testing.assert_allclose(point_owned, point_native, atol=1e-6)
+        np.testing.assert_allclose(wrench_owned, wrench_native, atol=1e-3)
+
+    def test_contact_capacity_follows_owned_pipeline(self):
+        """Size Kamino's contacts from an owned pipeline that does not publish its capacity."""
+        model = self._make_model()
+        model.rigid_contact_max = 1
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, publish_capacity=False)
+        solver = self._make_solver(model, "moreau", pipeline)
+        self.assertEqual(model.rigid_contact_max, 1)
+        self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 64)
+
 
 class TestSolverKaminoStatus(NewtonTestCase):
     def setUp(self):
