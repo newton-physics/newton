@@ -15,6 +15,8 @@ Runs:
 - `python -m newton.examples kamino_robot_dr_legs --world-count 16`
 """
 
+import warnings
+
 import numpy as np
 import warp as wp
 
@@ -128,12 +130,21 @@ class Example:
         self.model.rigid_contact_max = 72 * self.world_count
 
         # Create the Kamino solver for the given model
-        self.config = newton.solvers.SolverKamino.Config.from_model(
-            self.model,
-            dynamics_solver=self.dynamics_solver,
-            sparse_dynamics=self.dynamics_solver == "scc",
-            sparse_jacobian=self.dynamics_solver in ("scc", "lox"),
-        )
+        with warnings.catch_warnings():
+            # The pinned asset revision still authors the deprecated, ignored PADMM complementarity tolerance
+            # TODO: Remove the attribute from the newton-assets DR Legs USDs, use the latest revision here,
+            # and drop this filter
+            warnings.filterwarnings(
+                "ignore",
+                message=r"The newton:kamino:padmm:complementarityTolerance attribute is deprecated",
+                category=newton.NewtonDeprecationWarning,
+            )
+            self.config = newton.solvers.SolverKamino.Config.from_model(
+                self.model,
+                dynamics_solver=self.dynamics_solver,
+                sparse_dynamics=self.dynamics_solver == "scc",
+                sparse_jacobian=self.dynamics_solver in ("scc", "lox"),
+            )
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
         self.config.dynamics.linear_solver_type = self.linear_solver_type
