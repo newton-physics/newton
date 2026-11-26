@@ -1521,6 +1521,33 @@ class ViewerBase(ABC):
         self._log_joints(state)
         self._log_com(state)
 
+    def _log_picking_line(self):
+        """Log the line from the picked body point to the mouse picking target.
+
+        Viewers that support picking call this from :meth:`log_state` so the
+        line is drawn consistently through :meth:`log_lines`. The line is
+        cleared while nothing is picked.
+        """
+        picking = getattr(self, "picking", None)
+        if not self.picking_enabled or picking is None or not picking.is_picking():
+            self.log_lines("picking_line", None, None, None)
+            return
+
+        # Pick points are in physics space; shift them by the picked body's world offset.
+        pick_target = picking.pick_target
+        picked_point = picking.pick_point
+        if self.world_offsets is not None and self.world_offsets.shape[0] > 0 and self.model.body_world is not None:
+            body_world_idx = self.model.body_world.numpy()[picking.pick_body]
+            if 0 <= body_world_idx < self.world_offsets.shape[0]:
+                world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
+                pick_target = pick_target + world_offset
+                picked_point = picked_point + world_offset
+
+        starts = wp.array([picked_point], dtype=wp.vec3, device=self.device)
+        ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
+        colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
+        self.log_lines("picking_line", starts, ends, colors, hidden=False)
+
     def log_contacts(
         self,
         contacts: newton.Contacts,

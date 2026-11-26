@@ -1922,43 +1922,7 @@ class ViewerGL(ViewerBase):
             # Fallback for CPU or when no packed data is available
             super().log_state(state)
 
-        self._render_picking_line(state)
-
-    def _render_picking_line(self, state):
-        """
-        Render a line from the mouse cursor to the actual picked point on the geometry.
-
-        Args:
-            state: The current simulation state.
-        """
-        if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
-            # Clear the picking line if not picking
-            self.log_lines("picking_line", None, None, None)
-            return
-
-        pick_body_idx = self.picking.pick_body
-        # Get the pick target and current picked point on geometry (in physics space)
-        pick_target = self.picking.pick_target
-        picked_point = self.picking.pick_point
-
-        # Apply world offset to convert from physics space to visual space
-        if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
-            if self.model.body_world is not None:
-                body_world_idx = self.model.body_world.numpy()[pick_body_idx]
-                if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
-                    pick_target = pick_target + world_offset
-                    picked_point = picked_point + world_offset
-
-        # Create line data
-        starts = wp.array(
-            [wp.vec3(picked_point[0], picked_point[1], picked_point[2])], dtype=wp.vec3, device=self.device
-        )
-        ends = wp.array([wp.vec3(pick_target[0], pick_target[1], pick_target[2])], dtype=wp.vec3, device=self.device)
-        colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
-
-        # Render the line
-        self.log_lines("picking_line", starts, ends, colors, hidden=False)
+        self._log_picking_line()
 
     @override
     def begin_frame(self, time: float):
