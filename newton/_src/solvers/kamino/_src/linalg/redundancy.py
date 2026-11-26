@@ -386,7 +386,7 @@ def _copy_shifted_block(
         return
     # NOTE: The regularization keeps the factorization finite when the elimination misses a dependent row
     d = diagonal[wid, i]
-    value = (1.0 + FLOAT32_EPS) * d + _row_shift(d, shifted[wid, i])
+    value = d + FLOAT32_EPS * wp.max(d, FLOAT32_EPS) + _row_shift(d, shifted[wid, i])
     if i != j:
         start = row_offset[wid] * (ld[wid] + 1)
         value = A[wid, start + wp.max(i, j) * ld[wid] + wp.min(i, j)]
