@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -106,6 +107,16 @@ def _world_thread_count(device: wp.DeviceLike, num_worlds: int, max_world_items:
 ###
 # Interfaces
 ###
+
+
+def _proximal_window_iterations(window: float, max_iterations: int) -> int:
+    """Return ``ceil(window * max_iterations)``, the splitting iterations of the proximal warm-start pull.
+
+    The product is shrunk by a few rounding errors first, so that a product such as ``0.1 * 30``, which
+    rounds just above three, keeps three iterations. A positive window gives at least one iteration, and
+    zero disables the pull.
+    """
+    return math.ceil(window * max_iterations * (1.0 - 4.0 * np.finfo(np.float64).eps))
 
 
 class LOXSolver:
@@ -567,6 +578,12 @@ class LOXSolver:
             self._problem.data,
             self._config.gauss_seidel_max_colors,
             ProjectionAcceleration.from_string(self._config.projection_acceleration),
+            contact_proximal_regularization=self._config.contact_proximal_regularization,
+            contact_proximal_warmstart_scale=self._config.contact_proximal_warmstart_scale,
+            contact_proximal_target_iterations=_proximal_window_iterations(
+                self._config.contact_proximal_warmstart_window, self._config.max_iterations
+            ),
+            iteration_count=self._data.state.iteration_count,
         )
 
     def _initialize_splitting(
@@ -664,6 +681,7 @@ class LOXSolver:
             contact_dead_zone=constraints.delta,
             structural_warmstart_scale=structural_warmstart_scale,
         )
+        self._projection.set_proximal_target()
 
     def _estimate_joint_penalty_scale(self, time_step: float, warn_failures: bool) -> None:
         """Seed the joint penalty scale from the current rigid state at the uniform ``time_step``.
@@ -810,7 +828,7 @@ class LOXSolver:
             return
         self._projection.project(
             self._config.projection_sweeps_per_iteration,
-            self._config.projection_anderson_recycle,
+            self._config.projection_acceleration_recycle,
             self._data.state.world_active,
             self._data.state.world_failed,
             self._model.bodies.wid,

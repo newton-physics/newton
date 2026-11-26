@@ -2925,7 +2925,6 @@ class CollisionPipeline:
             requires_grad=self.requires_grad,
             device=self.model.device,
             per_contact_shape_properties=self.narrow_phase.hydroelastic_sdf is not None,
-            requested_attributes=self.model.get_requested_contact_attributes(),
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,

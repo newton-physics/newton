@@ -3008,6 +3008,217 @@ def Xform "Root" (
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_label[joint_id], "my_custom_joint")
 
+    @requires("pxr.Usd")
+    def test_cameras_import_with_render_product_resolution(self):
+        """Import UsdGeom.Camera prims and resolve render-product resolutions through RenderSettings."""
+        from pxr import Usd
+
+        from newton._src.utils.import_usd import _usd_render_product_resolutions  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float physics:mass = 1
+
+        def Xform "Mount"
+        {
+            double3 xformOp:translate = (0.5, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Camera "Inherited"
+            {
+                float focalLength = 24
+                float horizontalAperture = 36
+                float verticalAperture = 24
+                float2 clippingRange = (0.05, 20)
+            }
+        }
+    }
+
+    def Camera "Overridden" {}
+    def Camera "Standalone" {}
+    def Camera "Unauthored" {}
+    def Camera "Elsewhere" {}
+    def Camera "Shared" {}
+    def Camera "Agreeing" {}
+    def Camera "WidePixels" {}
+    def Camera "Stretched" {}
+}
+
+def Scope "Render"
+{
+    def RenderSettings "Settings"
+    {
+        rel camera = </World/Inherited>
+        int2 resolution = (320, 240)
+        rel products = [</Render/Inherits>, </Render/Overrides>]
+    }
+
+    def RenderProduct "Inherits"
+    {
+        rel camera = </World/Body/Mount/Inherited>
+    }
+
+    def RenderProduct "Overrides"
+    {
+        rel camera = </World/Overridden>
+        int2 resolution = (64, 48)
+        uniform token aspectRatioConformPolicy = "adjustApertureWidth"
+    }
+
+    def RenderProduct "Alone"
+    {
+        rel camera = </World/Standalone>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "NoResolution"
+    {
+        rel camera = </World/Unauthored>
+    }
+
+    def RenderProduct "SharedSmall"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (640, 480)
+        uniform token aspectRatioConformPolicy = "cropAperture"
+    }
+
+    def RenderProduct "SharedLarge"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (1920, 1080)
+    }
+
+    def RenderProduct "AgreeingA"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "AgreeingB"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "Wide"
+    {
+        rel camera = </World/WidePixels>
+        int2 resolution = (100, 100)
+        float pixelAspectRatio = 2
+    }
+
+    def RenderProduct "Stretch"
+    {
+        rel camera = </World/Stretched>
+        int2 resolution = (100, 100)
+        uniform token aspectRatioConformPolicy = "adjustPixelAspectRatio"
+    }
+}
+
+def Scope "Elsewhere"
+{
+    def RenderProduct "Product"
+    {
+        rel camera = </World/Elsewhere>
+        int2 resolution = (32, 16)
+    }
+}
+"""
+        )
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as logs:
+            builder.add_usd(stage)
+        cameras = {label: index for index, label in enumerate(builder.camera_label)}
+        several = [line for line in logs.output if "several RenderProducts" in line]
+        self.assertEqual(len(several), 1)
+        self.assertIn("/World/Shared", several[0])
+
+        mounted = cameras["/World/Body/Mount/Inherited"]
+        self.assertEqual(builder.camera_body[mounted], 0)
+        np.testing.assert_allclose(np.asarray(builder.camera_transform[mounted])[:3], [0.5, 0.0, 0.0], atol=1e-6)
+        # Lens lengths are tenths of a scene unit; the clip range is in scene units.
+        self.assertAlmostEqual(builder.camera_focal_length[mounted], 2.4, places=5)
+        # The 36 x 24 aperture is expanded to the 4:3 product resolution (expandAperture fallback).
+        np.testing.assert_allclose(builder.camera_aperture[mounted], (3.6, 2.7), atol=1e-6)
+        np.testing.assert_allclose(builder.camera_clipping_range[mounted], (0.05, 20.0), atol=1e-6)
+
+        # A product inherits an unauthored resolution from its settings, authored product values take
+        # precedence, standalone products use their own values, and schema fallbacks are ignored. Render
+        # products are found anywhere in the stage, not only below /Render.
+        formats = _usd_render_product_resolutions(stage)
+        self.assertEqual(formats["/World/Body/Mount/Inherited"][0], (320, 240))
+        self.assertEqual(formats["/World/Overridden"][0], (64, 48))
+        self.assertEqual(formats["/World/Standalone"][0], (200, 100))
+        self.assertNotIn("/World/Unauthored", formats)
+        self.assertEqual(formats["/World/Elsewhere"][0], (32, 16))
+        # The resolution only conforms the aperture; the model stores the product's pixel shape.
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Elsewhere"]], (3.05816, 1.52908), rtol=1e-5)
+        for label, index in cameras.items():
+            if label not in ("/World/WidePixels", "/World/Stretched"):
+                self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[index], 1.0, places=5, msg=label)
+
+        # Apertures are conformed to the product's image format with its conform policy; without a
+        # resolution the authored (here fallback) aperture is kept.
+        fallback = (2.0955, 1.52908)
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Overridden"]], (fallback[1] * 4.0 / 3.0, fallback[1]), rtol=1e-5
+        )
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Standalone"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
+        )
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Unauthored"]], fallback, rtol=1e-5)
+
+        # Products with different image formats leave the authored aperture and no resolution; products
+        # that agree are used like one product.
+        self.assertIsNone(formats["/World/Shared"])
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Shared"]], fallback, rtol=1e-5)
+        self.assertEqual(formats["/World/Agreeing"][0], (200, 100))
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Agreeing"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
+        )
+
+        # An authored pixelAspectRatio is stored, and the conformed aperture spans the image with it.
+        # adjustPixelAspectRatio keeps the aperture and stretches the pixels instead.
+        wide = cameras["/World/WidePixels"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[wide], 2.0, places=5)
+        np.testing.assert_allclose(builder.camera_aperture[wide], (fallback[1] * 2.0, fallback[1]), rtol=1e-5)
+        stretched = cameras["/World/Stretched"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[stretched], fallback[0] / fallback[1], places=5)
+        np.testing.assert_allclose(builder.camera_aperture[stretched], fallback, rtol=1e-5)
+
+        # An unauthored clippingRange keeps the USD fallback (1, 1e6) in scene units.
+        np.testing.assert_allclose(builder.camera_clipping_range[cameras["/World/Shared"]], (1.0, 1.0e6), rtol=1e-6)
+
+    def test_conform_usd_aperture_policies(self):
+        """Conform a 3:2 aperture to a 1:1 image under each UsdRender aspect-ratio policy."""
+        from newton._src.utils.import_usd import _conform_usd_aperture  # noqa: PLC0415
+
+        expected = {
+            "expandAperture": (36.0, 36.0),
+            "cropAperture": (24.0, 24.0),
+            "adjustApertureWidth": (24.0, 24.0),
+            "adjustApertureHeight": (36.0, 36.0),
+            "adjustPixelAspectRatio": (36.0, 24.0),
+        }
+        for policy, aperture in expected.items():
+            with self.subTest(policy=policy):
+                np.testing.assert_allclose(_conform_usd_aperture(36.0, 24.0, (64, 64), policy, 1.0), aperture)
+        # Pixels twice as wide as tall make a square pixel grid a 2:1 image.
+        np.testing.assert_allclose(_conform_usd_aperture(36.0, 24.0, (64, 64), "expandAperture", 2.0), (48.0, 24.0))
+
 
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
     """Verify model based on the UsdPhysics Parsing Utils"""
@@ -6052,6 +6263,92 @@ def Xform "Articulation" (
         # Check rolling friction
         rolling = model.shape_material_mu_rolling.numpy()[shape_idx]
         self.assertAlmostEqual(rolling, 0.08, places=4)
+
+    @requires("pxr.Usd")
+    def test_shape_friction_mode_parsing(self):
+        """Select the shape friction mode from authored MuJoCo, PhysX, and Newton attributes."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        from newton._src.usd.schemas import (  # noqa: PLC0415
+            SchemaResolverMjc,
+            SchemaResolverNewton,
+            SchemaResolverPhysx,
+        )
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_material(name, attributes):
+            material = UsdShade.Material.Define(stage, f"/Materials/{name}")
+            UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+            material.GetPrim().ApplyAPI("NewtonMaterialAPI")
+            for attribute, value in attributes.items():
+                material.GetPrim().CreateAttribute(attribute, Sdf.ValueTypeNames.Float).Set(value)
+            return material
+
+        materials = {
+            "torsional": define_material("Torsional", {"newton:torsionalFriction": 0.02}),
+            "rolling": define_material("Rolling", {"newton:rollingFriction": 0.01}),
+            "both": define_material("Both", {"newton:torsionalFriction": 0.02, "newton:rollingFriction": 0.01}),
+        }
+        mode = newton.ShapeFrictionMode
+        cases = {
+            "Default": ({}, None, mode.SLIDING),
+            "MjcFrictionless": ({"mjc:condim": 1}, None, mode.NONE),
+            "MjcRolling": ({"mjc:condim": 6}, None, mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadius": ({"physxCollision:minTorsionalPatchRadius": 0.01}, None, mode.SLIDING_TORSIONAL),
+            "NewtonTorsional": ({}, "torsional", mode.SLIDING_TORSIONAL),
+            "NewtonRolling": ({}, "rolling", mode.SLIDING_ROLLING),
+            "NewtonBoth": ({}, "both", mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadiusRolling": (
+                {"physxCollision:minTorsionalPatchRadius": 0.01},
+                "rolling",
+                mode.SLIDING_TORSIONAL_ROLLING,
+            ),
+            "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.SLIDING_TORSIONAL),
+            "MjcColliderIgnoresPhysxRadius": (
+                {"mjc:condim": 3, "physxCollision:minTorsionalPatchRadius": 0.01},
+                None,
+                mode.SLIDING,
+            ),
+            "MaterialRaisesMode": ({"mjc:condim": 1}, "torsional", mode.SLIDING_TORSIONAL),
+        }
+        for i, (name, (attributes, material, _expected)) in enumerate(cases.items()):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            body.AddTranslateOp().Set((float(i), 0.0, 0.0))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            for attribute, value in attributes.items():
+                value_type = Sdf.ValueTypeNames.Int if isinstance(value, int) else Sdf.ValueTypeNames.Float
+                collider.GetPrim().CreateAttribute(attribute, value_type).Set(value)
+            if name.startswith("MjcCollider"):
+                collider.GetPrim().AddAppliedSchema("MjcCollisionAPI")
+            if material is not None:
+                UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(materials[material], "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(
+            stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc(), SchemaResolverPhysx()]
+        )
+        model = builder.finalize()
+
+        friction_mode = model.shape_material_friction_mode.numpy()
+        for name, (_attributes, _material, expected) in cases.items():
+            with self.subTest(name):
+                shape = result["path_shape_map"][f"/World/{name}/Collider"]
+                self.assertEqual(friction_mode[shape], expected)
+
+        # The PhysX patch radius r sets the torsional coefficient to mu * r, also next to an authored rolling one
+        for name in ("PhysxPatchRadius", "PhysxPatchRadiusRolling"):
+            shape = result["path_shape_map"][f"/World/{name}/Collider"]
+            self.assertAlmostEqual(
+                float(model.shape_material_mu_torsional.numpy()[shape]),
+                0.01 * float(model.shape_material_mu.numpy()[shape]),
+                places=6,
+            )
 
     @requires("pxr.Usd")
     def test_bound_material_supplies_the_friction_pair(self):

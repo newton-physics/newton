@@ -3,15 +3,13 @@
 
 from __future__ import annotations
 
-import warnings
-
 import warp as wp
 
 from ...core.types import override
-from ...exceptions import NewtonDeprecationWarning
 from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
+from ..contact_gather import sort_contact_sides_by_body
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
@@ -28,13 +26,16 @@ from .kernels import (
     convert_contact_impulse_to_force,
     convert_joint_impulse_to_parent_f,
     copy_kinematic_body_state_kernel,
+    gather_body_contact_deltas,
     solve_body_contact_positions,
+    solve_body_contact_positions_per_contact,
     solve_body_joints,
     solve_joint_mimics,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
     solve_springs,
     solve_tetrahedra,
+    update_particle_inv_mass_effective,
 )
 from .restitution_kernels import (
     RESTITUTION_MANIFOLD_MAX_CONTACTS,
@@ -200,6 +201,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._set_module_options(module_options, module=kernels)
         self._set_module_options(module_options, module=tendon_kernels)
         self._restitution_module_options = module_options
+        # Deterministic mode would record and sort every contact's body updates in every iteration.
+        # Gathering them per body in contact order is deterministic without recorded atomics.
+        self._gather_contact_deltas = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
 
         self.iterations = iterations
         self.tendon_max_sweeps = tendon_max_sweeps
@@ -234,6 +238,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._set_module_options(module_options, module=solve_joint_mimics.module)
 
         self._init_kinematic_state()
+        self._particle_inv_mass_eff = wp.empty_like(model.particle_inv_mass) if model.particle_count else None
 
         # helper variables to track constraint resolution vars
         self._particle_delta_counter = 0
@@ -329,6 +334,19 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             outputs=[state_out.body_q, state_out.body_qd],
             device=model.device,
         )
+
+    def _particle_inv_mass_effective(self, requires_grad: bool) -> wp.array[float]:
+        """Return per-step inverse particle masses with kinematic particles zeroed."""
+        model = self.model
+        inv_mass_eff = wp.empty_like(model.particle_inv_mass) if requires_grad else self._particle_inv_mass_eff
+        wp.launch(
+            kernel=update_particle_inv_mass_effective,
+            dim=model.particle_count,
+            inputs=[model.particle_flags, model.particle_inv_mass],
+            outputs=[inv_mass_eff],
+            device=model.device,
+        )
+        return inv_mass_eff
 
     def _apply_particle_deltas(
         self,
@@ -469,8 +487,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else None
         )
-        if body_parent_f is None:
-            body_parent_f = state_out.body_parent_f
         contact_f = (
             observables.contact_f
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
@@ -507,6 +523,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         contact_impulse = None
         contact_impulse_iter = None
+        contact_sides = None
+        contact_delta = None
+        contact_active = None
 
         if contacts:
             if self.rigid_contact_con_weighting:
@@ -537,11 +556,23 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.rigid_contact_max, dtype=wp.vec4, device=model.device
                 )
 
-            if contacts.force is not None or contact_f is not None:
+            if contact_f is not None:
                 contact_impulse = wp.zeros(contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device)
-                contact_impulse_iter = wp.zeros(
+                # The contact solve writes every slot in each iteration.
+                contact_impulse_iter = wp.empty(
                     contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device
                 )
+
+            if self._gather_contact_deltas and model.body_count and contacts.rigid_contact_max:
+                contact_sides = sort_contact_sides_by_body(model, contacts)
+                # Per-iteration reallocations under autodiff inherit requires_grad via empty_like.
+                contact_delta = wp.empty(
+                    2 * contacts.rigid_contact_max,
+                    dtype=wp.spatial_vector,
+                    device=model.device,
+                    requires_grad=requires_grad,
+                )
+                contact_active = wp.empty(contacts.rigid_contact_max, dtype=wp.int32, device=model.device)
 
         # Optional per-joint accumulated child-side spatial impulse, used to
         # populate ``body_parent_f`` after the iteration loop.
@@ -560,7 +591,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.particle_q_init = wp.clone(state_in.particle_q)
                 particle_deltas = wp.empty_like(state_out.particle_qd)
 
-                self.integrate_particles(model, state_in, state_out, dt)
+                self.integrate_particles(model, state_in, state_out, dt, control=control)
+                particle_inv_mass = self._particle_inv_mass_effective(requires_grad)
                 if self.enable_restitution:
                     self.particle_qd_init = wp.clone(state_out.particle_qd)
 
@@ -587,7 +619,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     # contribution added by :func:`solve_body_joints` inside
                     # the iteration loop.  Together they recover the total
                     # wrench transmitted to the child body, matching the
-                    # :attr:`State.body_parent_f` convention.
+                    # ``Observables.body_parent_f`` convention.
                     wp.launch(
                         kernel=apply_joint_forces,
                         dim=model.joint_count,
@@ -664,7 +696,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.particle_radius,
                                     model.particle_flags,
                                     body_q,
@@ -675,6 +707,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     model.body_flags,
                                     model.shape_body,
                                     model.shape_material_mu,
+                                    model.shape_material_friction_mode,
                                     model.soft_contact_mu,
                                     model.particle_adhesion,
                                     contacts.soft_contact_count,
@@ -702,7 +735,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     model.particle_grid.id,
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.particle_radius,
                                     model.particle_flags,
                                     model.particle_mu,
@@ -726,7 +759,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.spring_indices,
                                     model.spring_rest_length,
                                     model.spring_stiffness,
@@ -750,7 +783,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.edge_indices,
                                     model.edge_rest_angle,
                                     model.edge_bending_properties,
@@ -773,7 +806,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 inputs=[
                                     particle_q,
                                     particle_qd,
-                                    model.particle_inv_mass,
+                                    particle_inv_mass,
                                     model.tet_indices,
                                     model.tet_poses,
                                     control.tet_activations,
@@ -799,9 +832,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         if self.rigid_contact_con_weighting:
                             rigid_contact_inv_weight.zero_()
 
-                        if contact_impulse_iter is not None:
-                            contact_impulse_iter.zero_()
-
                         if restitution_contact_active is not None:
                             wp.launch(
                                 kernel=mark_restitution_contacts,
@@ -824,43 +854,66 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 device=model.device,
                             )
 
-                        wp.launch(
-                            kernel=solve_body_contact_positions,
-                            dim=contacts.rigid_contact_max,
-                            inputs=[
-                                body_q,
-                                body_qd,
-                                model.body_flags,
-                                model.body_com,
-                                self.body_inv_mass_effective,
-                                self.body_inv_inertia_effective,
-                                model.shape_body,
-                                contacts.rigid_contact_count,
-                                contacts.rigid_contact_point0,
-                                contacts.rigid_contact_point1,
-                                contacts.rigid_contact_surface_velocity,
-                                contacts.rigid_contact_offset0,
-                                contacts.rigid_contact_offset1,
-                                contacts.rigid_contact_normal,
-                                contacts.rigid_contact_margin0,
-                                contacts.rigid_contact_margin1,
-                                contacts.rigid_contact_shape0,
-                                contacts.rigid_contact_shape1,
-                                model.shape_material_mu,
-                                model.shape_material_mu_torsional,
-                                model.shape_material_mu_rolling,
-                                self.rigid_contact_relaxation,
-                                dt,
-                                contact_recovery,
-                                contacts.contact_generation,
-                            ],
-                            outputs=[
-                                body_deltas,
-                                rigid_contact_inv_weight,
-                                contact_impulse_iter,
-                            ],
-                            device=model.device,
-                        )
+                        contact_inputs = [
+                            body_q,
+                            body_qd,
+                            model.body_flags,
+                            model.body_com,
+                            self.body_inv_mass_effective,
+                            self.body_inv_inertia_effective,
+                            model.shape_body,
+                            contacts.rigid_contact_count,
+                            contacts.rigid_contact_point0,
+                            contacts.rigid_contact_point1,
+                            contacts.rigid_contact_surface_velocity,
+                            contacts.rigid_contact_offset0,
+                            contacts.rigid_contact_offset1,
+                            contacts.rigid_contact_normal,
+                            contacts.rigid_contact_margin0,
+                            contacts.rigid_contact_margin1,
+                            contacts.rigid_contact_shape0,
+                            contacts.rigid_contact_shape1,
+                            model.shape_material_mu,
+                            model.shape_material_mu_torsional,
+                            model.shape_material_mu_rolling,
+                            model.shape_material_friction_mode,
+                            self.rigid_contact_relaxation,
+                            dt,
+                            contact_recovery,
+                            contacts.contact_generation,
+                        ]
+                        if contact_delta is None:
+                            wp.launch(
+                                kernel=solve_body_contact_positions,
+                                dim=contacts.rigid_contact_max,
+                                inputs=contact_inputs,
+                                outputs=[body_deltas, rigid_contact_inv_weight, contact_impulse_iter],
+                                device=model.device,
+                            )
+                        else:
+                            if requires_grad and i > 0:
+                                contact_delta = wp.empty_like(contact_delta)
+                                contact_active = wp.empty_like(contact_active)
+                            wp.launch(
+                                kernel=solve_body_contact_positions_per_contact,
+                                dim=contacts.rigid_contact_max,
+                                inputs=contact_inputs,
+                                outputs=[contact_delta, contact_active, contact_impulse_iter],
+                                device=model.device,
+                            )
+                            wp.launch(
+                                kernel=gather_body_contact_deltas,
+                                dim=model.body_count,
+                                inputs=[
+                                    contact_sides.body_start,
+                                    contact_sides.body_end,
+                                    contact_sides.sides,
+                                    contact_delta,
+                                    contact_active,
+                                ],
+                                outputs=[body_deltas, rigid_contact_inv_weight],
+                                device=model.device,
+                            )
 
                         if contact_impulse_iter is not None:
                             wp.launch(
@@ -1243,10 +1296,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             self._save_tendon_history(state_out)
 
-            self._contact_impulse = contact_impulse
-            self._contact_impulse_capacity = contacts.rigid_contact_max if contacts is not None else 0
-            self._last_dt = dt
-
             if contact_f is not None:
                 contact_f.zero_()
                 if contact_impulse is not None and contacts is not None:
@@ -1261,8 +1310,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         outputs=[contact_f],
                         device=model.device,
                     )
-                if contacts is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
-                    wp.copy(contacts.force, contact_f, count=contacts.force.shape[0])
 
             # Populate optional ``body_parent_f`` (incoming joint
             # wrench per body) from the per-joint accumulated child-side
@@ -1284,8 +1331,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         outputs=[body_parent_f],
                         device=model.device,
                     )
-                if state_out.body_parent_f is not None and state_out.body_parent_f.ptr != body_parent_f.ptr:
-                    state_out.body_parent_f.assign(body_parent_f)
 
             if model.particle_count:
                 if particle_q.ptr != state_out.particle_q.ptr:
@@ -1465,71 +1510,3 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)
-
-    @override
-    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Populate ``contacts.force`` from XPBD contact impulses accumulated during the last :meth:`step`.
-
-        .. deprecated:: 1.7
-            Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and
-            pass the resulting container to :meth:`step` instead.
-
-        Both force [N] and torque [N·m] components are written.  The torque
-        includes torsional and rolling friction contributions that cannot be
-        reconstructed from the linear force alone.
-
-        When ``rigid_contact_con_weighting`` is enabled, the raw per-contact
-        impulse is scaled to reflect the ``1/N`` correction that
-        ``apply_body_deltas`` applies.  For contacts between a dynamic and a
-        kinematic body, ``N`` is the dynamic body's contact count.  For
-        contacts between two dynamic bodies, the harmonic mean
-        ``2/(N_a + N_b)`` is used so that the reported force is symmetric with
-        respect to body ordering.  This is an approximation -- the solver
-        applies ``1/N_a`` and ``1/N_b`` independently to each side, so no
-        single scalar can exactly represent both.
-
-        Args:
-            contacts: :class:`Contacts` object whose :attr:`~Contacts.force` buffer will be written.
-                Must have been created with ``"force"`` in its requested attributes and must
-                match the :class:`Contacts` instance (same ``rigid_contact_max``) passed to
-                the preceding :meth:`step`.
-            state: Unused (accepted for API compatibility with :class:`SolverBase`).
-
-        Raises:
-            ValueError: If ``contacts.force`` is ``None`` (not requested), if no step has been run yet,
-                or if the contacts capacity does not match the one used in the last :meth:`step`.
-        """
-        warnings.warn(
-            "SolverXPBD.update_contacts() is deprecated in Newton 1.7; request SolverBase.ObservableKind.CONTACT_F and pass "
-            "SolverBase.Observables to step().",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._apply_module_options()
-        if contacts.force is None:
-            raise ValueError(
-                "The deprecated contacts.force compatibility buffer is not allocated. "
-                "Prefer SolverBase.ObservableKind.CONTACT_F; legacy callers must request 'force' before creating Contacts."
-            )
-        if not hasattr(self, "_contact_impulse") or self._contact_impulse is None:
-            raise ValueError("No contact impulse data available. Call step() before update_contacts().")
-        if contacts.rigid_contact_max != self._contact_impulse_capacity:
-            raise ValueError(
-                f"Contacts capacity mismatch: update_contacts() received rigid_contact_max="
-                f"{contacts.rigid_contact_max}, but step() used {self._contact_impulse_capacity}. "
-                f"Pass the same Contacts instance to both step() and update_contacts()."
-            )
-
-        contacts.force.zero_()
-
-        wp.launch(
-            kernel=convert_contact_impulse_to_force,
-            dim=contacts.rigid_contact_max,
-            inputs=[
-                contacts.rigid_contact_count,
-                self._contact_impulse,
-                self._last_dt,
-            ],
-            outputs=[contacts.force],
-            device=self.model.device,
-        )
