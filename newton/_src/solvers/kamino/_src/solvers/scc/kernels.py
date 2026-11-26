@@ -872,6 +872,7 @@ def _solve_scc_inequalities_colored_pgs(
     problem_bound_lower: wp.array[float32],
     problem_bound_upper: wp.array[float32],
     problem_D_storage: wp.array2d[float32],
+    problem_delassus_D_storage: wp.array2d[float32],
     problem_P: wp.array[float32],
     problem_v_b: wp.array[float32],
     block_iteration: int32,
@@ -885,12 +886,21 @@ def _solve_scc_inequalities_colored_pgs(
     state_v_aug: wp.array[float32],
     solution_lambdas: wp.array[float32],
 ):
-    """Apply one graph-colored PGS schedule to all SCC inequalities."""
+    """Apply one graph-colored PGS schedule to all SCC inequalities.
+
+    ``problem_D`` holds the operator the sweeps project against: the Delassus
+    matrix, or its bilateral Schur complement. Each color applies one shared
+    velocity update, so same-color inequalities must not couple through
+    ``problem_D``; the Schur path colors over articulation components for that.
+    ``problem_delassus_D`` is always the unprojected Delassus matrix, whose
+    normal diagonal sets the friction load.
+    """
     tid = wp.tid()
     threads_per_world = int32(wp.block_dim())
     lane = tid % threads_per_world
     wid = tid / threads_per_world
     problem_D = problem_D_storage[wid]
+    problem_delassus_D = problem_delassus_D_storage[wid]
     cfg = solver_config[wid]
     if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
         return
@@ -942,6 +952,11 @@ def _solve_scc_inequalities_colored_pgs(
                     color = num_colors - int32(1) - color_index
                 color_start = inequality_color_starts[schedule_offset + color]
                 color_end = inequality_color_starts[schedule_offset + color + int32(1)]
+                # Colors list their inequalities by ascending id, and contacts have
+                # the highest ids. A color whose last id is no contact has no
+                # tangent rows, so the whole block skips it and both barriers.
+                if phase == int32(1) and inequality_ids_by_color[uio + color_end - int32(1)] < nbc + nl:
+                    continue
                 color_slot = color_start + lane
                 while color_slot < color_end:
                     uid = inequality_ids_by_color[uio + color_slot]
@@ -1023,7 +1038,7 @@ def _solve_scc_inequalities_colored_pgs(
                                     solution_lambdas[vec_idx + int32(2)],
                                     problem_v_b[vec_idx + int32(2)],
                                     problem_P[vec_idx + int32(2)],
-                                    wp.abs(problem_D[ncts * (column + int32(2)) + column + int32(2)]),
+                                    wp.abs(problem_delassus_D[ncts * (column + int32(2)) + column + int32(2)]),
                                     cfg.regularization,
                                     cfg.omega,
                                 ),
