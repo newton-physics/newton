@@ -46,12 +46,11 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu=0.01,
     # Hydroelastic supplies per-contact stiffness from ``kh`` and damping
     # from ``kd / ke``; ``ke``/``kd`` also affect non-hydroelastic contacts.
-    # At the 1e10 ``kh`` default, the nut sat visibly cocked under MuJoCo.
-    # Use 1e11 to keep it aligned.
+    # Zero ``kd`` keeps MuJoCo's automatic hydroelastic damping.
     # XPBD projects positions and is insensitive to this.
     kh=1e11,  # Hydroelastic contact stiffness
     ke=1e7,
-    kd=1e4,
+    kd=0.0,
     gap=0.0,
     density=8000.0,
     mu_torsional=0.0,
@@ -202,6 +201,9 @@ class Example:
         main_scene = newton.ModelBuilder()
         if self.solver_type == "kamino":
             newton.solvers.SolverKamino.register_custom_attributes(main_scene)
+        elif self.solver_type == "mujoco":
+            main_scene.default_shape_cfg.ke = 1e7
+            main_scene.default_shape_cfg.kd = 1e4
         main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
         # Add ground plane at z = ground_plane_offset.
         # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
@@ -468,6 +470,13 @@ class Example:
         min_rotation_threshold = np.radians(45.0)
         min_descent = 0.005
         for i in range(len(self.nut_body_indices)):
+            # A nut falling off can also satisfy the rotation and descent checks.
+            bolt_q = body_q[self.bolt_body_indices[i]]
+            bolt_axis = np.array(wp.quat_rotate(wp.quat(bolt_q[3:]), wp.vec3(0.0, 0.0, 1.0)))
+            offset = body_q[self.nut_body_indices[i], :3] - bolt_q[:3]
+            radial_offset = np.linalg.norm(offset - np.dot(offset, bolt_axis) * bolt_axis)
+            assert radial_offset < 0.005 * self.scene_scale, f"Nut {i}: left the bolt axis by {radial_offset:.4f} m"
+
             # Check rotation occurred
             max_rotation = self.nut_max_rotation_change[i]
             assert max_rotation > min_rotation_threshold, (
