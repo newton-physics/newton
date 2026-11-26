@@ -23,6 +23,7 @@ from ..geometry.collision_core import (
     create_find_contacts,
     get_triangle_shape_from_mesh,
     mesh_vs_convex_midphase,
+    mesh_vs_convex_midphase_thread,
     post_process_axial_on_discrete_contact,
     post_process_minkowski_only,
 )
@@ -1904,9 +1905,11 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
 
     The wide kernel (``narrow_ratio == 0``) runs a tile block per query while
     there are at most as many queries as blocks. Beyond that, BVH traversal
-    latency bounds the midphase, and a narrow kernel launched with
-    ``narrow_ratio`` times as many one-warp blocks runs instead.
+    latency bounds the midphase, and a kernel with one thread per query
+    (``narrow_ratio > 0``, launched with ``narrow_ratio`` times the wide
+    kernel's blocks) runs instead.
     """
+    per_thread = narrow_ratio > 0
 
     @wp.kernel(enable_backward=False, module=f"narrow_phase_mesh_overlaps_{narrow_ratio}")
     def narrow_phase_find_mesh_triangle_overlaps_kernel(
@@ -1938,18 +1941,22 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
         Outputs triples of ``(mesh_or_hfield_shape, other_shape, triangle_idx)``.
         """
         tid, j = wp.tid()
+        stride = total_num_threads
+        if wp.static(per_thread):
+            tid = tid * wp.block_dim() + j
+            stride = total_num_threads * wp.block_dim()
 
         num_mesh_pairs = shape_pairs_mesh_count[0]
         if wp.static(narrow_ratio == 0):
             # The wide GPU launch gives each query a block; past one query per
-            # block, the narrow launch takes over all of them.
+            # block, the per-thread launch takes over all of them.
             if wp.block_dim() > _MIDPHASE_NARROW_TILE_SIZE and num_mesh_pairs > total_num_threads:
                 return
         elif num_mesh_pairs <= total_num_threads // narrow_ratio:
             return
 
         # Strided loop over mesh pairs
-        for i in range(tid, num_mesh_pairs, total_num_threads):
+        for i in range(tid, num_mesh_pairs, stride):
             pair = shape_pairs_mesh[i]
             shape_a = pair[0]
             shape_b = pair[1]
@@ -1963,7 +1970,7 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
             # -----------------------------------------------------------------
             if type_a == GeoType.HFIELD:
                 # Only run on j==0; the j dimension is for tiled BVH queries (mesh only).
-                if j != 0:
+                if j != 0 and not wp.static(per_thread):
                     continue
                 hfd = heightfield_data[shape_heightfield_index[shape_a]]
                 heightfield_vs_convex_midphase(
@@ -2019,22 +2026,38 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
             margin_mesh = shape_data[mesh_shape][3]
             contact_threshold = gap_sum + margin_non_mesh + margin_mesh
 
-            # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
-            mesh_vs_convex_midphase(
-                j,
-                mesh_shape,
-                non_mesh_shape,
-                X_mesh_ws,
-                X_ws,
-                mesh_id,
-                shape_types,
-                shape_data,
-                shape_source,
-                contact_threshold,
-                shape_interior_point[non_mesh_shape],
-                triangle_pairs,
-                triangle_pairs_count,
-            )
+            if wp.static(per_thread):
+                mesh_vs_convex_midphase_thread(
+                    mesh_shape,
+                    non_mesh_shape,
+                    X_mesh_ws,
+                    X_ws,
+                    mesh_id,
+                    shape_types,
+                    shape_data,
+                    shape_source,
+                    contact_threshold,
+                    shape_interior_point[non_mesh_shape],
+                    triangle_pairs,
+                    triangle_pairs_count,
+                )
+            else:
+                # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
+                mesh_vs_convex_midphase(
+                    j,
+                    mesh_shape,
+                    non_mesh_shape,
+                    X_mesh_ws,
+                    X_ws,
+                    mesh_id,
+                    shape_types,
+                    shape_data,
+                    shape_source,
+                    contact_threshold,
+                    shape_interior_point[non_mesh_shape],
+                    triangle_pairs,
+                    triangle_pairs_count,
+                )
 
     return narrow_phase_find_mesh_triangle_overlaps_kernel
 
