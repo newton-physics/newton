@@ -6336,13 +6336,12 @@ class TestMuJoCoContactForce(unittest.TestCase):
     BOX_MASS = 8.0  # density=1000 kg/m³ * volume=(0.2*0.2*0.2) m³
     GRAVITY = 9.81
 
-    def test_legacy_geometry_export_without_force_buffer(self):
+    def test_geometry_export(self):
         """Keep geometry-only contact export available without a deprecation warning."""
         model, _ = self._build_box_on_ground()
         solver = SolverMuJoCo(model)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
         contacts = pipeline.contacts()
-        self.assertIsNone(contacts.force)
         solver.step(model.state(), model.state(), None, None, 0.002)
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
@@ -6350,7 +6349,6 @@ class TestMuJoCoContactForce(unittest.TestCase):
         count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(count, 0)
         self.assertTrue(np.isfinite(contacts.rigid_contact_point0.numpy()[:count]).all())
-        self.assertIsNone(contacts.force)
 
     def test_external_contact_observables_preserve_input_geometry(self):
         """Keep collision rows stable across substeps and map forces past culled rows."""
@@ -6518,10 +6516,8 @@ class TestMuJoCoContactForce(unittest.TestCase):
         if use_mujoco_cpu:
             for capacity in (1, 0):
                 limited = newton.Contacts(capacity, 0, device=model.device)
-                limited.force = wp.empty(capacity, dtype=wp.spatial_vector, device=model.device)
                 with self.assertRaisesRegex(ValueError, "MuJoCo contact capacity"):
                     solver.observables(contacts=limited, kinds={solver.ObservableKind.CONTACT_F})
-                limited.force = None
                 with self.assertWarnsRegex(newton.NewtonWarning, "exporting only the first") as warning:
                     caller_line = inspect.currentframe().f_lineno + 1
                     solver.update_contacts(limited)
@@ -8894,12 +8890,8 @@ class TestMuJoCoOptions(unittest.TestCase):
                 msg=f"MuJoCo Warp magnetic[{world_idx}] should be {initial_magnetic[world_idx]}",
             )
 
-    def test_disable_sensors_computes_rne_state_attributes(self):
-        """Compute legacy body diagnostics even with sensors disabled."""
-        self._check_disable_sensors_rne(legacy_state_attributes=True)
-
     def test_disable_sensors_computes_rne_observables(self):
-        """Compute each RNE observable without requesting legacy state arrays."""
+        """Compute each RNE observable even with sensors disabled."""
         for flag in (
             newton.solvers.SolverBase.ObservableKind.BODY_QDD,
             newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
@@ -8907,7 +8899,7 @@ class TestMuJoCoOptions(unittest.TestCase):
             with self.subTest(flag=flag):
                 self._check_disable_sensors_rne(observable_flag=flag)
 
-    def _check_disable_sensors_rne(self, legacy_state_attributes=False, observable_flag=None):
+    def _check_disable_sensors_rne(self, observable_flag):
         """Compare diagnostics against a sensors-enabled reference.
 
         A horizontal pendulum released from rest has nonzero body acceleration
@@ -8915,12 +8907,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         sensors-enabled reference.
         """
         results = {}
-        attributes = ("body_qdd", "body_parent_f") if legacy_state_attributes else (observable_flag,)
         for disable_sensors in (False, True):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
-            if legacy_state_attributes:
-                with self.assertWarnsRegex(DeprecationWarning, r"ModelBuilder\.request_state_attributes.*1\.7"):
-                    builder.request_state_attributes(*attributes)
             link = builder.add_link()
             builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
             joint = builder.add_joint_revolute(
@@ -8935,14 +8923,9 @@ class TestMuJoCoOptions(unittest.TestCase):
             solver = SolverMuJoCo(model, disable_sensors=disable_sensors, disable_contacts=True)
             state_in, state_out = model.state(), model.state()
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-            observables = None
-            if not legacy_state_attributes:
-                observables = solver.observables(kinds={observable_flag})
-                self.assertIsNone(state_out.body_qdd)
-                self.assertIsNone(state_out.body_parent_f)
+            observables = solver.observables(kinds={observable_flag})
             solver.step(state_in, state_out, None, None, 1.0e-3, observables=observables)
-            source = state_out if legacy_state_attributes else observables
-            results[disable_sensors] = [getattr(source, attribute).numpy() for attribute in attributes]
+            results[disable_sensors] = [getattr(observables, observable_flag).numpy()]
             self.assertTrue(solver.mjw_model.opt.run_rne_postconstraint)
 
         for result, reference in zip(results[True], results[False], strict=True):
@@ -9199,18 +9182,15 @@ class TestMuJoCoOptions(unittest.TestCase):
                     expected_parent_f[body, 3:] = wrench[:3] - np.cross(offset, wrench[3:])
 
                 observables = solver.observables({solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F})
-                state_out.body_qdd = wp.empty_like(observables.body_qdd)
-                state_out.body_parent_f = wp.empty_like(observables.body_parent_f)
                 reference.step(state_in, reference_out, control, None, 0.005)
                 solver.step(state_in, state_out, control, None, 0.005, observables=observables)
                 np.testing.assert_allclose(solver.mj_data.qpos, reference.mj_data.qpos, atol=1.0e-12, rtol=1.0e-12)
                 np.testing.assert_allclose(solver.mj_data.qvel, reference.mj_data.qvel, atol=1.0e-12, rtol=1.0e-12)
                 self.assertEqual(solver.mj_data.time, reference.mj_data.time)
-                for source in (observables, state_out):
-                    np.testing.assert_allclose(source.body_qdd.numpy(), expected_qdd, rtol=1.0e-4, atol=1.0e-4)
-                    np.testing.assert_allclose(
-                        source.body_parent_f.numpy(), expected_parent_f, rtol=1.0e-4, atol=1.0e-4
-                    )
+                np.testing.assert_allclose(observables.body_qdd.numpy(), expected_qdd, rtol=1.0e-4, atol=1.0e-4)
+                np.testing.assert_allclose(
+                    observables.body_parent_f.numpy(), expected_parent_f, rtol=1.0e-4, atol=1.0e-4
+                )
 
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
@@ -10080,7 +10060,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
     @requires(*MUJOCO_MODULES)
     def test_ball_joint_actuator_readback_rotated_child_anchor(self):
-        """convert_qfrc_from_mj_kernel BALL maps mj_data.qfrc_actuator to state.mujoco.qfrc_actuator in Newton's anchor frame for varying joint_q under non-identity child_xform rotation."""
+        """convert_qfrc_from_mj_kernel BALL maps mj_data.qfrc_actuator to Newton's qfrc_actuator observable in Newton's anchor frame for varying joint_q under non-identity child_xform rotation."""
         child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
         rx90 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
         ry45 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0)

@@ -621,8 +621,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else None
         )
-        if body_parent_f is None:
-            body_parent_f = state_out.body_parent_f
         descendant_body_q_prev = state_in.body_q
 
         if not getattr(state_aug, "_featherstone_augmented", False):
@@ -1142,13 +1140,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # print("joint_qdd:")
                     # print(state_aug.joint_qdd.numpy())
                     # print("\n\n")
-
-            if (
-                body_parent_f is not None
-                and state_out.body_parent_f is not None
-                and state_out.body_parent_f.ptr != body_parent_f.ptr
-            ):
-                state_out.body_parent_f.assign(body_parent_f)
 
             # -------------------------------------
             # integrate bodies

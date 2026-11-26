@@ -18,7 +18,6 @@ import numpy as np
 import warp as wp
 
 from ...core.types import MAXVAL, override
-from ...exceptions import NewtonDeprecationWarning
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
@@ -132,8 +131,7 @@ class SolverKamino(SolverBase, CouplingInterface):
     discrete step-average center-of-mass acceleration in the world frame
     [m/s², rad/s²]. The value is computed from the input and output body twists
     over each step, so impacts include their velocity impulse divided by the
-    step duration. The deprecated :attr:`~newton.State.body_qdd` destination
-    remains supported during migration.
+    step duration.
 
     This solver is currently in Beta.
 
@@ -1187,13 +1185,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             success_mask=success_mask,
         )
 
-        if state.body_qdd is not None:
-            self._kamino.reset_body_acceleration(
-                body_wid=self._model_kamino.bodies.wid,
-                body_qdd=state.body_qdd,
-                world_mask=local_world_mask,
-            )
-
         # Restore fields excluded from the reset op
         for array, snapshot in restore_after_reset:
             wp.copy(array, snapshot)
@@ -1337,8 +1328,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
             else None
         )
-        if body_qdd is None:
-            body_qdd = state_out.body_qdd
         if body_qdd is not None:
             # The output acceleration buffer is preallocated and can safely hold
             # the input twist until integration completes, including in-place steps.
@@ -1364,8 +1353,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                 body_qdd=body_qdd,
                 dt=dt,
             )
-            if state_out.body_qdd is not None and state_out.body_qdd.ptr != body_qdd.ptr:
-                wp.copy(state_out.body_qdd, body_qdd)
 
         # Convert back from Kamino CoM-frame to Newton body-frame poses
         if state_in_kamino.q_i.ptr != state_out_kamino.q_i.ptr:
@@ -1387,8 +1374,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._populate_contact_observables(
                 observable_contacts, self._contact_observable_state, observables.contact_f
             )
-            if observable_contacts.force is not None and observable_contacts.force.ptr != observables.contact_f.ptr:
-                wp.copy(observable_contacts.force, observables.contact_f, count=observable_contacts.force.shape[0])
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -1478,24 +1463,13 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Update contact geometry and optional legacy force storage from Kamino.
+        """Update contact geometry from Kamino.
 
-        Geometry-only export remains supported when ``contacts.force`` is ``None``.
-
-        .. deprecated:: 1.7
-            Exporting ``contacts.force`` is deprecated. Request
-            :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and pass the
-            resulting container to :meth:`step` instead. Geometry-only export
-            is not deprecated.
+        Writes the contacts detected by Kamino into the rigid-contact geometry arrays of
+        ``contacts``. Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F`
+        and pass the resulting container to :meth:`step` to obtain contact forces.
         """
-        if contacts.force is not None:
-            warnings.warn(
-                "SolverKamino.update_contacts() force export is deprecated in Newton 1.7; request "
-                "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        self._populate_contact_observables(contacts, state, contacts.force)
+        self._populate_contact_observables(contacts, state, None)
 
     def _populate_contact_observables(
         self,

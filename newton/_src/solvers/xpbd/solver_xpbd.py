@@ -3,12 +3,9 @@
 
 from __future__ import annotations
 
-import warnings
-
 import warp as wp
 
 from ...core.types import override
-from ...exceptions import NewtonDeprecationWarning
 from ...geometry.materials import MaterialPairProperties, resolve_contact_material_pairs
 from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
@@ -494,8 +491,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else None
         )
-        if body_parent_f is None:
-            body_parent_f = state_out.body_parent_f
         contact_f = (
             observables.contact_f
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
@@ -590,7 +585,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.rigid_contact_max, dtype=wp.vec4, device=model.device
                 )
 
-            if contacts.force is not None or contact_f is not None:
+            if contact_f is not None:
                 contact_impulse = wp.zeros(contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device)
                 # The contact solve writes every slot in each iteration.
                 contact_impulse_iter = wp.empty(
@@ -653,7 +648,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     # contribution added by :func:`solve_body_joints` inside
                     # the iteration loop.  Together they recover the total
                     # wrench transmitted to the child body, matching the
-                    # :attr:`State.body_parent_f` convention.
+                    # ``Observables.body_parent_f`` convention.
                     wp.launch(
                         kernel=apply_joint_forces,
                         dim=model.joint_count,
@@ -1331,10 +1326,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             self._save_tendon_history(state_out)
 
-            self._contact_impulse = contact_impulse
-            self._contact_impulse_capacity = contacts.rigid_contact_max if contacts is not None else 0
-            self._last_dt = dt
-
             if contact_f is not None:
                 contact_f.zero_()
                 if contact_impulse is not None and contacts is not None:
@@ -1349,8 +1340,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         outputs=[contact_f],
                         device=model.device,
                     )
-                if contacts is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
-                    wp.copy(contacts.force, contact_f, count=contacts.force.shape[0])
 
             # Populate optional ``body_parent_f`` (incoming joint
             # wrench per body) from the per-joint accumulated child-side
@@ -1372,8 +1361,6 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         outputs=[body_parent_f],
                         device=model.device,
                     )
-                if state_out.body_parent_f is not None and state_out.body_parent_f.ptr != body_parent_f.ptr:
-                    state_out.body_parent_f.assign(body_parent_f)
 
             if model.particle_count:
                 if particle_q.ptr != state_out.particle_q.ptr:
@@ -1554,71 +1541,3 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)
-
-    @override
-    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Populate ``contacts.force`` from XPBD contact impulses accumulated during the last :meth:`step`.
-
-        .. deprecated:: 1.7
-            Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and
-            pass the resulting container to :meth:`step` instead.
-
-        Both force [N] and torque [N·m] components are written.  The torque
-        includes torsional and rolling friction contributions that cannot be
-        reconstructed from the linear force alone.
-
-        When ``rigid_contact_con_weighting`` is enabled, the raw per-contact
-        impulse is scaled to reflect the ``1/N`` correction that
-        ``apply_body_deltas`` applies.  For contacts between a dynamic and a
-        kinematic body, ``N`` is the dynamic body's contact count.  For
-        contacts between two dynamic bodies, the harmonic mean
-        ``2/(N_a + N_b)`` is used so that the reported force is symmetric with
-        respect to body ordering.  This is an approximation -- the solver
-        applies ``1/N_a`` and ``1/N_b`` independently to each side, so no
-        single scalar can exactly represent both.
-
-        Args:
-            contacts: :class:`Contacts` object whose :attr:`~Contacts.force` buffer will be written.
-                Must have been created with ``"force"`` in its requested attributes and must
-                match the :class:`Contacts` instance (same ``rigid_contact_max``) passed to
-                the preceding :meth:`step`.
-            state: Unused (accepted for API compatibility with :class:`SolverBase`).
-
-        Raises:
-            ValueError: If ``contacts.force`` is ``None`` (not requested), if no step has been run yet,
-                or if the contacts capacity does not match the one used in the last :meth:`step`.
-        """
-        warnings.warn(
-            "SolverXPBD.update_contacts() is deprecated in Newton 1.7; request SolverBase.ObservableKind.CONTACT_F and pass "
-            "SolverBase.Observables to step().",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._apply_module_options()
-        if contacts.force is None:
-            raise ValueError(
-                "The deprecated contacts.force compatibility buffer is not allocated. "
-                "Prefer SolverBase.ObservableKind.CONTACT_F; legacy callers must request 'force' before creating Contacts."
-            )
-        if not hasattr(self, "_contact_impulse") or self._contact_impulse is None:
-            raise ValueError("No contact impulse data available. Call step() before update_contacts().")
-        if contacts.rigid_contact_max != self._contact_impulse_capacity:
-            raise ValueError(
-                f"Contacts capacity mismatch: update_contacts() received rigid_contact_max="
-                f"{contacts.rigid_contact_max}, but step() used {self._contact_impulse_capacity}. "
-                f"Pass the same Contacts instance to both step() and update_contacts()."
-            )
-
-        contacts.force.zero_()
-
-        wp.launch(
-            kernel=convert_contact_impulse_to_force,
-            dim=contacts.rigid_contact_max,
-            inputs=[
-                contacts.rigid_contact_count,
-                self._contact_impulse,
-                self._last_dt,
-            ],
-            outputs=[contacts.force],
-            device=self.model.device,
-        )
