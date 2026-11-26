@@ -793,17 +793,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
                 contact_ke = wp.max(contact_ke * factor, FLOAT64_EPS)
                 kd = rigid_contact_damping[tid]
-                timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
                 critical_timeconst = wp.sqrt(1.0 / contact_ke)
-                dt = world_timestep[worldid % world_timestep.shape[0]]
-                overdamped = timeconst < critical_timeconst
-                clamped = refsafe and timeconst < 2.0 * dt
-                # Replacing underdamped contacts would weaken their spring at the refsafe floor.
-                if kd > 0.0 and not (overdamped and clamped):
-                    dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
-                else:
-                    timeconst = critical_timeconst
-                    dampratio = 1.0
+                timeconst = critical_timeconst
+                if kd > 0.0:
+                    timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
+                    if refsafe and timeconst < critical_timeconst:
+                        # Keep the stiffness; cap overdamped damping at the refsafe floor.
+                        dt = world_timestep[worldid % world_timestep.shape[0]]
+                        timeconst = wp.min(wp.max(timeconst, 2.0 * dt), critical_timeconst)
+                dampratio = critical_timeconst / timeconst
                 solref = wp.vec2(timeconst, dampratio)
 
         if recovery_slot >= 0 and dist < margin:

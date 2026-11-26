@@ -538,9 +538,11 @@ MuJoCo's `refsafe option
 <https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
 
 For overdamped Newton contacts with per-contact stiffness and damping, the
-adapter uses automatic damping if this floor would clamp the requested time
-constant. Underdamped contacts keep their existing conversion. The timestep
-floor still applies; use a smaller timestep to retain the requested damping.
+adapter caps damping when the requested time constant falls below this floor.
+It adjusts the damping ratio to preserve stiffness. Underdamped contacts keep
+their existing conversion. If the critical-damping time constant is below the
+floor, MuJoCo can still soften the contact. Use a smaller timestep to retain
+the requested gains.
 With ``refsafe`` disabled or ``discrete`` integration, the adapter keeps the
 supplied positive damping.
 If you change the timestep, call :meth:`~newton.CollisionPipeline.collide` again
