@@ -729,7 +729,6 @@ def _build(
     for index in range(start, stop):
         seed = frame.indices[index]
         first = int(-1)
-        nearest = float(1.0e30)
         if pair_flooded != 0:
             if frame.owner[seed] != seed:
                 continue
@@ -742,7 +741,6 @@ def _build(
             tail = seed
             if frame.eligible[seed] != 0:
                 first = seed
-                nearest = frame.gap[seed]
             cursor = seed
             expanded_a = int(-2)
             expanded_b = int(-2)
@@ -763,7 +761,6 @@ def _build(
                                 patches.next_contact[tail] = c
                                 tail = c
                                 if frame.eligible[c] != 0:
-                                    nearest = wp.min(nearest, frame.gap[c])
                                     if first < 0:
                                         first = c
                                     elif _precedes(frame.center[c], frame.center[first]):
@@ -787,12 +784,8 @@ def _build(
             second = frame.second[seed]
             separation = frame.separation[seed]
         else:
-            # Members separated beyond the touching gate are no friction locations: they would
-            # place the region's pooled load where nothing touches.
-            gate = wp.max(nearest, 0.0) + _TOUCH_TOLERANCE * frame.radius[seed]
-            relocate = carry_only == 0 and frame.gap[first] > gate
-            if relocate:
-                first = -1
+            nearest = float(1.0e30)
+            farthest = float(-1.0e30)
             # Preserve sorted contact order for footprint sums and tie breaking.
             # The collision list follows flood order and must remain unchanged.
             for j in range(index, stop):
@@ -801,22 +794,34 @@ def _build(
                     continue
                 frame.members[member_stop] = c
                 member_stop += 1
-                if carry_only == 0 and frame.eligible[c] != 0 and frame.gap[c] > gate:
-                    frame.eligible[c] = 0
-                if relocate:
-                    if frame.eligible[c] != 0:
-                        if first < 0:
-                            first = c
-                        elif _precedes(frame.center[c], frame.center[first]):
-                            first = c
-                elif carry_only != 0 or frame.eligible[c] != 0:
+                if carry_only != 0 or frame.eligible[c] != 0:
+                    if carry_only == 0:
+                        gap = frame.gap[c]
+                        nearest = wp.min(nearest, gap)
+                        farthest = wp.max(farthest, gap)
                     distance = wp.length_sq(frame.center[c] - frame.center[first])
                     if distance > separation:
                         separation = distance
                         second = c
-            if relocate:
-                # The lowest member lay beyond the gate: measure from the new first location.
+            # Members separated beyond the touching gate are no friction locations: they would
+            # place the region's pooled load where nothing touches.
+            gate = wp.max(nearest, 0.0) + _TOUCH_TOLERANCE * frame.radius[seed]
+            if farthest > gate:
+                relocate = frame.gap[first] > gate
+                if relocate:
+                    first = -1
+                for j in range(member_start, member_stop):
+                    c = frame.members[j]
+                    if frame.eligible[c] != 0:
+                        if frame.gap[c] > gate:
+                            frame.eligible[c] = 0
+                        elif relocate:
+                            if first < 0:
+                                first = c
+                            elif _precedes(frame.center[c], frame.center[first]):
+                                first = c
                 second = first
+                separation = float(0.0)
                 for j in range(member_start, member_stop):
                     c = frame.members[j]
                     if frame.eligible[c] != 0:
