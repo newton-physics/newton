@@ -185,8 +185,8 @@ and on whether the step runs eagerly or from a captured CUDA graph:
 Some combinations currently hit record-buffer limits:
 
 - :class:`~solvers.SolverVBD` with particle self-contact bounds the per-thread
-  records of every kernel in its particle module by the self-contact buffer
-  sizes, so large cloth meshes can run out of memory.
+  records of its self-contact force and truncation kernels by the self-contact
+  buffer sizes, so large cloth meshes can run out of memory.
 - :class:`~solvers.SolverSemiImplicit`'s triangle-particle contact kernel
   launches one thread per triangle-particle pair, so for large meshes its
   worst-case record buffer exceeds Warp's 32-bit array limit during graph
