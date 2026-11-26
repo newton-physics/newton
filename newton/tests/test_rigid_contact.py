@@ -172,7 +172,7 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = temp_solver
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    if isinstance(solver, newton.solvers.SolverMuJoCo):
+    if isinstance(solver, newton.solvers.SolverMuJoCo) and solver.use_mujoco_cpu:
         collision_pipeline = None
         contacts = None
     else:
@@ -749,12 +749,15 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
 
     solver = solver_fn(model)
 
-    # Use MuJoCo contacts internally (contacts=None) and simulate
+    pipeline = None if solver.use_mujoco_cpu else newton.CollisionPipeline(model)
+    contacts = None if pipeline is None else pipeline.contacts()
     sim_dt = 1.0 / 60.0
     steps = 120  # 2 seconds to settle
     for _ in range(steps):
         state_0.clear_forces()
-        solver.step(state_0, state_1, control, None, sim_dt)
+        if pipeline is not None:
+            pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
 
     # Fetch final Z position of the dynamic cube's body
@@ -907,7 +910,7 @@ def test_box_drop(test, device, solver_fn):
     max_frames = 60
     max_observed_vel = 0.0
 
-    generate_contacts = not isinstance(solver, newton.solvers.SolverMuJoCo)
+    generate_contacts = not (isinstance(solver, newton.solvers.SolverMuJoCo) and solver.use_mujoco_cpu)
     collision_pipeline = newton.CollisionPipeline(model) if generate_contacts else None
     contacts = collision_pipeline.contacts() if collision_pipeline is not None else None
 
@@ -1044,7 +1047,7 @@ solvers = {
     "featherstone": newton.solvers.SolverFeatherstone,
     "mujoco_cpu": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
     "mujoco_warp": requires(*MUJOCO_MODULES)(
-        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150)
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False, njmax=150)
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,

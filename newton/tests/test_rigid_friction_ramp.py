@@ -430,23 +430,23 @@ _SOLVERS = {
             lambda model: newton.solvers.SolverMuJoCo(
                 model,
                 use_mujoco_cpu=False,
+                use_mujoco_contacts=False,
                 njmax=800,
                 nconmax=500,
-                cone="elliptic",
+                # The pyramidal cone keeps Coulomb friction at zero kf.
+                cone="pyramidal",
                 impratio=10.0,
                 iterations=200,
                 ls_iterations=100,
             )
         ),
-        "native_contacts": True,
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
         "stopping_distance_rel_tol": 0.01,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
-    # Same config as mujoco_warp but consuming Newton CollisionPipeline
-    # contacts — covers the elliptic + Newton-contacts constraint path.
+    # Also cover the elliptic constraint path with finite tangential damping.
     "mujoco_warp_newton_contacts": {
         "factory": requires(*MUJOCO_MODULES)(
             lambda model: newton.solvers.SolverMuJoCo(
