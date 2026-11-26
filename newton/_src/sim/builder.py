@@ -68,7 +68,14 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
-from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
+from ..geometry.deformable_visual import (
+    DeformableVisualGaussian,
+    DeformableVisualMesh,
+    GaussianBinding,
+    _DeformableGaussianBatch,
+    _DeformableVisualSkinBatches,
+    _gaussian_bind_poses,
+)
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import (
     _INERTIA_ABS_ADJUSTMENT,
@@ -843,6 +850,10 @@ class ModelBuilder:
             compaction_policy="passthrough",
         ),
         "_deformable_visual_meshes": Model.AttributeSpec(
+            Model.AttributeFrequency.ONCE,
+            compaction_policy="passthrough",
+        ),
+        "_deformable_visual_gaussians": Model.AttributeSpec(
             Model.AttributeFrequency.ONCE,
             compaction_policy="passthrough",
         ),
@@ -2455,6 +2466,11 @@ class ModelBuilder:
         """Tetrahedral material rows accumulated for :attr:`Model.tet_materials`."""
 
         self._deformable_visual_meshes: list[dict] = []
+        """Raw visual-mesh specs accumulated for :attr:`Model.deformable_visual_meshes`.
+        Each entry stores numpy asset data and per-vertex embedding; converted to
+        :class:`~newton.geometry.DeformableVisualMesh` objects in :meth:`finalize`."""
+        self._deformable_visual_gaussians: list[dict] = []
+        """Gaussian visual specs converted to :class:`~newton.geometry.DeformableVisualGaussian`."""
 
         # muscles
         self.muscle_start: list[int] = []
@@ -4186,6 +4202,8 @@ class ModelBuilder:
         separate_worlds: bool = True,
         xforms: Sequence[Transform] | None = None,
         label_prefixes: Sequence[str | None] | None = None,
+        source_path_prefix: str | None = None,
+        destination_path_prefixes: Sequence[str] | None = None,
         world_count: int | None = None,
     ):
         """
@@ -4250,12 +4268,24 @@ class ModelBuilder:
                 ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
                 copy's labels as they are in ``builder``; an empty source label remains
                 unlabeled.
+            source_path_prefix: Source namespace to replace in imported deformable
+                visual paths. Must be passed with ``destination_path_prefixes``.
+            destination_path_prefixes: Destination namespace for each copy.
+                Must be passed with ``source_path_prefix`` and contain
+                ``copy_count`` entries.
             world_count: Deprecated alias for ``copy_count``.
 
         Raises:
             TypeError: Neither or both of ``copy_count`` and ``world_count`` are supplied.
             RuntimeError: ``separate_worlds`` is ``True`` inside a world context.
-            ValueError: ``xforms`` or ``label_prefixes`` does not have ``copy_count`` entries.
+            ValueError: Per-copy arguments have the wrong length, or only one
+                path-prefix argument is supplied.
+
+        .. experimental::
+
+            ``source_path_prefix`` and ``destination_path_prefixes`` are part of
+            the experimental deformable visual API. Other replication arguments
+            retain their existing API status.
         """
         if world_count is not None:
             if copy_count is not None:
@@ -4294,12 +4324,24 @@ class ModelBuilder:
             if label_prefixes is None:
                 label_prefixes = [None] * copy_count
 
+            if (source_path_prefix is None) != (destination_path_prefixes is None):
+                raise ValueError("source_path_prefix and destination_path_prefixes must be passed together")
+            if destination_path_prefixes is None:
+                path_prefixes = [None] * copy_count
+            else:
+                if len(destination_path_prefixes) != copy_count:
+                    raise ValueError(
+                        f"destination_path_prefixes must contain {copy_count} entries, "
+                        f"got {len(destination_path_prefixes)}"
+                    )
+                path_prefixes = [(source_path_prefix, destination) for destination in destination_path_prefixes]
+
             if separate_worlds:
                 worlds = list(range(self.world_count, self.world_count + copy_count))
             else:
                 worlds = [self.current_world] * copy_count
             with self._raw_array_access():
-                self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
+                self._merge_builder_copies(builder, worlds, xforms, label_prefixes, path_prefixes, array_backed=True)
 
             if separate_worlds:
                 gravity = tuple(builder._gravity_as_vector())
@@ -4317,6 +4359,7 @@ class ModelBuilder:
         worlds: Sequence[int],
         xforms: Sequence[Transform | None],
         label_prefixes: Sequence[str | None],
+        path_prefixes: Sequence[tuple[str, str] | None] | None = None,
         array_backed: bool = False,
     ) -> None:
         if builder.up_axis != self.up_axis:
@@ -4325,6 +4368,10 @@ class ModelBuilder:
         copy_count = len(worlds)
         if len(xforms) != copy_count or len(label_prefixes) != copy_count:
             raise ValueError("worlds, xforms, and label_prefixes must have the same length")
+        if path_prefixes is None:
+            path_prefixes = [None] * copy_count
+        elif len(path_prefixes) != copy_count:
+            raise ValueError("worlds and path_prefixes must have the same length")
 
         worlds = np.asarray(worlds, dtype=np.int64)
 
@@ -4381,6 +4428,40 @@ class ModelBuilder:
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
+        def rebase_path(
+            value: str | None,
+            prefixes: tuple[str, str] | None,
+            *,
+            required: bool = False,
+        ) -> str | None:
+            if value is None or prefixes is None:
+                return value
+            source, destination = prefixes
+            source_parts = source.strip("/").split("/") if source.strip("/") else []
+            value_parts = value.strip("/").split("/") if value.strip("/") else []
+            if value_parts[: len(source_parts)] != source_parts:
+                if required:
+                    raise ValueError(f"deformable visual path {value!r} is outside source_path_prefix {source!r}")
+                return value
+            rebased_parts = [*destination.strip("/").split("/"), *value_parts[len(source_parts) :]]
+            leading_slash = "/" if destination.startswith("/") else ""
+            return leading_slash + "/".join(part for part in rebased_parts if part)
+
+        # Reject invalid paths before array-backed replication mutates the destination.
+        deformable_visual_specs = (
+            builder._deformable_visual_meshes,
+            builder._deformable_visual_gaussians,
+        )
+        for specs in deformable_visual_specs:
+            if not specs:
+                continue
+            for prefixes in path_prefixes:
+                if prefixes is None:
+                    continue
+                for spec in specs:
+                    for name in ("body_path", "sim_path", "graphics_path"):
+                        rebase_path(spec.get(name), prefixes, required=True)
+
         array_starts = {}
         if array_backed:
             for attr, warp_dtype in _ARRAY_BACKED_ATTRIBUTE_DTYPES.items():
@@ -4425,21 +4506,24 @@ class ModelBuilder:
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
 
-        # Snapshot for self-composition; copied bindings use destination element IDs.
-        visual_specs = tuple(builder._deformable_visual_meshes)
         visual_parent_kinds = {
             DeformableVisualMesh.Kind.PARTICLE: "particle",
             DeformableVisualMesh.Kind.TRIANGLE: "triangle",
             DeformableVisualMesh.Kind.TETRAHEDRON: "tetrahedron",
             DeformableVisualMesh.Kind.BODY: "body",
         }
-        if visual_specs:
+
+        # Self-composition must not copy records appended by an earlier world.
+        visual_specs = (
+            (tuple(builder._deformable_visual_meshes), self._deformable_visual_meshes),
+            (tuple(builder._deformable_visual_gaussians), self._deformable_visual_gaussians),
+        )
+        for source_specs, destination_specs in visual_specs:
+            if not source_specs:
+                continue
             for copy_index in range(copy_count):
-                for spec in visual_specs:
+                for spec in source_specs:
                     merged = dict(spec)
-                    prefix = label_prefixes[copy_index]
-                    if prefix and spec["label"]:
-                        merged["label"] = prefix + "/" + spec["label"]
                     parents = np.asarray(spec["parent"], dtype=np.int32)
                     parent_start = int(starts(visual_parent_kinds[spec["kind"]])[copy_index])
                     merged["parent"] = np.where(parents >= 0, parents + parent_start, parents)
@@ -4453,7 +4537,15 @@ class ModelBuilder:
                             fixed = parents < 0
                             local[fixed] = quat_rotate_rows(xform[3:], local[fixed]) + xform[:3]
                         merged["local_offsets"] = local
-                    self._deformable_visual_meshes.append(merged)
+                    if "shape" in spec:
+                        merged["shape"] = spec["shape"] + int(starts("shape")[copy_index])
+                    merged["label"] = rebase_path(spec.get("label"), path_prefixes[copy_index])
+                    prefix = label_prefixes[copy_index]
+                    if prefix and merged["label"]:
+                        merged["label"] = prefix + "/" + merged["label"]
+                    for name in ("body_path", "sim_path", "graphics_path"):
+                        merged[name] = rebase_path(spec.get(name), path_prefixes[copy_index], required=True)
+                    destination_specs.append(merged)
 
         def extend_referenced(attr: str, dst: list | np.ndarray, values: Sequence[Any], kind: str) -> None:
             if len(values) == 0:
@@ -4525,6 +4617,17 @@ class ModelBuilder:
                 transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
+
+        gaussian_specs = visual_specs[1][0]
+        if gaussian_specs and len(moved_copies):
+            # Particle composition only translates. Keep their display shapes in the same frame.
+            shapes = np.asarray([spec["shape"] for spec in gaussian_specs], dtype=np.int64)
+            rows = shape_transform_start + moved_copies[:, None] * counts["shape"] + shapes[None]
+            source = pack_transforms([builder.shape_transform[shape] for shape in shapes.tolist()])
+            values = np.empty((len(moved_copies), len(shapes), 7), dtype=np.float32)
+            values[..., :3] = source[None, :, :3] + offsets[moved_copies][:, None]
+            values[..., 3:] = source[None, :, 3:]
+            store_transform_rows(self.shape_transform, rows.ravel(), values.reshape(-1, 7))
 
         # World guides carry their own frame; body-local guides follow the placed body.
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
@@ -15505,6 +15608,149 @@ class ModelBuilder:
             texture.ndim != 3 or texture.shape[2] not in (3, 4) or texture.size == 0
         ):
             raise ValueError("add_deformable_visual_mesh: texture arrays must have shape (H, W, 3) or (H, W, 4)")
+        binding = self._prepare_deformable_visual_binding(
+            vertices,
+            kind=kind,
+            parent=parent,
+            weights=weights,
+            tri_range=tri_range,
+            tet_range=tet_range,
+            surface=surface,
+            volume=volume,
+            curve=curve,
+            bodies=bodies,
+            body_poses=body_poses,
+        )
+        self._deformable_visual_meshes.append(
+            {
+                **binding,
+                "rest_vertices": vertices,
+                "indices": indices,
+                "label": label or "",
+                "body_path": None,
+                "sim_path": None,
+                "graphics_path": None,
+                "uvs": uvs,
+                "texture": texture,
+            }
+        )
+        return len(self._deformable_visual_meshes) - 1
+
+    def add_deformable_visual_gaussian(
+        self,
+        gaussian: Gaussian,
+        *,
+        binding: GaussianBinding.Tetrahedron | GaussianBinding.Triangle,
+        label: str = "",
+    ) -> int:
+        """Attach a Gaussian field to a deformable volume or surface for rendering.
+
+        Gaussian centers and ellipsoids follow the binding's elements. A render-only
+        Gaussian shape is created automatically; it adds no collision geometry,
+        mass, or constraints.
+
+        Add the visual in the same world scope as its driving elements,
+        before :meth:`end_world`. For replication, attach visuals to the
+        prototype before calling :meth:`replicate` or :meth:`add_world`.
+        Global drivers are supported when :attr:`current_world` is ``-1``.
+
+        Args:
+            gaussian: Rest Gaussian appearance and center positions [m].
+            binding: Simulation elements and optional precomputed weights. See
+                :class:`~newton.geometry.GaussianBinding`.
+            label: Display label.
+
+        Returns:
+            Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
+
+        Raises:
+            TypeError: If ``gaussian`` or ``binding`` has an unsupported type.
+            ValueError: If the binding or Gaussian data is invalid, or the
+                driving particles do not all belong to :attr:`current_world`.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        if not isinstance(gaussian, Gaussian):
+            raise TypeError(f"gaussian must be Gaussian, got {type(gaussian).__name__}")
+        if gaussian.count == 0:
+            raise ValueError("add_deformable_visual_gaussian: gaussian must contain at least one sample")
+        if not all(
+            np.all(np.isfinite(values))
+            for values in (
+                gaussian.positions,
+                gaussian.rotations,
+                gaussian.scales,
+                gaussian.opacities,
+                gaussian.sh_coeffs,
+            )
+        ):
+            raise ValueError("add_deformable_visual_gaussian: Gaussian data must be finite")
+        if np.any(gaussian.scales <= 0.0):
+            raise ValueError("add_deformable_visual_gaussian: Gaussian scales must be positive")
+
+        if isinstance(binding, GaussianBinding.Tetrahedron):
+            kind = DeformableVisualMesh.Kind.TETRAHEDRON
+            owning_range = {"tet_range": binding.tet_range}
+            topology = self.tet_indices
+        elif isinstance(binding, GaussianBinding.Triangle):
+            kind = DeformableVisualMesh.Kind.TRIANGLE
+            owning_range = {"tri_range": binding.tri_range}
+            topology = self.tri_indices
+        else:
+            raise TypeError("binding must be GaussianBinding.Tetrahedron or GaussianBinding.Triangle")
+        prepared = self._prepare_deformable_visual_binding(
+            gaussian.positions,
+            kind=kind,
+            **owning_range,
+            parent=binding.parent,
+            weights=binding.weights,
+            allow_negative=True,
+        )
+        # The backing shape uses current_world; its drivers must have the same ownership.
+        worlds = {
+            self.particle_world[particle] for element in np.unique(prepared["parent"]) for particle in topology[element]
+        }
+        if worlds != {self.current_world}:
+            raise ValueError(
+                f"add_deformable_visual_gaussian: drivers belong to worlds {sorted(worlds)}, "
+                f"but current world is {self.current_world}. "
+                "Add the visual in the same world scope as its driving elements."
+            )
+        shape = self.add_shape_gaussian(-1, gaussian=gaussian, label=label or None)
+        self._deformable_visual_gaussians.append(
+            {
+                **prepared,
+                "gaussian": gaussian,
+                "shape": shape,
+                "label": label,
+                "body_path": None,
+                "sim_path": None,
+                "graphics_path": None,
+            }
+        )
+        return len(self._deformable_visual_gaussians) - 1
+
+    def _prepare_deformable_visual_binding(
+        self,
+        points: np.ndarray,
+        *,
+        kind: DeformableVisualMesh.Kind | str,
+        parent=None,
+        weights=None,
+        tri_range=None,
+        tet_range=None,
+        surface=None,
+        volume=None,
+        curve=None,
+        bodies=None,
+        body_poses=None,
+        allow_negative=False,
+    ) -> dict:
+        """Build one binding shared by mesh and Gaussian visuals."""
+        point_count = len(points)
         kind = self._resolve_deformable_visual_kind(kind)
         local_offsets = None
         if kind == DeformableVisualMesh.Kind.BODY:
@@ -15514,11 +15760,11 @@ class ModelBuilder:
                 )
             candidates = self._resolve_visual_body_candidates(parent, bodies, curve)
             if parent is not None:
-                parent = self._validate_visual_parent(parent, vertex_count, self.body_count, "bodies")
-                parent, local_offsets = self._bind_visual_vertices_to_bodies(vertices, parent, poses=body_poses)
+                parent = self._validate_visual_parent(parent, point_count, self.body_count, "bodies")
+                parent, local_offsets = self._bind_visual_vertices_to_bodies(points, parent, poses=body_poses)
             else:
                 parent, local_offsets = self._bind_visual_vertices_to_bodies(
-                    vertices, candidates, nearest=True, poses=body_poses
+                    points, candidates, nearest=True, poses=body_poses
                 )
         else:
             if bodies is not None or curve is not None:
@@ -15530,34 +15776,26 @@ class ModelBuilder:
                     )
                 if parent is None:
                     raise ValueError("add_deformable_visual_mesh: particle bindings require parent")
-                parent = self._validate_visual_parent(parent, vertex_count, self.particle_count, "particles")
+                parent = self._validate_visual_parent(parent, point_count, self.particle_count, "particles")
             else:
                 triangle = kind == DeformableVisualMesh.Kind.TRIANGLE
                 owning_range = self._resolve_visual_owning_range(triangle, tri_range, tet_range, surface, volume)
                 if parent is None and weights is None:
                     if triangle:
-                        parent, weights = self._embed_visual_vertices_in_triangles(vertices, owning_range)
+                        parent, weights = self._embed_visual_vertices_in_triangles(points, owning_range)
                     else:
-                        parent, weights = self._embed_visual_vertices_in_tets(vertices, owning_range)
+                        parent, weights = self._embed_visual_vertices_in_tets(points, owning_range)
                 elif parent is None or weights is None:
                     raise ValueError("add_deformable_visual_mesh: parent and weights must be passed together")
                 parent, weights = self._validate_visual_embedding(
-                    parent, weights, vertex_count, owning_range, 3 if triangle else 4
+                    parent,
+                    weights,
+                    point_count,
+                    owning_range,
+                    3 if triangle else 4,
+                    allow_negative=allow_negative,
                 )
-        self._deformable_visual_meshes.append(
-            {
-                "kind": kind,
-                "rest_vertices": vertices,
-                "indices": indices,
-                "parent": parent,
-                "weights": weights,
-                "local_offsets": local_offsets,
-                "label": label or "",
-                "uvs": uvs,
-                "texture": texture,
-            }
-        )
-        return len(self._deformable_visual_meshes) - 1
+        return {"kind": kind, "parent": parent, "weights": weights, "local_offsets": local_offsets}
 
     @staticmethod
     def _validate_visual_parent(parent, point_count: int, element_count: int, elements: str) -> np.ndarray:
@@ -15628,6 +15866,8 @@ class ModelBuilder:
         point_count: int,
         owning_range: tuple[int, int],
         arity: int,
+        *,
+        allow_negative: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Validate precomputed per-vertex parents and barycentric weights."""
         parent = Mesh._normalize_indices(parent)
@@ -15641,12 +15881,15 @@ class ModelBuilder:
             raise ValueError(
                 f"add_deformable_visual_mesh: parent indices must lie within the owning range [{lo}, {hi})"
             )
-        if not np.all(np.isfinite(weights)) or np.any(weights < -1.0e-4):
-            raise ValueError("add_deformable_visual_mesh: weights must be finite and non-negative")
+        if not np.all(np.isfinite(weights)):
+            raise ValueError("visual embedding: weights must be finite")
+        if not allow_negative and np.any(weights < -1.0e-4):
+            raise ValueError("add_deformable_visual_mesh: weights must be non-negative")
         if not np.allclose(weights.sum(axis=1), 1.0, rtol=0.0, atol=1.0e-4):
             raise ValueError("add_deformable_visual_mesh: barycentric weights must sum to one")
-        # Accepted roundoff must not scale translations or extrapolate points.
-        np.maximum(weights, 0.0, out=weights)
+        # Mesh embeddings remain convex; explicit Gaussian bindings may extrapolate.
+        if not allow_negative:
+            np.maximum(weights, 0.0, out=weights)
         weights /= weights.sum(axis=1, keepdims=True)
         return parent, weights
 
@@ -15720,6 +15963,7 @@ class ModelBuilder:
         positions: np.ndarray | None = None,
         *,
         particle_start: int = 0,
+        operation: str = "add_deformable_visual_mesh",
     ) -> tuple[np.ndarray, np.ndarray]:
         """Project each visual vertex onto its closest owning simulation triangle.
 
@@ -15745,7 +15989,7 @@ class ModelBuilder:
         denom = d00 * d11 - d01 * d01
         nonsingular = np.abs(denom) > 1.0e-20
         if not np.any(nonsingular):
-            raise ValueError("add_deformable_visual_mesh: owning triangle range contains no non-degenerate triangle")
+            raise ValueError(f"{operation}: owning triangle range contains no non-degenerate triangle")
         valid = np.flatnonzero(nonsingular)
         mesh = wp.Mesh(
             wp.array(particles, dtype=wp.vec3, device="cpu"),
@@ -15771,6 +16015,7 @@ class ModelBuilder:
         vertices: np.ndarray,
         tet_range: tuple[int, int],
         positions: np.ndarray | None = None,
+        operation: str = "add_deformable_visual_mesh",
         *,
         particle_start: int = 0,
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -15795,7 +16040,7 @@ class ModelBuilder:
         det = np.linalg.det(edge_mats)
         nonsingular = np.abs(det) > 1.0e-20
         if not np.any(nonsingular):
-            raise ValueError("add_deformable_visual_mesh: owning tet range contains no non-degenerate tetrahedron")
+            raise ValueError(f"{operation}: owning tet range contains no non-degenerate tetrahedron")
         valid = np.flatnonzero(nonsingular)
         corners = particles[tet_idx[valid]]
         lower, upper = corners.min(axis=1), corners.max(axis=1)
@@ -15825,12 +16070,21 @@ class ModelBuilder:
         clamped = int(outside.numpy().sum())
         if clamped:
             logger.warning(
-                "add_deformable_visual_mesh: %d of %d visual vertices fell outside "
+                "%s: %d of %d visual vertices fell outside "
                 "the owning tetrahedra and were clamped into the one with the nearest centroid.",
+                operation,
                 clamped,
                 len(vertices),
             )
         return parent.numpy().copy(), weights.numpy().copy()
+
+    def _set_deformable_visual_source_paths(
+        self, index: int, *, body_path: str, sim_path: str, graphics_path: str
+    ) -> None:
+        """Keep source metadata for preview recording and namespace rebasing."""
+        self._deformable_visual_meshes[index].update(
+            body_path=body_path, sim_path=sim_path, graphics_path=graphics_path
+        )
 
     def _finalize_deformable_visual_meshes(
         self,
@@ -15909,8 +16163,82 @@ class ModelBuilder:
                     index=index,
                 )
             )
+            for name in ("body_path", "sim_path", "graphics_path"):
+                setattr(meshes[-1], f"_{name}", spec.get(name))
         batches.meshes = tuple(meshes)
         return batches.meshes, batches
+
+    def _finalize_deformable_visual_gaussians(
+        self,
+    ) -> tuple[list[DeformableVisualGaussian], _DeformableGaussianBatch | None]:
+        """Upload one batch, sharing bind data between translated copies of each prototype."""
+        specs = self._deformable_visual_gaussians
+        if not specs:
+            return [], None
+        groups = {}
+        prototypes = [
+            groups.setdefault((id(spec["weights"]), id(spec["gaussian"]), id(spec.get("_bind_poses"))), len(groups))
+            for spec in specs
+        ]
+        bind_data = []
+        for spec, prototype in zip(specs, prototypes, strict=True):
+            if prototype < len(bind_data):
+                continue
+            if spec.get("_bind_poses") is not None:
+                # USD bind geometry need not match the initial particles or the solver's rest shape.
+                poses = spec["_bind_poses"]
+                offsets = spec["_bind_offsets"]
+            else:
+                parents = np.asarray(spec["parent"], dtype=np.int64)
+                bound_elements, sample_element = np.unique(parents, return_inverse=True)
+                topology = self.tri_indices if spec["kind"] == DeformableVisualMesh.Kind.TRIANGLE else self.tet_indices
+                elements = np.asarray([topology[t] for t in bound_elements.tolist()], dtype=np.int64)
+                corner_ids = np.unique(elements)
+                corners = pack_warp_values([self.particle_q[i] for i in corner_ids.tolist()], wp.vec3).astype(
+                    np.float64
+                )
+                corners = corners[np.searchsorted(corner_ids, elements)]
+                poses = _gaussian_bind_poses(corners)[sample_element]
+                # Composition translates the particles and the field's display shape together.
+                placement = np.asarray(self.shape_transform[spec["shape"]], dtype=np.float64)
+                centers = np.asarray(spec["gaussian"].positions, dtype=np.float64) + placement[:3]
+                offsets = centers - np.einsum("ni,nij->nj", spec["weights"], corners[sample_element])
+            bind_data.append((np.asarray(poses, dtype=np.float32), np.asarray(offsets, dtype=np.float32)))
+        batch = _DeformableGaussianBatch(
+            [spec["parent"] for spec in specs],
+            [spec["kind"] for spec in specs],
+            [spec["weights"] for spec in specs],
+            prototypes,
+            [bind_data[p][0] for p in prototypes],
+            [bind_data[p][1] for p in prototypes],
+            [spec["gaussian"].rotations for spec in specs],
+            [spec["gaussian"].scales for spec in specs],
+            wp.get_device(),
+        )
+        visuals = []
+        for index, spec in enumerate(specs):
+            parent, weights = batch.visual_arrays(index)
+            start, end = batch.prototype_ranges[index]
+            visual = DeformableVisualGaussian(
+                kind=spec["kind"],
+                gaussian=spec["gaussian"],
+                parent=parent,
+                weights=weights,
+                rest_rotations=batch.bindings.rest_rotations[start:end],
+                rest_scales=batch.bindings.rest_scales[start:end],
+                shape=spec["shape"],
+                world=int(self.shape_world[spec["shape"]]),
+                label=spec.get("label", ""),
+                index=index,
+                body_path=spec.get("body_path"),
+                sim_path=spec.get("sim_path"),
+                graphics_path=spec.get("graphics_path"),
+            )
+            visual._bind_poses = batch.bindings.bind_poses[start:end]
+            visual._bind_offsets = batch.bindings.rest_offsets[start:end]
+            visuals.append(visual)
+        batch.visuals = tuple(visuals)
+        return visuals, batch
 
     def _resolve_shape_material_mu_static(self) -> list[float]:
         """Static friction coefficients for :attr:`Model.shape_material_mu_static`.
@@ -16200,6 +16528,7 @@ class ModelBuilder:
             finalized_geos = {}  # content hash -> finalized geometry
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
+            gaussian_bvhs = []
             heightfield_meshes = []
             mesh_keep_alive = []
             for shape_idx, geo in enumerate(generated_shape_sources):
@@ -16260,6 +16589,7 @@ class ModelBuilder:
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
+                        gaussian_bvhs.append(geo.bvh)
                     else:
                         finalized_geos[geo_cache_key] = geo.finalize()
 
@@ -16397,6 +16727,8 @@ class ModelBuilder:
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
+            m._gaussians = gaussians
+            m._gaussian_bvhs = gaussian_bvhs
             m.shape_scale = warp_array_from_values(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_margin = wp.array(self.shape_margin, dtype=wp.float32, requires_grad=requires_grad)
@@ -17193,6 +17525,13 @@ class ModelBuilder:
             m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
             m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
             m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
+
+            # ---------------------
+            # deformable visual meshes
+            m.deformable_visual_gaussians, m._deformable_visual_gaussian_batch = (
+                self._finalize_deformable_visual_gaussians()
+            )
+            m.deformable_visual_gaussian_count = len(m.deformable_visual_gaussians)
 
             # -----------------------
             # muscles

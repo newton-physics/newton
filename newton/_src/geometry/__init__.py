@@ -18,7 +18,11 @@ from .collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from .deformable_visual import DeformableVisualMesh, DeformableVisuals
+from .deformable_visual import (
+    DeformableVisualGaussian,
+    DeformableVisualMesh,
+    DeformableVisuals,
+)
 from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_inertia
 from .particle_surface import ParticleSurface, extract_particle_surface
@@ -51,6 +55,7 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
+    "DeformableVisualGaussian",
     "DeformableVisualMesh",
     "DeformableVisuals",
     "Gaussian",

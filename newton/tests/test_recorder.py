@@ -24,6 +24,7 @@ from newton._src.viewer.viewer_file import (
     serialize,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.utils import ColorSpace
 from newton.viewer import ViewerFile
 
 
@@ -706,6 +707,110 @@ def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
     test.assertEqual(restored[1].opacity, 0.75)
     test.assertEqual(restored[0].color, (1.0, 0.0, 0.0))
     test.assertEqual(restored[1].color, (0.0, 1.0, 0.0))
+
+
+def _gaussian_device_arrays(model, index):
+    """Return the device arrays of one entry of ``model.gaussians_data`` as NumPy arrays."""
+    entry = model.gaussians_data.numpy()[index]
+    arrays = {}
+    for name, dtype in (
+        ("transforms", wp.transformf),
+        ("scales", wp.vec3f),
+        ("opacities", wp.float32),
+        ("sh_coeffs", wp.float32),
+    ):
+        member = entry[name]
+        shape = tuple(int(d) for d in member["shape"][: int(member["ndim"])])
+        arrays[name] = wp.array(
+            ptr=int(member["data"]), dtype=dtype, shape=shape, device=model.device, copy=False
+        ).numpy()
+    return arrays
+
+
+def test_gaussian_recording_restores_fields(test: TestRecorder, device):
+    """Restore shared Gaussian assets with their device data and BVHs, and keep earlier loads valid."""
+    suffixes = (".json", ".bin") if HAS_CBOR2 else (".json",)
+    builder = newton.ModelBuilder()
+    positions = np.array([[0.0, 0.0, 0.0], [0.2, 0.1, 0.0]], dtype=np.float32)
+    scales = np.array([[0.3, 0.2, 0.1]], dtype=np.float32)
+    rotation = [0.0, 0.0, 0.7071068, 0.7071068]
+    assets = (
+        # The whole array and a view that starts at the same address: the binary recording must tell
+        # them apart. The last two assets share one scales array, so it is written as a reference.
+        newton.Gaussian(
+            positions,
+            rotations=[rotation] * 2,
+            scales=[[0.1, 0.2, 0.3]] * 2,
+            opacities=[0.95, 0.5],
+            sh_coeffs=np.linspace(-0.5, 0.8, 24).reshape(2, 12),
+            sh_degree=0,  # not the degree the 12 coefficients imply, so it must be recorded
+            min_response=0.3,
+            sorting_mode=newton.Gaussian.SortingMode.Z_DEPTH,
+            sh_color_space=ColorSpace.LINEAR,
+        ),
+        newton.Gaussian(
+            positions[:1],
+            rotations=[rotation],
+            scales=scales,
+            opacities=[0.7],
+            sh_coeffs=[[0.8, -0.5, 0.0]],
+            min_response=0.2,
+            sorting_mode=newton.Gaussian.SortingMode.Z_DEPTH,
+        ),
+        newton.Gaussian(
+            positions[1:], rotations=[rotation], scales=scales, opacities=[0.6], sh_coeffs=[[0.1, 0.2, 0.3]]
+        ),
+    )
+    for i, asset in enumerate(assets):
+        for y in (0.0, 0.5):
+            builder.add_shape_gaussian(
+                -1, gaussian=asset, xform=wp.transform(wp.vec3(i * 0.6, y, 0), wp.quat_identity())
+            )
+    model = builder.finalize(device=device)
+    state = model.state()
+    expected = model.gaussians_data.numpy()
+    for suffix in suffixes:
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, f"scene{suffix}")
+            recorder = ViewerFile(path, auto_save=False)
+            recorder.set_model(model)
+            recorder.log_state(state)
+            recorder.save_recording()
+            playback = ViewerFile(path, auto_save=False)
+            with wp.ScopedDevice(device):
+                playback.load_recording()
+            restored = [newton.Model(device=device), newton.Model(device=device)]
+            for loaded in restored:
+                playback.load_model(loaded)
+            for loaded in restored:
+                sources = loaded.shape_source
+                test.assertEqual(len(sources), 2 * len(assets))
+                test.assertIs(sources[0], sources[1])
+                test.assertIsNot(sources[0], sources[2])
+                for original, copy in zip(model.shape_source, sources, strict=True):
+                    test.assertIsInstance(copy, newton.Gaussian)
+                    test.assertEqual(copy, original)
+                    test.assertEqual(copy.sh_degree, original.sh_degree)
+                    test.assertIs(copy.sorting_mode, original.sorting_mode)
+                data = loaded.gaussians_data.numpy()
+                test.assertEqual(loaded.gaussians_count, model.gaussians_count)
+                for field in ("num_points", "sh_color_space", "min_response", "sorting_mode"):
+                    np.testing.assert_array_equal(data[field], expected[field])
+                for index in range(len(assets)):
+                    test.assertEqual(int(data["bvh_id"][index]), sources[2 * index].bvh.id)
+                    original_arrays = _gaussian_device_arrays(model, index)
+                    for name, values in _gaussian_device_arrays(loaded, index).items():
+                        np.testing.assert_array_equal(values, original_arrays[name])
+            # The first model's copies stay distinct from the second's, so both keep their buffers.
+            test.assertIsNot(restored[0].shape_source[0], restored[1].shape_source[0])
+
+
+add_function_test(
+    TestRecorder,
+    "test_gaussian_recording_restores_fields",
+    test_gaussian_recording_restores_fields,
+    devices=devices,
+)
 
 
 add_function_test(

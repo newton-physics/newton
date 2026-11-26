@@ -16,8 +16,10 @@ newton.geometry
    BroadPhaseAllPairs
    BroadPhaseExplicit
    BroadPhaseSAP
+   DeformableVisualGaussian
    DeformableVisualMesh
    DeformableVisuals
+   GaussianBinding
    HydroelasticSDF
    NarrowPhase
    ParticleSurface

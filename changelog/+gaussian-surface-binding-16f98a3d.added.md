@@ -1,0 +1,1 @@
+Add typed `GaussianBinding.Tetrahedron` and `GaussianBinding.Triangle` inputs for deformable Gaussian visuals. Surface bindings follow in-plane deformation while preserving normal thickness, with batched evaluation, USD import, camera rendering, and recording support.
