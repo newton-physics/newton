@@ -214,7 +214,7 @@ class SchemaNames:
     """Canonical USD tokens from ``newton-usd-schemas``"""
 
     ACTUATOR = "NewtonActuator"
-    BATTERY = "NewtonBattery"
+    SUPPLY = "NewtonSupply"
     CONSTANT_RESISTANCE_BATTERY = "NewtonConstantResistanceBattery"
 
     PD_CONTROL = "NewtonPDControlAPI"
@@ -306,7 +306,7 @@ def parse_battery_prim(prim) -> BatteryParsed | None:
     selects :class:`~newton.actuators.BatteryConstantResistance`, and the authored
     ``newton:`` attributes become its keyword arguments; the class fills in
     defaults when the battery is added. The actuators that draw from the
-    battery name it in their ``newton:battery`` relationship;
+    battery name it in their ``newton:supply`` relationship;
     :func:`parse_actuator_prim` reports it as :attr:`ActuatorParsed.battery_path`.
 
     Args:
@@ -316,12 +316,12 @@ def parse_battery_prim(prim) -> BatteryParsed | None:
         The parsed battery, or ``None`` if the prim is not a battery.
 
     Raises:
-        ValueError: The prim is derived from ``NewtonBattery`` but its type is
+        ValueError: The prim is derived from ``NewtonSupply`` but its type is
             not supported.
     """
     battery_class = _BATTERY_REGISTRY.get(prim.GetTypeName())
     if battery_class is None:
-        if prim.IsA(SchemaNames.BATTERY):
+        if prim.IsA(SchemaNames.SUPPLY):
             raise ValueError(f"Battery prim '{prim.GetPath()}' has unsupported type '{prim.GetTypeName()}'")
         return None
     return BatteryParsed(battery_class, _read_schema_attrs(prim, prim.GetTypeName()))
@@ -469,7 +469,7 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
     if drive_class is None:
         raise ValueError(f"Actuator prim '{prim.GetPath()}' has no drive schema (detected schemas: {detected})")
 
-    batteries = _get_relationship_targets(prim, "newton:battery")
+    batteries = _get_relationship_targets(prim, "newton:supply")
     if not drive_schema_registered:
         claimed: set[str] = set()
         for cls, kwargs in component_specs:

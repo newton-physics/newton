@@ -17,9 +17,10 @@ from ...geometry.sdf_planar_recovery import (
     has_recovery_contacts,
     recovery_step_depth,
 )
-from ...sim import BodyFlags, JointTargetMode, JointType
+from ...sim import BodyFlags, JointTargetMode, JointType, ShapeFrictionMode
 from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
+from ...sim.enums import FRICTION_TORSIONAL_BIT
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
@@ -526,6 +527,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_mjc_solref_mode: wp.array[wp.int32],
+    shape_material_friction_mode: wp.array[wp.int32],
     # Newton contacts
     rigid_contact_count: wp.array[wp.int32],
     rigid_contact_shape0: wp.array[wp.int32],
@@ -571,6 +573,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     tid_to_cid: wp.array[wp.int32],
     recovery: MeshRecoveryData,
     world_timestep: wp.array[float],
+    refsafe: bool,
     compact_stale: bool,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
@@ -698,6 +701,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
             worldid,
         )
 
+        # Only SLIDING_ROLLING shapes give condim 6 to a contact in which no shape enables torsional friction.
+        if shape_material_friction_mode and condim == 6:
+            friction_mode = shape_material_friction_mode[shape_a] | shape_material_friction_mode[shape_b]
+            if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
+                friction[2] = MJ_MINMU
+
         if rigid_contact_stiffness:
             friction_scale = rigid_contact_friction[tid]
             if friction_scale > 0.0:
@@ -792,12 +801,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
                 contact_ke = wp.max(contact_ke * factor, FLOAT64_EPS)
                 kd = rigid_contact_damping[tid]
+                critical_timeconst = wp.sqrt(1.0 / contact_ke)
+                timeconst = critical_timeconst
                 if kd > 0.0:
                     timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
-                    dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
-                else:
-                    timeconst = wp.sqrt(1.0 / contact_ke)
-                    dampratio = 1.0
+                    if refsafe and timeconst < critical_timeconst:
+                        # Keep the stiffness; cap overdamped damping at the refsafe floor.
+                        dt = world_timestep[worldid % world_timestep.shape[0]]
+                        timeconst = wp.min(wp.max(timeconst, 2.0 * dt), critical_timeconst)
+                dampratio = critical_timeconst / timeconst
                 solref = wp.vec2(timeconst, dampratio)
 
         if recovery_slot >= 0 and dist < margin:
@@ -1431,6 +1443,7 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     ref_body_q: wp.array[wp.transform],
+    update_joint_anchors: bool,
     # output
     X_rel_out: wp.array2d[wp.transform],
 ):
@@ -1453,7 +1466,9 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
     body2 = int(-1)
     if newton_jnt >= 0:
         if joint_type[newton_jnt] == JointType.BALL:
-            X_rel_out[world, mjc_eq] = joint_X_c[newton_jnt] * wp.transform_inverse(joint_X_p[newton_jnt])
+            # Depends on the joint frames only, which are published with the first anchor.
+            if update_joint_anchors:
+                X_rel_out[world, mjc_eq] = joint_X_c[newton_jnt] * wp.transform_inverse(joint_X_p[newton_jnt])
             return
         body1 = joint_parent[newton_jnt]
         body2 = joint_child[newton_jnt]
@@ -1476,12 +1491,12 @@ def update_connect_constraint_anchors_kernel(
     mjc_eq_to_newton_eq: wp.array2d[wp.int32],
     mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
     eq_constraint_type: wp.array[wp.int32],
-    eq_constraint_anchor: wp.array[wp.vec3],
     jnt_connect_hinge_side: wp.array2d[wp.int32],
     joint_X_p: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[wp.int32],
     connect_X_rel: wp.array2d[wp.transform],
+    update_joint_anchors: bool,
     # output
     eq_data_out: wp.array2d[vec12],
 ):
@@ -1503,22 +1518,22 @@ def update_connect_constraint_anchors_kernel(
     newton_eq = src[0]
     newton_jnt = src[1]
 
-    anchor = wp.vec3(0.0)
-    if newton_jnt >= 0:
+    data = eq_data_out[world, mjc_eq]
+    if newton_eq < 0 and newton_jnt < 0:
+        return
+
+    # Constant refreshes must not publish pending constraint or joint edits.
+    anchor = wp.vec3(data[0], data[1], data[2])
+    if newton_jnt >= 0 and update_joint_anchors:
         X_p = joint_X_p[newton_jnt]
         anchor = wp.transform_get_translation(X_p)
         side = jnt_connect_hinge_side[world, mjc_eq]
         if side != 0:
             axis = wp.quat_rotate(wp.transform_get_rotation(X_p), joint_axis[joint_qd_start[newton_jnt]])
             anchor = hinge_connect_anchor(anchor, side, axis)
-    elif newton_eq >= 0:
-        anchor = eq_constraint_anchor[newton_eq]
-    else:
-        return
 
     anchor2 = wp.transform_point(connect_X_rel[world, mjc_eq], anchor)
 
-    data = eq_data_out[world, mjc_eq]
     data[0] = anchor[0]
     data[1] = anchor[1]
     data[2] = anchor[2]
@@ -2597,6 +2612,7 @@ def update_geom_properties_kernel(
     shape_hfield_offset: wp.array[float],
     shape_mu_torsional: wp.array[float],
     shape_mu_rolling: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_geom_solimp: wp.array[vec5],
     shape_geom_solmix: wp.array[float],
     shape_mjc_solref: wp.array[wp.vec2f],
@@ -2638,6 +2654,10 @@ def update_geom_properties_kernel(
     mu = shape_mu[shape_idx]
     torsional = shape_mu_torsional[shape_idx]
     rolling = shape_mu_rolling[shape_idx]
+    if shape_material_friction_mode:
+        # condim 6 without torsional friction
+        if shape_material_friction_mode[shape_idx] == int(ShapeFrictionMode.SLIDING_ROLLING):
+            torsional = MJ_MINMU
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # geom_solref per shape_mjc_solref_mode. See docs/solvers/mujoco.rst
@@ -2755,21 +2775,26 @@ def update_site_properties_kernel(
 
 
 @wp.kernel
-def sync_worldbody_geom_xposes_kernel(
+def sync_static_geom_xposes_kernel(
     geom_bodyid: wp.array[int],
+    body_weldid: wp.array[int],
     geom_pos: wp.array2d[wp.vec3],
     geom_quat: wp.array2d[wp.quat],
+    body_xpos: wp.array2d[wp.vec3],
+    body_xquat: wp.array2d[wp.quat],
     geom_xpos: wp.array2d[wp.vec3],
     geom_xmat: wp.array2d[wp.mat33],
 ):
-    """Refresh per-world poses for geoms attached directly to the world body."""
+    """Refresh per-world poses for geoms on bodies welded to the world."""
     world, geom = wp.tid()
-    if geom_bodyid[geom] != 0:
+    body = geom_bodyid[geom]
+    if body_weldid[body] != 0:
         return
 
+    body_q = quat_wxyz_to_xyzw(body_xquat[world, body])
     geom_q = quat_wxyz_to_xyzw(geom_quat[world, geom])
-    geom_xpos[world, geom] = geom_pos[world, geom]
-    geom_xmat[world, geom] = wp.quat_to_matrix(geom_q)
+    geom_xpos[world, geom] = body_xpos[world, body] + wp.quat_rotate(body_q, geom_pos[world, geom])
+    geom_xmat[world, geom] = wp.quat_to_matrix(body_q * geom_q)
 
 
 @wp.kernel

@@ -9,7 +9,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, JointType, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
 from .kernels_body import (
     eval_body_joint_forces,
@@ -110,6 +110,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             raise ValueError("SolverSemiImplicit does not support JointType.ROD joints.")
 
         super().__init__(model=model)
+        warn_unsupported_friction_modes(model, "SolverSemiImplicit")
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
         if model.joint_count > 0:
@@ -125,6 +126,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in deterministic_modules:
             self._set_module_options(options, module=module)
+        # Gather contact wrenches per body instead of recording them as deterministic atomics.
+        self._gather_contact_wrenches = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
         self.angular_damping = angular_damping
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
@@ -259,10 +262,12 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 eval_triangle_contact_forces(model, state_in, particle_f)
 
             # body contacts
-            eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f)
+            eval_body_contact_forces(
+                model, state_in, contacts, body_f_out=body_f, deterministic=self._gather_contact_wrenches
+            )
 
             # particle shape contact
             eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
-            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
+            self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
             self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f)

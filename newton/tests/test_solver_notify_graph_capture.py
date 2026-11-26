@@ -6,7 +6,7 @@ import unittest
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import MUJOCO_MODULES, add_function_test, get_cuda_test_devices
 
 _SINGLE_FLAGS = tuple(flag for flag in newton.ModelFlags if flag not in (newton.ModelFlags.NONE, newton.ModelFlags.ALL))
 
@@ -52,36 +52,38 @@ class TestNotifyModelChangedGraphable(unittest.TestCase):
         )
 
 
-def test_graphable_notifications_capture(test, device):
+def test_graphable_notifications_capture(test, device, solver_class):
     """Every flag a solver reports as graphable captures and replays in a CUDA graph."""
     if not wp.is_mempool_enabled(device):
         test.skipTest("Capturing allocations requires a memory pool")
-    solvers = (
-        newton.solvers.SolverXPBD,
-        newton.solvers.SolverFeatherstone,
-        newton.solvers.SolverVBD,
-        newton.solvers.SolverMuJoCo,
-        newton.solvers.SolverSteel,
-        newton.solvers.SolverKamino,
-    )
-    for solver_class in solvers:
-        solver = solver_class(_articulated_model(device))
-        # Capturing a notification reported as not graphable can leave the device unusable, so only
-        # the reported ones are captured.
-        for flag in (flag for flag in _SINGLE_FLAGS if solver.is_notify_model_changed_graphable(flag)):
-            with test.subTest(solver=solver_class.__name__, flag=flag.name):
-                with wp.ScopedCapture(device) as capture:
-                    solver.notify_model_changed(flag)
-                wp.capture_launch(capture.graph)
+    solver = solver_class(_articulated_model(device))
+    # Capturing a notification reported as not graphable can leave the device unusable, so only
+    # the reported ones are captured.
+    for flag in (flag for flag in _SINGLE_FLAGS if solver.is_notify_model_changed_graphable(flag)):
+        with test.subTest(flag=flag.name):
+            with wp.ScopedCapture(device) as capture:
+                solver.notify_model_changed(flag)
+            wp.capture_launch(capture.graph)
     wp.synchronize_device(device)
 
 
-add_function_test(
-    TestNotifyModelChangedGraphable,
-    "test_graphable_notifications_capture",
-    test_graphable_notifications_capture,
-    devices=get_cuda_test_devices(),
-)
+devices = get_cuda_test_devices()
+for solver_class in (
+    newton.solvers.SolverXPBD,
+    newton.solvers.SolverFeatherstone,
+    newton.solvers.SolverVBD,
+    newton.solvers.SolverMuJoCo,
+    newton.solvers.SolverSteel,
+    newton.solvers.SolverKamino,
+):
+    add_function_test(
+        TestNotifyModelChangedGraphable,
+        f"test_graphable_notifications_capture_{solver_class.__name__.removeprefix('Solver').lower()}",
+        test_graphable_notifications_capture,
+        devices=devices,
+        solver_class=solver_class,
+        requires=MUJOCO_MODULES if solver_class is newton.solvers.SolverMuJoCo else (),
+    )
 
 
 if __name__ == "__main__":

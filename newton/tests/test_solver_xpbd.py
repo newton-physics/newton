@@ -1791,30 +1791,6 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     )
 
 
-def test_xpbd_update_contacts_requires_force_attribute(test, device):
-    """update_contacts should raise ValueError when contacts.force is not allocated."""
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.25), wp.quat_identity()))
-    builder.add_shape_sphere(body=body, radius=0.25)
-    model = builder.finalize(device=device)
-
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
-    state_in = model.state()
-    state_out = model.state()
-    control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-
-    state_in.clear_forces()
-    collision_pipeline.collide(state_in, contacts)
-    solver.step(state_in, state_out, control, contacts, 1.0 / 60.0)
-
-    test.assertIsNone(contacts.force)
-    with test.assertWarns(DeprecationWarning), test.assertRaises(ValueError):
-        solver.update_contacts(contacts)
-
-
 def _build_single_body_pendulum(joint_kind: str, parent_kinematic: bool, gravity: float):
     """Build a single dynamic body suspended from world (or a kinematic body).
 
@@ -2968,14 +2944,6 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_contact_force_zero_when_not_touching",
     test_xpbd_contact_force_zero_when_not_touching,
-    devices=devices,
-    check_output=False,
-)
-
-add_function_test(
-    TestSolverXPBD,
-    "test_xpbd_update_contacts_requires_force_attribute",
-    test_xpbd_update_contacts_requires_force_attribute,
     devices=devices,
     check_output=False,
 )

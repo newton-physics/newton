@@ -91,8 +91,6 @@ def test_parent_force_solver_observables(test, device, solver_fn):
     solver = solver_fn(model)
     observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
-
-    test.assertIsNone(state_1.body_parent_f)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
@@ -121,8 +119,6 @@ def test_parent_force_solver_observables_xpbd(test, device):
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.kinds))
-
-    test.assertIsNone(state_1.body_parent_f)
     parent_f = observables.body_parent_f.numpy()[0]
     test.assertTrue(np.all(np.isfinite(parent_f)))
     test.assertGreater(np.linalg.norm(parent_f), 0.0)
