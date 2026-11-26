@@ -1327,7 +1327,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
         generates contacts on every step and ``contacts`` is not used as input. When the solver owns
         a collision pipeline, ``contacts`` must be ``None`` and the pipeline detects into
-        :attr:`contacts` during the step. Otherwise, non-``None`` contacts (for example, populated
+        :attr:`contacts` during the step. With the rigid collision frequency set to
+        ``CollisionFrequencyType.NONE``, contacts detected externally into :attr:`contacts` are
+        evaluated at the mid-point under ``"moreau"``, but miss contacts closing within the first
+        half-step, so prefer the default ``PRE_INIT``. Otherwise, non-``None`` contacts (for example, populated
         by :meth:`~newton.CollisionPipeline.collide`) are converted to Kamino's internal format and
         used directly.
 
