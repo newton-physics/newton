@@ -3774,10 +3774,9 @@ def test_same_body_rolling_route_matches_length_gradient(test, device):
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 solver.tendon_segment_rest_length,
+                solver.tendon_segment_length,
                 solver.tendon_segment_attachment_l,
                 solver.tendon_segment_attachment_r,
-                solver.tendon_segment_attachment_l_local,
-                solver.tendon_segment_attachment_r_local,
                 solver.tendon_segment_active_compliance,
                 solver.tendon_segment_active_damping,
                 solver.tendon_segment_lambda,
@@ -3922,10 +3921,8 @@ def test_unloaded_motorized_pulley_does_not_drive_slider(test, device):
         theta = abs(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
         test.assertGreater(theta, 0.5, f"Drive pulley should rotate under its target: theta={theta:.4f}")
-        # A gripped cable drags the slider about 0.6 m here. Without grip, the
-        # stretch row still nudges the free, undamped slider while the pulley
-        # spins up, so it drifts about 0.3 mm.
-        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-3)
+        test.assertAlmostEqual(slider_x, -0.4, delta=2.5e-5)
+        test.assertAlmostEqual(float(state.body_qd.numpy()[slider_idx, 0]), 0.0, delta=2.5e-5)
 
 
 def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
@@ -3941,11 +3938,8 @@ def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
         theta = abs(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
         test.assertGreater(theta, 0.5, f"Frictionless drive pulley should still rotate: theta={theta:.4f}")
-        test.assertLess(
-            abs(slider_x + 0.4),
-            0.02,
-            f"Frictionless pulley spin should not pull cable/slider: x={slider_x:.4f}",
-        )
+        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-6)
+        test.assertAlmostEqual(float(state.body_qd.numpy()[slider_idx, 0]), 0.0, delta=5.0e-6)
 
 
 def test_unloaded_motorized_pulley_preserves_rest(test, device):
@@ -3977,8 +3971,6 @@ def test_unloaded_motorized_pulley_preserves_rest(test, device):
 
         test.assertGreater(theta, 0.1, f"Pulley should have started rotating: theta={theta:.4f}")
         test.assertAlmostEqual(slider_dx, 0.0, delta=1.0e-5)
-        # A gripped cable moves about 1e-2 m of rest length between the spans in
-        # these 30 steps; the unloaded cable moves about 1.4e-6 m.
         np.testing.assert_allclose(state_0.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-5, rtol=0)
 
 
