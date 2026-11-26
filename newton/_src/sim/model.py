@@ -24,7 +24,6 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
 from ..utils.deprecation import warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
-from .contacts import Contacts
 from .control import Control
 from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
@@ -414,7 +413,9 @@ class Model:
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
         ACTUATOR = 26
         """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
-        POINT_SET = 27
+        CAMERA = 27
+        """Attribute frequency follows the number of model cameras (see :attr:`~newton.Model.camera_count`)."""
+        POINT_SET = 28
         """Experimental frequency for recorded deformable point sets (see :attr:`~newton.Model.point_set_count`)."""
 
     @dataclass(frozen=True)
@@ -491,6 +492,16 @@ class Model:
         "gravity": AttributeSpec(
             AttributeFrequency.WORLD, compaction_policy="passthrough", update_flags=ModelFlags.MODEL_PROPERTIES
         ),
+        "camera_label": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_world": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.WORLD),
+        "camera_body": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.BODY),
+        "camera_transform": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_lens_type": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_focal_length": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_aperture": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_aperture_offset": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_clipping_range": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_pixel_aspect_ratio": AttributeSpec(AttributeFrequency.CAMERA),
         "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
         "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
         "tendon_start": AttributeSpec(
@@ -602,6 +613,7 @@ class Model:
             AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES
         ),
         "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_friction_mode": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_gap": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
@@ -928,6 +940,7 @@ class Model:
         AttributeFrequency.TETRAHEDRON: "tet_count",
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.TENDON: "tendon_count",
+        AttributeFrequency.CAMERA: "camera_count",
         AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
         AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
@@ -1115,6 +1128,12 @@ class Model:
         """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
         """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_friction_mode: wp.array[wp.int32] | None = None
+        """Shape friction mode, shape [shape_count], int.
+
+        Values are :class:`~newton.ShapeFrictionMode`. Solvers and the collision
+        pipeline may read the mode only when they are constructed: set it before
+        constructing them; changing it afterwards is not supported."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
@@ -1324,6 +1343,39 @@ class Model:
         """Particle spring activation [dimensionless], shape [spring_count], float."""
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
+
+        # cameras
+        self.camera_count: int = 0
+        """Number of model cameras."""
+        self.camera_label: list[str] = []
+        """Camera labels, shape (camera_count,)."""
+        self.camera_world: wp.array[wp.int32] | None = None
+        """Owning world of each camera, shape [camera_count], int. ``-1`` is the global world;
+        a global camera is rendered once in every world, just as global shapes appear in every world."""
+        self.camera_body: wp.array[wp.int32] | None = None
+        """Parent body of each camera, shape [camera_count], int. ``-1`` means the camera is fixed."""
+        self.camera_transform: wp.array[wp.transformf] | None = None
+        """Camera frame relative to its parent body, or its world pose for fixed cameras [m, unitless quaternion],
+        shape [camera_count], transform. The camera looks along its local -Z axis with +Y up."""
+        self.camera_lens_type: wp.array[wp.int32] | None = None
+        """Lens type of each camera (:class:`~newton.CameraLensType`), shape [camera_count], int."""
+        self.camera_focal_length: wp.array[wp.float32] | None = None
+        """Focal length of each pinhole camera [m], shape [camera_count], float."""
+        self.camera_aperture: wp.array[wp.vec2f] | None = None
+        """Horizontal and vertical aperture (sensor size) of each pinhole camera [m], shape [camera_count], vec2.
+        A zero component is derived from the rendered image aspect ratio. When both are set and the image
+        aspect ratio differs, the aperture is expanded to it, like USD's default ``expandAperture`` policy.
+        Both use the pixel shape in :attr:`camera_pixel_aspect_ratio`."""
+        self.camera_aperture_offset: wp.array[wp.vec2f] | None = None
+        """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2."""
+        self.camera_clipping_range: wp.array[wp.vec2f] | None = None
+        """Near and far clip distance of each camera [m], shape [camera_count], vec2. For ``PINHOLE`` cameras
+        they are depths along the camera's -Z axis (planar clipping, as in USD and MJCF) for rays projected from
+        the camera's intrinsics, and distances along each ray for rays a sensor gives the camera explicitly."""
+        self.camera_pixel_aspect_ratio: wp.array[wp.float32] | None = None
+        """Pixel width over pixel height of each pinhole camera [unitless], shape [camera_count], float.
+        ``1`` means square pixels. The image resolution is not part of the camera; the sensor that renders it
+        chooses it."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0
@@ -1977,20 +2029,12 @@ class Model:
         self.custom_frequency_label_attributes: dict[str, str] = {}
         """Attribute keys containing labels for custom-frequency rows."""
 
-        self._requested_state_attributes: set[str] = set()
-        self._requested_contact_attributes: set[str] = set()
-
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
         Attribute values remain normal Python attributes on the model. This
         registry describes their indexing, ownership, and reference semantics.
         """
-
-        # Deprecated solver-produced State attributes remain registered for
-        # compatibility with request_state_attributes().
-        for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
-            self.attribute_specs[full_name] = Model.AttributeSpec(getattr(Model.AttributeFrequency, template.frequency))
 
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {
             name: spec.frequency for name, spec in self.attribute_specs.items()
@@ -2813,8 +2857,6 @@ class Model:
             The state object.
         """
 
-        requested = self.get_requested_state_attributes()
-
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
@@ -2844,41 +2886,10 @@ class Model:
             s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
             s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
 
-        self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
-
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
-
-    def _add_requested_state_attributes(
-        self,
-        state: State,
-        requested: list[str],
-        requires_grad: bool = False,
-    ) -> None:
-        """Allocate optional built-in state attributes requested by name."""
-        for full_name in requested:
-            template = State.EXTENDED_ATTRIBUTE_TEMPLATES.get(full_name)
-            if template is None:
-                continue
-
-            frequency = getattr(Model.AttributeFrequency, template.frequency)
-            value = wp.zeros(
-                self._attribute_frequency_count(frequency),
-                dtype=template.dtype,
-                device=self.device,
-                requires_grad=requires_grad,
-            )
-            if ":" in full_name:
-                namespace_name, attr_name = full_name.split(":", 1)
-                namespace = getattr(state, namespace_name, None)
-                if namespace is None:
-                    namespace = Model.AttributeNamespace(namespace_name)
-                    setattr(state, namespace_name, namespace)
-                setattr(namespace, attr_name, value)
-            else:
-                setattr(state, full_name, value)
 
     def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
         if isinstance(frequency, str):
@@ -3239,65 +3250,6 @@ class Model:
             )
         return self.rigid_contact_max, self.soft_contact_max
 
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced state attributes.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_state_attributes(*attributes)
-
-    def _request_state_attributes(self, *attributes: str) -> None:
-        """Register legacy state fields after the entry point emits its warning."""
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
-
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced contact attributes.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_contact_attributes(*attributes)
-
-    def _request_contact_attributes(self, *attributes: str) -> None:
-        """Register legacy contact fields after the entry point emits its warning."""
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
-    def get_requested_contact_attributes(self) -> set[str]:
-        """
-        Get the set of requested contact attribute names.
-
-        Returns:
-            The set of requested contact attributes.
-        """
-        return self._requested_contact_attributes
-
     def _add_custom_attributes(
         self,
         destination: object,
@@ -3488,7 +3440,7 @@ class Model:
 
                 print(model.get_attribute_update_flags("shape_material_mu").name)
                 print(model.get_attribute_update_flags("mujoco:solref").name)
-                print(model.get_attribute_update_flags("mujoco:condim"))
+                print(model.get_attribute_update_flags("shape_material_friction_mode"))
 
             .. testoutput::
 
@@ -3579,5 +3531,4 @@ class Model:
         if self.joint_count:
             attributes.extend(("joint_q", "joint_qd"))
 
-        attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes

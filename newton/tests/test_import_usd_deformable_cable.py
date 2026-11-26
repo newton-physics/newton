@@ -145,6 +145,12 @@ class TestUSDDeformableCable(unittest.TestCase):
                             self.assertAlmostEqual(values[rigid_shape], defaults[name])
                         for shape in cable_shapes:
                             self.assertAlmostEqual(values[shape], values[rigid_shape])
+                    # Authored rolling friction selects the rolling friction mode on both.
+                    modes = builder.shape_material_friction_mode
+                    expected_mode = (
+                        newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING if mode == "authored" else modes[rigid_shape]
+                    )
+                    self.assertEqual({modes[shape] for shape in (rigid_shape, *cable_shapes)}, {expected_mode})
 
     def test_welded_cable_contact_material_difference_warns(self):
         """Warn and use one representative contact material for welded capsules."""

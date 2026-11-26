@@ -46,7 +46,7 @@ def _make_free_body_scene(
         builder.add_ground_plane()
     builder.end_world()
     model = builder.finalize(device=device)
-    sensor = SensorIMU(model, sites=[site], request_state_attributes=False) if site is not None else None
+    sensor = SensorIMU(model, sites=[site]) if site is not None else None
     return model, body, sensor
 
 
@@ -75,8 +75,6 @@ def test_free_fall_body_acceleration_and_imu(test, device, integrator):
     sensor.update(state_out, observables=observables)
 
     expected_gravity = np.array([0.0, 0.0, -9.81])
-    test.assertIsNone(state_in.body_qdd)
-    test.assertIsNone(state_out.body_qdd)
     np.testing.assert_allclose(observables.body_qdd.numpy()[0, :3], expected_gravity, rtol=0.0, atol=2.0e-4)
     np.testing.assert_allclose(observables.body_qdd.numpy()[0, 3:], 0.0, rtol=0.0, atol=2.0e-4)
     np.testing.assert_allclose(sensor.accelerometer.numpy()[0], 0.0, rtol=0.0, atol=2.0e-4)
@@ -95,8 +93,6 @@ def test_body_acceleration_observable_ownership(test, device):
 
     velocity_a = state_a.body_qd.numpy().copy()
     solver.step(state_a, state_b, control, None, DT, observables=observables)
-    test.assertIsNone(state_a.body_qdd)
-    test.assertIsNone(state_b.body_qdd)
     np.testing.assert_array_equal(state_a.body_qd.numpy(), velocity_a)
     np.testing.assert_allclose(
         observables.body_qdd.numpy(),
@@ -107,8 +103,6 @@ def test_body_acceleration_observable_ownership(test, device):
 
     velocity_b = state_b.body_qd.numpy().copy()
     solver.step(state_b, state_a, control, None, DT, observables=observables)
-    test.assertIsNone(state_a.body_qdd)
-    test.assertIsNone(state_b.body_qdd)
     np.testing.assert_array_equal(state_b.body_qd.numpy(), velocity_b)
     np.testing.assert_allclose(
         observables.body_qdd.numpy(),
@@ -120,7 +114,6 @@ def test_body_acceleration_observable_ownership(test, device):
     state_in_place = model.state()
     velocity_in_place = state_in_place.body_qd.numpy().copy()
     solver.step(state_in_place, state_in_place, control, None, DT, observables=observables)
-    test.assertIsNone(state_in_place.body_qdd)
     np.testing.assert_allclose(
         observables.body_qdd.numpy(),
         (state_in_place.body_qd.numpy() - velocity_in_place) / DT,
@@ -236,51 +229,6 @@ def test_contact_body_acceleration(test, device):
     np.testing.assert_allclose(observables.body_qdd.numpy()[body], 0.0, rtol=0.0, atol=3.0e-1)
 
 
-def test_body_acceleration_partial_reset(test, device):
-    """Retain partial and full resets of deprecated state acceleration."""
-    builder = newton.ModelBuilder()
-    for world_index in range(2):
-        builder.begin_world(label=f"world_{world_index}")
-        _add_free_body(builder, label=f"body_{world_index}")
-        builder.end_world()
-    with test.assertWarnsRegex(DeprecationWarning, r"ModelBuilder\.request_state_attributes.*1\.7"):
-        builder.request_state_attributes("body_qdd")
-    model = builder.finalize(device=device)
-    solver = _make_solver(model)
-    state = model.state()
-    state.body_qdd.assign(
-        [
-            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            [7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-        ]
-    )
-    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
-
-    solver.reset(state, world_mask=world_mask, flags=0)
-    acceleration = state.body_qdd.numpy()
-    np.testing.assert_array_equal(acceleration[0], 0.0)
-    np.testing.assert_array_equal(acceleration[1], [7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
-
-    solver.reset(state, flags=0)
-    np.testing.assert_array_equal(state.body_qdd.numpy(), 0.0)
-
-
-def test_body_acceleration_remains_unrequested(test, device):
-    """Leave the optional acceleration absent when it is not requested."""
-    builder = newton.ModelBuilder()
-    builder.begin_world()
-    _add_free_body(builder, label="body")
-    builder.end_world()
-    model = builder.finalize(device=device)
-    solver = _make_solver(model)
-    state = model.state()
-
-    test.assertIsNone(state.body_qdd)
-
-    solver.step(state, state, model.control(), None, DT)
-    test.assertIsNone(state.body_qdd)
-
-
 def test_body_acceleration_cuda_graph(test, device):
     """Replay captured in-place steps with valid body acceleration."""
     if not device.is_cuda or wp.config.verify_cuda:
@@ -298,8 +246,6 @@ def test_body_acceleration_cuda_graph(test, device):
         solver.step(state, state, control, None, DT, observables=observables)
     wp.capture_launch(capture.graph)
     wp.capture_launch(capture.graph)
-
-    test.assertIsNone(state.body_qdd)
     np.testing.assert_allclose(observables.body_qdd.numpy()[0, :3], [0.0, 0.0, -9.81], rtol=0.0, atol=2.0e-4)
     test.assertEqual(observables.body_qdd.ptr, pointer)
 
@@ -348,20 +294,6 @@ add_function_test(
     TestKaminoBodyAcceleration,
     "test_contact_body_acceleration",
     test_contact_body_acceleration,
-    devices=devices,
-    check_output=False,
-)
-add_function_test(
-    TestKaminoBodyAcceleration,
-    "test_body_acceleration_partial_reset",
-    test_body_acceleration_partial_reset,
-    devices=devices,
-    check_output=False,
-)
-add_function_test(
-    TestKaminoBodyAcceleration,
-    "test_body_acceleration_remains_unrequested",
-    test_body_acceleration_remains_unrequested,
     devices=devices,
     check_output=False,
 )
