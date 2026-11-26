@@ -1108,6 +1108,41 @@ Two approaches available:
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
+When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
+single contact on the shorter exit path. Both shapes need texture SDFs and
+the probe surface must be connected. A mesh query verifies the two locally
+planar wall faces and the swept probe footprint.
+Each collision update uses the current geometry. Once the overlap is shallow,
+the ordinary SDF contacts take over.
+Between updates, translation and rotation may reuse a recovery contact only
+while the entire swept probe remains inside the verified corridor.
+Broad contact patches, ambiguous exits, and nearby features that intrude on the
+footprint use the ordinary manifold. The same fallback applies when the probe
+has more than 4,096 vertices or the swept query visits more than 128 wall
+triangles. The default recovery table can also fall back after 32 hash probes.
+With ``deterministic=True``, the table reserves space for all eligible pairs
+and probes until it finds a slot. This keeps recovery contact selection
+repeatable within the collision buffer capacities. A complete crossing can
+leave the shapes separated, so no discrete overlap remains to recover.
+
+Solvers and :class:`~sensors.SensorContact` read the same two surface witnesses
+and separation normal from the contact buffer. XPBD and VBD bound positional
+correction while the probe is deeply embedded. XPBD skips restitution on the
+recovery contact. VBD can support an external load while limiting the outward
+correction per step using a temporary hard normal constraint. Steel bounds
+the penetration used for its corrective velocity and skips restitution on
+recovery contacts. The semi-implicit and Featherstone solvers use a bounded
+penetration depth for the elastic contact force.
+MuJoCo Warp with Newton contacts temporarily
+uses recovery stiffness and damping to limit its separation speed, then resumes
+the ordinary contact material response. Hydroelastic pairs follow the
+pressure-based contact model.
+
+When capturing a solver-only CUDA graph, allocate the contact buffer with
+:meth:`~CollisionPipeline.contacts` or run the pipeline once on a manually
+allocated buffer before capture. Recapture the graph if switching pipelines
+replaces the buffer's recovery storage.
+
 .. warning::
    If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
    which are **significantly slower**. For production use with complex meshes, precompute and
@@ -1428,9 +1463,6 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
    * - ``anchor_contact``
      - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
        Default: False.
-   * - ``margin_contact_area``
-     - Deprecated area used for speculative-contact activation stiffness.
-       It remains effective during the deprecation period. Default: 0.01.
 
 .. _Shape Configuration:
 
@@ -2229,8 +2261,8 @@ Hydroelastic contacts use the same three margin-and-gap bands described in
 
 Contacts in the gap region are speculative. Their separation is nonnegative,
 so they do not produce force in the current state. Newton assigns them a contact
-stiffness using the two materials' hydroelastic stiffness and the deprecated
-``margin_contact_area`` compatibility setting.
+stiffness from the two materials' hydroelastic stiffness and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 To recover the closest equivalent of the earlier geometric-surface behavior,
 set both ``margin=0.0`` and ``gap=0.0`` on the participating shapes. This is a
@@ -2302,8 +2334,8 @@ same pressure law on the hydroelastic faces; no separate linear stiffness law is
 applied to reduced penetrating contacts. The evaluated pressure is stored once
 per buffered face because the pair separation does not contain either shape's
 individual SDF depth. Speculative contacts do not use this stored pressure;
-their activation stiffness uses the declared ``kh`` values and the deprecated
-``margin_contact_area`` compatibility setting.
+their activation stiffness uses the declared ``kh`` values and a fixed
+activation area of 0.01 m\ :sup:`2`.
 
 See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
 example.
@@ -2385,6 +2417,11 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.restitution`
      - :attr:`~Model.shape_material_restitution`
+   * - ``friction_mode``
+     - Friction components the shape's contacts enable
+     - ``SLIDING``
+     - :attr:`~ModelBuilder.ShapeConfig.friction_mode`
+     - :attr:`~Model.shape_material_friction_mode`
    * - ``mu_torsional``
      - Resistance to spinning at contact
      - 0.005
@@ -2410,6 +2447,32 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 .. note::
    :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
    the solver constructor before ``restitution`` takes effect.
+
+:class:`~newton.ShapeFrictionMode` selects which friction components a
+contact applies: ``NONE`` (frictionless), ``SLIDING`` (``mu`` only),
+``SLIDING_TORSIONAL`` (adds ``mu_torsional``), ``SLIDING_ROLLING`` (adds
+``mu_rolling``), or ``SLIDING_TORSIONAL_ROLLING`` (adds both).
+A contact enables the components that either of its shapes enables (in
+:class:`~newton.solvers.SolverMuJoCo`, a higher ``mujoco:geom_priority`` or an
+explicit contact pair decides instead) and then combines the coefficients of
+both shapes by the solver's usual rule, so torsional and rolling coefficients
+take effect only in contacts where a shape's mode enables them. A
+``SLIDING_ROLLING`` ball on a ``SLIDING`` ground, for example, gets rolling
+resistance but no torsional friction, whatever the ground's ``mu_torsional``
+(for :class:`~newton.solvers.SolverMuJoCo`, see :ref:`mujoco-friction-modes`).
+A rigid contact is only frictionless
+when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
+so particle contacts follow the shape's mode, and torsional and rolling
+friction do not act on them because particles do not rotate
+(:class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction, see
+:ref:`mujoco-flexes`). Solvers and the collision pipeline may read the modes
+only when they are constructed, so changing a mode afterwards is not supported. See :ref:`Contact material support` for the modes each solver
+supports.
+
+Torsional friction matters most for contacts that touch at a single point,
+such as spheres, capsules, and edges, for example on fingertips. Contacts
+with several points or a hydroelastic patch already resist spinning through
+their distributed sliding friction.
 
 Example:
 
@@ -2465,13 +2528,6 @@ The viscous branch evaluates :math:`k_f v_t` directly, so its velocity
 derivative remains well-defined at rest without a separate smoothing
 parameter. The force is continuous at the Coulomb limit, where its derivative
 changes between the viscous and capped branches.
-
-The solver argument and attribute ``friction_smoothing`` are deprecated in
-Newton 1.8 and have no effect on friction. Explicit constructor values and
-attribute reads or assignments emit a deprecation warning. Constructor calls
-and attribute access remain supported, and the attribute retains its last
-assigned value; all values use the corrected force law above. Remove its use
-and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
 
 - Larger ``kf`` gives less creep but stiffens the friction force. With these
   explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
@@ -2530,7 +2586,15 @@ respectively.
 
 Extends ``PhysicsMaterialAPI`` with torsional/rolling friction
 (``newton:torsionalFriction``, ``newton:rollingFriction``) and contact response
-attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
+attributes. Authoring a torsional or rolling coefficient raises the
+:attr:`~ModelBuilder.ShapeConfig.friction_mode` of the shapes bound to the
+material to enable that component (``SLIDING_TORSIONAL``, ``SLIDING_ROLLING``,
+or ``SLIDING_TORSIONAL_ROLLING``). Colliders that apply
+``MjcCollisionAPI`` select friction components through ``mjc:condim`` alone.
+A positive PhysX ``physxCollision:minTorsionalPatchRadius`` ``r`` [m] enables
+torsional friction with ``mu_torsional = mu * r``, unless the material authors
+Newton torsional friction; Newton does not model PhysX's depth-scaled
+``physxCollision:torsionalPatchRadius``. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
 fields as follows: ``newton:contactStiffness`` → ``ke``,
 ``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
@@ -2614,12 +2678,15 @@ The key keeps bit 63 clear, so the two shape indices and the sub-key share 63
 bits.  Models with only primitive and convex shapes use a 3-bit sub-key, which
 leaves room for ``2**30`` shapes.  Models with meshes, heightfields,
 hydroelastic shapes or primitive shapes with an SDF use a 23-bit sub-key and
-fit at most ``2**20`` shapes;
-above that, deterministic mode and contact matching raise ``ValueError`` at
-construction.  A deterministic :class:`~newton.geometry.NarrowPhase` built
-without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape count,
-so it uses 20-bit shape fields and raises at launch for more than ``2**20``
-shapes.
+fit at most ``2**20`` shapes in one key.  Above that, the key holds only the
+sub-key and the sort adds a second stable radix pass on a ``(shape_a, shape_b)``
+pair key, which gives the same contact order for one more radix sort per
+frame; contact matching then searches pair ranges on the pair key and breaks
+ties by sorted row index, following sub-key order within each pair. A
+deterministic :class:`~newton.geometry.NarrowPhase`
+built without ``shape_aabb_lower``/``shape_aabb_upper`` doesn't know the shape
+count, so it uses 20-bit shape fields and raises at launch for more than
+``2**20`` shapes.
 
 Hydroelastic contacts are covered by the same two mechanisms, using the
 marching-cubes voxel and face index as the fingerprint.  They additionally need

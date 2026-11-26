@@ -5,7 +5,8 @@ from functools import cache
 
 import warp as wp
 
-from ...sim import BodyFlags, JointType
+from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
+from ...sim import BodyFlags, JointType, ShapeFrictionMode
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
@@ -13,6 +14,7 @@ from ...sim.articulation import (
 )
 from ...sim.contacts import GENERATION_SENTINEL
 from ..featherstone.kernels import jcalc_motion
+from ..solver import contact_friction_mode
 from .friction import contact_tangent_basis
 from .friction_patches import WARP_DETERMINISM_OFF, FrictionPatches, warmstart_dt_scale
 
@@ -4746,6 +4748,50 @@ def _contact_points_world(
     return point_a_world, point_b_world
 
 
+@wp.kernel
+def prepare_contact_recovery(
+    count: wp.array[int],
+    threads: int,
+    point0: wp.array[wp.vec3],
+    point1: wp.array[wp.vec3],
+    normal: wp.array[wp.vec3],
+    shape0: wp.array[int],
+    shape1: wp.array[int],
+    margin0: wp.array[float],
+    margin1: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    recovery: MeshRecoveryData,
+    generation: wp.array[int],
+    baumgarte: float,
+    recovery_phi: wp.array[float],
+):
+    # The row builders use nonpositive values as recovery depths, finite
+    # positive values as ordinary contacts, and infinity as expired contacts.
+    total = count[0]
+    if total > shape0.shape[0]:
+        return
+    for c in range(wp.tid(), total, threads):
+        recovery_phi[c] = 1.0
+        a = shape0[c]
+        b = shape1[c]
+        if a < 0 or b < 0:
+            continue
+        body_a = shape_body[a]
+        body_b = shape_body[b]
+        pose_a = body_q[body_a] if body_a >= 0 else wp.transform_identity()
+        pose_b = body_q[body_b] if body_b >= 0 else wp.transform_identity()
+        slot = active_recovery_contact(recovery, generation[0], a, b, pose_a, pose_b, normal[c])
+        if slot < -1:
+            recovery_phi[c] = wp.inf
+        elif slot >= 0:
+            n = -normal[c]
+            pa, pb = _contact_points_world(c, body_a, body_b, n, point0, point1, margin0, margin1, body_q)
+            depth = recovery_step_depth(recovery.contacts[slot].thickness, wp.max(wp.dot(n, pb - pa), 0.0))
+            # Keep large user-supplied Baumgarte gains within the certified step depth.
+            recovery_phi[c] = -depth / wp.max(baumgarte, 1.0)
+
+
 @wp.func
 def contact_row_points(
     c: int,
@@ -4819,6 +4865,7 @@ def _allocate_world_contact_slot(
     classify_only: int,
     shape_torsion_radius: wp.array[float],
     torsion_spares: int,
+    recovery_phi: wp.array[float],
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -4894,7 +4941,7 @@ def _allocate_world_contact_slot(
         b_has_dofs and body_has_response_dofs[body_b] != 0 and (body_flags[body_b] & BodyFlags.KINEMATIC) == 0
     )
     contact_slots_needed[c] = 0
-    if not a_can_respond and not b_can_respond:
+    if (not a_can_respond and not b_can_respond) or (recovery_phi and wp.isinf(recovery_phi[c])):
         contact_slot[c] = -1
         contact_path[c] = -1
         return
@@ -5065,6 +5112,7 @@ def allocate_world_contact_slots(
     classify_only: int,
     shape_torsion_radius: wp.array[float],
     torsion_spares: int,
+    recovery_phi: wp.array[float],
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -5136,6 +5184,7 @@ def allocate_world_contact_slots(
             classify_only,
             shape_torsion_radius,
             torsion_spares,
+            recovery_phi,
             contact_world,
             contact_slot,
             contact_art_a,
@@ -5285,8 +5334,10 @@ def surface_contact_target(contact_surface_velocity: wp.array[wp.vec3], c: int, 
 
 
 @wp.func
-def _contact_mu(shape_a: int, shape_b: int, shape_material_mu: wp.array[float]):
-    """Return the arithmetic-mean friction coefficient of one shape pair."""
+def _contact_mu(
+    shape_a: int, shape_b: int, shape_material_mu: wp.array[float], shape_material_friction_mode: wp.array[wp.int32]
+):
+    """Return the arithmetic-mean friction coefficient of one shape pair, zero for frictionless pairs."""
     mu = float(0.0)
     material_count = int(0)
     if shape_a >= 0:
@@ -5297,6 +5348,8 @@ def _contact_mu(shape_a: int, shape_b: int, shape_material_mu: wp.array[float]):
         material_count += 1
     if material_count > 0:
         mu /= float(material_count)
+    if contact_friction_mode(shape_material_friction_mode, shape_a, shape_b) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
     return mu
 
 
@@ -5439,11 +5492,13 @@ def prepare_world_contact_rows(
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
     contact_shared_anchor: int,
     contact_friction_shared_anchor: int,
     restitution_velocity_threshold: float,
+    recovery_phi: wp.array[float],
     # outputs
     world_row_type: wp.array2d[int],
     world_row_parent: wp.array2d[int],
@@ -5483,7 +5538,11 @@ def prepare_world_contact_rows(
             c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
         )
         phi = wp.dot(normal, point_a_world - point_b_world)
-        mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+        restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
+        if recovery_phi and recovery_phi[c] <= 0.0:
+            phi = recovery_phi[c]
+            restitution = 0.0
+        mu = _contact_mu(shape_a, shape_b, shape_material_mu, shape_material_friction_mode)
         tangent0, tangent1 = contact_tangent_basis(normal)
 
         world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_CONTACT
@@ -5494,7 +5553,7 @@ def prepare_world_contact_rows(
             c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
         )
         world_row_rebound_velocity[world, slot] = contact_rebound_velocity(
-            mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
+            restitution,
             body_a,
             art_a,
             body_b,
@@ -6739,6 +6798,7 @@ def _build_mf_contact_row(
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     contact_slots_needed: wp.array[int],
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
@@ -6746,6 +6806,7 @@ def _build_mf_contact_row(
     contact_shared_anchor: int,
     contact_friction_shared_anchor: int,
     restitution_velocity_threshold: float,
+    recovery_phi: wp.array[float],
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -6795,12 +6856,16 @@ def _build_mf_contact_row(
         c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
     )
     phi = wp.dot(normal, point_a_world - point_b_world)
-    mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+    restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
+    if recovery_phi and recovery_phi[c] <= 0.0:
+        phi = recovery_phi[c]
+        restitution = 0.0
+    mu = _contact_mu(shape_a, shape_b, shape_material_mu, shape_material_friction_mode)
     point_a_normal, point_b_normal = contact_row_points(
         c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
     )
     rebound_velocity = contact_rebound_velocity(
-        mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
+        restitution,
         body_a,
         contact_art_a[c],
         body_b,
@@ -6904,6 +6969,7 @@ def build_mf_contact_rows(
     prescribed_articulation: wp.array[int],
     has_target_velocity: int,
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     contact_slots_needed: wp.array[int],
     shape_material_restitution: wp.array[float],
     friction_patches: FrictionPatches,
@@ -6911,6 +6977,7 @@ def build_mf_contact_rows(
     contact_shared_anchor: int,
     contact_friction_shared_anchor: int,
     restitution_velocity_threshold: float,
+    recovery_phi: wp.array[float],
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -6949,6 +7016,7 @@ def build_mf_contact_rows(
             prescribed_articulation,
             has_target_velocity,
             shape_material_mu,
+            shape_material_friction_mode,
             contact_slots_needed,
             shape_material_restitution,
             friction_patches,
@@ -6956,6 +7024,7 @@ def build_mf_contact_rows(
             contact_shared_anchor,
             contact_friction_shared_anchor,
             restitution_velocity_threshold,
+            recovery_phi,
             mf_body_a,
             mf_body_b,
             mf_J_a,
@@ -8167,6 +8236,7 @@ def build_propagation_contact_rows(
     prescribed_articulation: wp.array[int],
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_material_restitution: wp.array[float],
     contact_slots_needed: wp.array[int],
     contact_shared_anchor: int,
@@ -8174,6 +8244,7 @@ def build_propagation_contact_rows(
     friction_patches: FrictionPatches,
     friction_anchor_beta: float,
     restitution_velocity_threshold: float,
+    recovery_phi: wp.array[float],
     # outputs
     propagation_body_a: wp.array2d[int],
     propagation_body_b: wp.array2d[int],
@@ -8228,7 +8299,11 @@ def build_propagation_contact_rows(
             c, body_a, body_b, normal, contact_point0, contact_point1, contact_thickness0, contact_thickness1, body_q
         )
         phi = wp.dot(normal, point_a_world - point_b_world)
-        mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+        restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
+        if recovery_phi and recovery_phi[c] <= 0.0:
+            phi = recovery_phi[c]
+            restitution = 0.0
+        mu = _contact_mu(shape_a, shape_b, shape_material_mu, shape_material_friction_mode)
         tangent0, tangent1 = contact_tangent_basis(normal)
         com_a = wp.vec3(0.0)
         com_b = wp.vec3(0.0)
@@ -8241,7 +8316,7 @@ def build_propagation_contact_rows(
             c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
         )
         rebound_velocity = contact_rebound_velocity(
-            mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
+            restitution,
             body_a,
             art_a,
             body_b,

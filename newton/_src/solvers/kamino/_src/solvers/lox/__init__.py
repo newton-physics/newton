@@ -9,7 +9,7 @@ body system with Kamino's RCM-reordered blocked LLT, whose solves ``llt`` runs
 over the nonzero tiles of the factor. ``projection`` runs the
 unilateral sweeps over joint limits, joint friction and contacts as Jacobi or
 colored Gauss--Seidel sweeps (colored by ``coloring``), optionally accelerated
-by ``apgd`` or ``anderson``; ``contact`` holds the local contact laws and
+by ``nesterov`` or ``anderson``; ``contact`` holds the local contact laws and
 ``spatial_warmstart`` carries torsional and rolling impulses across steps.
 ``seed`` estimates the joint penalty scale of each joint-connected component
 from its structural spectrum.

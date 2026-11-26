@@ -3,7 +3,6 @@
 
 import base64
 import os
-import sys
 import tempfile
 import unittest
 import warnings
@@ -488,25 +487,50 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
 
-    @unittest.skipIf(sys.platform == "win32", "trimesh's meshio loader reopens an open NamedTemporaryFile")
     @requires("meshio", "trimesh")
     def test_gmsh_mesh_urdf(self):
-        """Keep Gmsh .msh files on the shared mesh loader's existing path."""
+        """Read meshio-only formats with meshio, not through trimesh's deprecated wrapper."""
         import meshio
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
         faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
-        mesh = meshio.Mesh(vertices, [("triangle", faces)])
+        # A leading non-triangle block and a node that only it uses must not reach the surface mesh.
+        mesh = meshio.Mesh(
+            np.vstack([vertices, [[100.0, 0.0, 0.0]]]),
+            [("tetra", np.array([[0, 1, 2, 4]])), ("triangle", faces[:2]), ("triangle", faces[2:])],
+        )
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "tetra.msh"
-            for binary in (False, True):
-                with self.subTest(binary=binary):
-                    meshio.write(path, mesh, file_format="gmsh22", binary=binary)
+            for file_format, binary in (("gmsh22", False), ("gmsh22", True), ("ansys", True), ("vtk", True)):
+                path = Path(directory) / ("tetra.vtk" if file_format == "vtk" else "tetra.msh")
+                with self.subTest(file_format=file_format, binary=binary):
+                    meshio.write(path, mesh, file_format=file_format, binary=binary)
                     builder = newton.ModelBuilder()
-                    parse_urdf(MESH_URDF.format(filename=path), builder)
-                    source = builder.shape_source[0]
-                    np.testing.assert_array_equal(source.vertices, vertices)
-                    np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", DeprecationWarning)
+                        parse_urdf(MESH_URDF.format(filename=path), builder)
+                        loaded = [newton.Mesh.create_from_file(path, method=method) for method in (None, "meshio")]
+                    for source in (builder.shape_source[0], *loaded):
+                        np.testing.assert_array_equal(source.vertices, vertices)
+                        np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
+            path.write_text("not a mesh")
+            for load in (
+                lambda: load_meshes_from_file(str(path), maxhullvert=64),
+                lambda: newton.Mesh.create_from_file(path),
+                lambda: newton.TetMesh.create_from_file(path),
+            ):
+                with self.assertRaises(ValueError):
+                    load()
+
+    @requires("trimesh")
+    def test_obj_material_outside_mesh_directory(self):
+        """Follow an MTL reference that leaves the mesh directory, which trimesh 5 ignores by default."""
+        with tempfile.TemporaryDirectory() as directory:
+            mesh_path = Path(directory) / "meshes" / "triangle.obj"
+            mesh_path.parent.mkdir()
+            mesh_path.write_text("mtllib ../paint.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl paint\nf 1 2 3\n")
+            (Path(directory) / "paint.mtl").write_text("newmtl paint\nKd 0.2 0.4 0.6\n")
+            (mesh,) = load_meshes_from_file(str(mesh_path), maxhullvert=64)
+        np.testing.assert_allclose(mesh.color, (0.2, 0.4, 0.6), atol=1e-3)
 
     @requires("trimesh", "collada")
     def test_empty_mesh_reports_filename(self):
@@ -594,7 +618,7 @@ class TestImportUrdfBasic(unittest.TestCase):
         """Verify known pycollada NumPy deprecations do not fail strict warning runs."""
 
         def make_loader(message: str, module_name: str):
-            def fake_load(filename, force=None):
+            def fake_load(filename, **kwargs):
                 warnings.warn_explicit(
                     message=message,
                     category=DeprecationWarning,

@@ -1549,7 +1549,7 @@ class ViewerBase(ABC):
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
             observables: Optional solver observables containing ``contact_f``. If
-                omitted, the deprecated ``contacts.force`` array is used.
+                omitted, contact forces are not drawn.
                 ``contacts`` must be the buffer that produced ``contact_f``
                 (``observables.contacts``); newly allocated forces are zero until the
                 solver updates them. See :ref:`solver_observables`.
@@ -1567,7 +1567,7 @@ class ViewerBase(ABC):
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
 
-        contact_f = observables.contact_f if observables is not None else contacts.force
+        contact_f = observables.contact_f if observables is not None else None
         if observables is not None:
             if observables.model is not self.model:
                 raise ValueError("Solver observables must belong to the viewer's model.")

@@ -778,7 +778,16 @@ the fixed point :math:`\lambda_n = k\,C` and :math:`f_n = k\,C`: a converged
 resting contact carries its load like a penalty of the material stiffness
 :math:`k`, with the penetration :math:`f_n/k`, while each single iteration
 uses the smaller :math:`k_{\text{eff}}`, which keeps the 6x6 systems well
-conditioned. Friction is a Coulomb bound, not a smooth law: the tangential
+conditioned.
+
+For a verified thin-wall mesh recovery contact, VBD temporarily treats positive
+normal stiffness as infinite. The hard constraint carries the load while
+limiting outward correction per step. Its normal force comes from the hard
+constraint solve, so the finite-stiffness relation :math:`f_n = k\,C` does
+not apply during recovery. The pair-averaged material stiffness applies again
+when collision detection returns the ordinary SDF manifold.
+
+Friction is a Coulomb bound, not a smooth law: the tangential
 force :math:`\rho_t\,\mathbf{u}_t + \boldsymbol{\lambda}_t`, with
 :math:`\mathbf{u}_t` the tangential offset between the two anchored surface
 points and :math:`\rho_t` the tangent metric, a 2D response matrix in the
@@ -793,7 +802,8 @@ onto the disk of radius :math:`\mu_{\text{roll}} f_n`, with the pair's
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` [m], each the geometric
 mean of the two shapes' values, so a zero on either shape removes that
-resistance for the pair. Damping is
+resistance for the pair. Each bound only acts on contacts whose
+:class:`~newton.ShapeFrictionMode` enables it. Damping is
 :math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the row
 carries load, only while the bodies approach by default and in both directions
 of the normal relative velocity with ``rigid_contact_damping_bidirectional=True``.

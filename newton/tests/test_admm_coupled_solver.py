@@ -536,12 +536,14 @@ def _run_inclined_plane_particle_box(
     *,
     steps: int = 120,
     dt: float = 1.0 / 360.0,
+    friction_mode: newton.ShapeFrictionMode = newton.ShapeFrictionMode.SLIDING,
 ) -> tuple[float, float, int]:
     model, plane_body, _, particle_ids = _build_inclined_plane_particle_box_scene(angle)
     # ADMM derives friction from material properties; set both sides so the
     # geometric-mean combine reduces to the requested coefficient.
     model.particle_mu = float(friction)
     model.shape_material_mu = wp.full(model.shape_count, float(friction), dtype=wp.float32, device=model.device)
+    model.shape_material_friction_mode.fill_(int(friction_mode))
     solver = _make_admm_inclined_plane_particle_box_solver(
         model,
         plane_body,
@@ -1384,13 +1386,22 @@ class TestAdmmExternalForces(unittest.TestCase):
         body_idx = rs  # only MuJoCo body
         body_mass = float(model_b.body_mass.numpy()[body_idx])
         upward_force = 5.0 * body_mass * 9.81  # 5 g upward wrench
+        output_body_f = np.full((model_b.body_count, 6), 0.25, dtype=np.float32)
+        output_particle_f = np.full((model_b.particle_count, 3), 0.5, dtype=np.float32)
         for _ in range(5):
             state_0.clear_forces()
             wrench = np.zeros((model_b.body_count, 6), dtype=np.float32)
             wrench[body_idx, 2] = upward_force  # linear z
             state_0.body_f = wp.array(wrench, dtype=wp.spatial_vector, device=model_b.device)
+            # Distinct output-state sentinels: solvers never write force inputs in either state.
+            state_1.body_f.assign(output_body_f)
+            state_1.particle_f.assign(output_particle_f)
             collision_pipeline.collide(state_0, contacts)
             solver_b.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+            np.testing.assert_array_equal(state_0.body_f.numpy(), wrench)
+            np.testing.assert_array_equal(state_0.particle_f.numpy(), 0.0)
+            np.testing.assert_array_equal(state_1.body_f.numpy(), output_body_f)
+            np.testing.assert_array_equal(state_1.particle_f.numpy(), output_particle_f)
             state_0, state_1 = state_1, state_0
         z_with_force = state_0.body_q.numpy()[0, 2]
 
@@ -1645,6 +1656,19 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         self.assertLess(math.tan(angle), friction)
         self.assertLess(abs(displacement), 0.01)
         self.assertLess(abs(velocity), 0.05)
+
+    def test_collision_frictionless_shape_releases_subcritical_inclined_box(self):
+        """Slide particles down a frictionless plane at an angle that friction would hold."""
+        angle = math.radians(15.0)
+        steps, dt = 120, 1.0 / 360.0
+        displacement, _velocity, contact_count = _run_inclined_plane_particle_box(
+            angle, 0.4, steps=steps, dt=dt, friction_mode=newton.ShapeFrictionMode.NONE
+        )
+
+        t = steps * dt
+        expected_displacement = 0.5 * 10.0 * math.sin(angle) * t * t
+        self.assertGreater(contact_count, 0)
+        self.assertAlmostEqual(displacement, expected_displacement, delta=0.45 * expected_displacement)
 
     def test_collision_rigid_rigid_frictional_contact_matches_inclined_plane_box_motion(self):
         friction = 0.35
