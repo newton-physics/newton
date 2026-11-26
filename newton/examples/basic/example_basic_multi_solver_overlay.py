@@ -145,7 +145,7 @@ class _SolverLayer:
         self.contacts = self.collision_pipeline.contacts()
         self.solver_observables = (
             self.solver.observables(contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F})
-            if native_contacts
+            if self.solver.ObservableKind.CONTACT_F in self.solver.supported_observables
             else None
         )
 
@@ -245,6 +245,9 @@ class Example:
         for i, layer in enumerate(self.layers):
             self.viewer.activate(layer.layer_id)
             self.viewer.set_model(layer.model)
+            self.viewer.set_control(layer.control)
+            self.viewer.set_solver(layer.solver)
+            self.viewer.set_collision_pipeline(layer.collision_pipeline)
             shift = (i - 0.5 * (n - 1)) * spacing
             self.viewer.set_layer_transform(
                 layer.layer_id,

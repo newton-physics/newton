@@ -340,7 +340,9 @@ When writing a message:
 - log one record per event, joining multi-line summaries into one message; and
 - do not add handlers, change levels, or call :func:`logging.basicConfig`;
   the application owns logging configuration, and the default output above
-  is set up once in ``newton/_src/diagnostics.py``.
+  is set up once in ``newton/_src/diagnostics.py``. The one exception is an
+  explicit application opt-in, such as ``ViewerGL(capture_logs=True)``,
+  whose handler only mirrors records and leaves the default output in place.
 
 Test log output with :meth:`~unittest.TestCase.assertLogs` on the ``newton``
 logger rather than by capturing stdout, which depends on how the test process
@@ -453,7 +455,11 @@ When reviewing a new or substantially changed public API, check that:
 - authorable features satisfy the schema and importer policy above;
 - optional parameters are keyword-only unless an established idiom justifies
   positional use;
-- reusable Warp-native math is placed at the appropriate ownership layer; and
+- reusable Warp-native math is placed at the appropriate ownership layer;
+- new ``Model.AttributeFrequency`` domains, ``GeoType``/``JointType`` enums,
+  ``Contacts`` fields, ``ViewerBase`` display options, and top-level
+  ``Model``/``SolverBase`` concepts are reflected in the interactive inspection
+  workspace (``newton/_src/viewer/``); and
 - compatibility changes follow the deprecation policy and update generated API
   documentation.
 

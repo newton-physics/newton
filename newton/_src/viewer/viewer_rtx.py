@@ -44,13 +44,13 @@ if TYPE_CHECKING:
 from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
+from .gui.viewer_gui import ViewerGui
 from .image_logger import ImageLogger, _validate
 from .kernels import detect_shape_color_changes, flag_changed_floats
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
-from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD
 from .wind import Wind
 
@@ -466,6 +466,37 @@ void main() {
         gl.glGenVertexArrays(1, vao)
         self._gl_vao = vao[0]
 
+        self._register_input_events()
+
+        @self._window.event
+        def on_resize(width, height):
+            self._window_width = width
+            self._window_height = height
+
+        @self._window.event
+        def on_close():
+            self._should_close = True
+
+        self.gui = ViewerGui(self, self._window)
+        self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
+        # Drain any registrations that arrived before the GUI was ready.
+        for callback, position in self._pending_ui_callbacks:
+            self.gui.register_ui_callback(callback, position=position)
+        self._pending_ui_callbacks = []
+        if self._pending_splash is not None:
+            active, text = self._pending_splash
+            if active:
+                self.gui.show_loading_splash(text)
+            else:
+                self.gui.hide_loading_splash()
+            self._pending_splash = None
+        for (name, fullscreen), image in self._pending_images.items():
+            self._image_logger.log(name, image, fullscreen=fullscreen)
+        self._pending_images.clear()
+
+    def _register_input_events(self) -> None:
+        """Route window mouse and keyboard events to the camera and shared GUI."""
+
         # With ImGui, mouse input is routed during prepare_frame() so the
         # camera and gizmos see the same processed events and hover state.
         # ---- input callbacks ------------------------------------------------
@@ -499,36 +530,13 @@ void main() {
         @self._window.event
         def on_key_release(symbol, modifiers):
             self._keys_down.discard(symbol)
+            if self.gui:
+                # Clears the F latch so the next press frames the scene again.
+                self.gui.handle_key_release(symbol)
 
         @self._window.event
         def on_deactivate():
             self._keys_down.clear()
-
-        @self._window.event
-        def on_resize(width, height):
-            self._window_width = width
-            self._window_height = height
-
-        @self._window.event
-        def on_close():
-            self._should_close = True
-
-        self.gui = ViewerGui(self, self._window)
-        self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
-        # Drain any registrations that arrived before the GUI was ready.
-        for callback, position in self._pending_ui_callbacks:
-            self.gui.register_ui_callback(callback, position=position)
-        self._pending_ui_callbacks = []
-        if self._pending_splash is not None:
-            active, text = self._pending_splash
-            if active:
-                self.gui.show_loading_splash(text)
-            else:
-                self.gui.hide_loading_splash()
-            self._pending_splash = None
-        for (name, fullscreen), image in self._pending_images.items():
-            self._image_logger.log(name, image, fullscreen=fullscreen)
-        self._pending_images.clear()
 
     def _discard_partial_window(self) -> None:
         """Close and clear resources left by failed window initialization."""
@@ -1339,6 +1347,8 @@ void main() {
         Args:
             model: The Newton model instance.
         """
+        if model is not None and self.gui is not None:
+            self.gui.preload_kernels(model.device)
         super().set_model(model)
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
         self._image_logger.set_device(self.device)

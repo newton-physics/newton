@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from newton._src.viewer.viewer_gui import ViewerGui
+from newton._src.viewer.gui.viewer_gui import ViewerGui
 from newton.viewer import ViewerNull
 
 
@@ -31,6 +31,7 @@ class TestRenderingPauseGui(unittest.TestCase):
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.ui = None
+        gui._loading_splash_active = False
         gui._cam_vel = np.ones(3)
         gui._gizmo_active = {"body": True}
         gui.on_rendering_paused()

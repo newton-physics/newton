@@ -101,6 +101,9 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         if viewer is not None:
             self.viewer.set_model(self.model)
@@ -118,12 +121,19 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             if self.viewer is not None:
                 self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -147,6 +157,7 @@ class Example:
         if self.viewer is not None:
             self.viewer.begin_frame(self.sim_time)
             self.viewer.log_state(self.state_0)
+            self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
             att_l = self.solver.tendon_segment_attachment_l.numpy()
             att_r = self.solver.tendon_segment_attachment_r.numpy()
             starts = wp.array(att_l, dtype=wp.vec3)

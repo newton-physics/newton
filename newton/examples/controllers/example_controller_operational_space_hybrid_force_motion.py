@@ -652,6 +652,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         # Each operational frame itself -- a fixed RGB axis triad, not tied
         # to any body, so you can see where each controller's (x, y) target
         # and press axis actually point on its table.

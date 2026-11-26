@@ -7,6 +7,17 @@ import logging
 import os
 import string
 from time import perf_counter
+from typing import TYPE_CHECKING
+
+from . import theme
+from .icon_atlas import IconAtlas
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from imgui_bundle import imgui
+    from pyglet.window import Window
+
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +87,28 @@ _CURSOR_NAMES = {
 }
 
 
-class UI:
-    def __init__(self, window):
+class ImGuiBackend:
+    """Adapt a pyglet window to optional ImGui rendering, input, timing, and DPI.
+
+    This backend owns GUI frame setup and recovery; scene inspection and viewer
+    interaction policy live in ViewerGui and its workspace presenters.
+    """
+
+    def __init__(self, window: Window, *, workspace_style: bool = False) -> None:
+        """Create the optional ImGui backend, input callbacks, and DPI-scaled styles for a window.
+
+        Leave is_available false when the optional GUI dependency is absent.
+        A valid GL context is required when the dependency is available.
+        Workspace fonts and styling are opt-in so legacy GL/RTX panels keep
+        their original appearance.
+        """
+        self._workspace_style = workspace_style
+        self.key_press_filter = None
         self._file_dialog_result: str | None = None
         self._pending_file_dialog = None
         self._frame_time: float | None = None
+        self._frame_recovery_state = None
+        self.section_errors = {}
         # DPI scale applied to ImGui style and fonts. Updated by ``_apply_dpi_scaling``
         # whenever the framebuffer-to-window ratio changes (e.g. moving the window
         # between displays with different DPI).
@@ -110,6 +138,29 @@ class UI:
         # Dear ImGui's native renderer, so the GUI needs no Python OpenGL bindings besides pyglet's.
         if not self.imgui.backends.opengl3_init("#version 330"):
             raise RuntimeError("Failed to initialize the OpenGL UI renderer.")
+        self.icon_atlas = IconAtlas(self.imgui)
+        self.number_font = None
+        if workspace_style:
+            # Reuse a local UI font without a network or extra font dependency.
+            for font_path in (
+                "C:/Windows/Fonts/segoeui.ttf",
+                "/System/Library/Fonts/SFNS.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ):
+                if os.path.isfile(font_path):
+                    self.io.font_default = self.io.fonts.add_font_from_file_ttf(font_path, 14.0)
+                    break
+            for font_path in (
+                "C:/Windows/Fonts/consola.ttf",
+                "/System/Library/Fonts/Menlo.ttc",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            ):
+                if os.path.isfile(font_path):
+                    self.number_font = self.io.fonts.add_font_from_file_ttf(font_path, 13.0)
+                    break
+        # Menus, tabs and property editors should support Tab/arrow navigation
+        # and Escape dismissal just like their native desktop counterparts.
+        self.io.config_flags |= self.imgui.ConfigFlags_.nav_enable_keyboard
         self._attach_input()
 
         # Set up proper DPI scaling for high-DPI displays.
@@ -129,6 +180,7 @@ class UI:
 
     def _attach_input(self) -> None:
         """Forward pyglet window input to Dear ImGui."""
+        from pyglet.event import EVENT_HANDLED
         from pyglet.window import key, mouse
 
         imgui, io, window = self.imgui, self.io, self.window
@@ -167,8 +219,18 @@ class UI:
         def on_mouse_position(x, y, *_):
             io.add_mouse_pos_event(x, io.display_size.y - y)
 
+        def on_key_press(symbol: int, modifiers: int) -> bool | None:
+            if self.key_press_filter is None or not self.key_press_filter(symbol, modifiers):
+                on_key(symbol, True)
+            # Pyglet's default Escape handler closes the window even when the
+            # viewer callback defers to an editor or popup. Stop propagation
+            # after forwarding the cancellation key to ImGui.
+            if symbol == key.ESCAPE and (io.want_text_input or imgui.is_popup_open("", imgui.PopupFlags_.any_popup)):
+                return EVENT_HANDLED
+            return None
+
         window.push_handlers(
-            on_key_press=lambda symbol, _modifiers: on_key(symbol, True),
+            on_key_press=on_key_press,
             on_key_release=lambda symbol, _modifiers: on_key(symbol, False),
             # A key released while unfocused reports no release.
             on_deactivate=held_modifiers.clear,
@@ -255,6 +317,7 @@ class UI:
         return max(1.0, scale)
 
     def _window_scale(self) -> float:
+        """Read and normalize the platform window scale, defaulting to 1 when unavailable."""
         try:
             window_scale = self.window.scale
         except AttributeError:
@@ -264,6 +327,7 @@ class UI:
 
     @staticmethod
     def _coerce_dpi_scale(value: float) -> float:
+        """Convert a scale value to a float of at least 1, falling back to 1 for invalid input."""
         try:
             return max(1.0, float(value))
         except (TypeError, ValueError):
@@ -281,6 +345,8 @@ class UI:
         if not self.is_available:
             return
 
+        # Reset every size before scaling, including newer ImGui properties
+        # that the palette setup does not customize (e.g. separator text).
         self.imgui.set_current_context(self._context)
         self._context.style = self.imgui.Style()
         self._setup_dark_style()
@@ -289,7 +355,8 @@ class UI:
             style.scale_all_sizes(self.dpi_scale)
         style.font_scale_dpi = self.dpi_scale
 
-    def _setup_dark_style(self):
+    def _setup_legacy_style(self) -> None:
+        """Apply the original viewer palette and spacing without workspace customization."""
         if not self.is_available:
             return
 
@@ -327,66 +394,53 @@ class UI:
         style.button_text_align = (0.5, 0.5)
         style.selectable_text_align = (0.0, 0.0)
 
-        # fmt: off
+        theme.apply_palette(self.imgui, theme.LEGACY_PALETTE)
 
-        # Colors
-        style.set_color_(self.imgui.Col_.text, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.text_disabled, self.imgui.ImVec4(0.2745098173618317, 0.3176470696926117, 0.4509803950786591, 1.0))
-        style.set_color_(self.imgui.Col_.window_bg, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.child_bg, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.popup_bg, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.border, self.imgui.ImVec4(0.1568627506494522, 0.168627455830574, 0.1921568661928177, 1.0))
-        style.set_color_(self.imgui.Col_.border_shadow, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.frame_bg, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.frame_bg_hovered, self.imgui.ImVec4(0.1568627506494522, 0.168627455830574, 0.1921568661928177, 1.0))
-        style.set_color_(self.imgui.Col_.frame_bg_active, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_active, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_collapsed, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.menu_bar_bg, self.imgui.ImVec4(0.09803921729326248, 0.105882354080677, 0.1215686276555061, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_bg, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_grab, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_hovered, self.imgui.ImVec4(0.1568627506494522, 0.168627455830574, 0.1921568661928177, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_active, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.check_mark, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.slider_grab, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.slider_grab_active, self.imgui.ImVec4(0.5372549295425415, 0.5529412031173706, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.button, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.button_hovered, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 1.0))
-        style.set_color_(self.imgui.Col_.button_active, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.header, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.header_hovered, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 1.0))
-        style.set_color_(self.imgui.Col_.header_active, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.separator, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
-        style.set_color_(self.imgui.Col_.separator_hovered, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
-        style.set_color_(self.imgui.Col_.separator_active, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
-        # Resize grip uses a translucent white instead of a near-window-bg
-        # color so the corner handle is actually discoverable at rest. Hover
-        # / active states keep the accent-blue look.
-        style.set_color_(self.imgui.Col_.resize_grip, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.20))
-        style.set_color_(self.imgui.Col_.resize_grip_hovered, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 0.85))
-        style.set_color_(self.imgui.Col_.resize_grip_active, self.imgui.ImVec4(0.5372549295425415, 0.5529412031173706, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.tab, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.tab_hovered, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.tab_selected, self.imgui.ImVec4(0.09803921729326248, 0.105882354080677, 0.1215686276555061, 1.0))
-        style.set_color_(self.imgui.Col_.tab_dimmed, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.tab_dimmed_selected, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.plot_lines, self.imgui.ImVec4(0.5215686559677124, 0.6000000238418579, 0.7019608020782471, 1.0))
-        style.set_color_(self.imgui.Col_.plot_lines_hovered, self.imgui.ImVec4(0.03921568766236305, 0.9803921580314636, 0.9803921580314636, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram, self.imgui.ImVec4(1.0, 0.2901960909366608, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram_hovered, self.imgui.ImVec4(0.9960784316062927, 0.4745098054409027, 0.6980392336845398, 1.0))
-        style.set_color_(self.imgui.Col_.table_header_bg, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.table_border_strong, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.table_border_light, self.imgui.ImVec4(0.0, 0.0, 0.0, 1.0))
-        style.set_color_(self.imgui.Col_.table_row_bg, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.table_row_bg_alt, self.imgui.ImVec4(0.09803921729326248, 0.105882354080677, 0.1215686276555061, 1.0))
-        style.set_color_(self.imgui.Col_.text_selected_bg, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.drag_drop_target, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_cursor, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_highlight, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
-        style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
-        # fmt: on
+    def _setup_dark_style(self) -> None:
+        """Apply the unscaled palette and spacing for the selected GUI mode."""
+        if not self.is_available:
+            return
+
+        if not self._workspace_style:
+            self._setup_legacy_style()
+            return
+
+        style = self.imgui.get_style()
+
+        # Style properties
+        style.alpha = 1.0
+        # style.disabled_alpha = 1.0
+        style.window_rounding = 0.0
+        style.window_min_size = (20.0, 20.0)
+        style.window_title_align = (0.5, 0.5)
+        style.window_menu_button_position = self.imgui.Dir_.none
+        style.child_rounding = 0.0
+        style.child_border_size = 1.0
+        style.popup_border_size = 1.0
+        style.item_inner_spacing = (6.0, 3.0)
+        style.indent_spacing = 20.0
+        style.columns_min_spacing = 6.0
+        style.grab_min_size = 12.0
+        style.tab_border_size = 0.0
+        # style.tab_min_width_for_close_button = 0.0  # Not available in imgui_bundle
+        style.color_button_position = self.imgui.Dir_.right
+        style.button_text_align = (0.5, 0.5)
+        style.selectable_text_align = (0.0, 0.0)
+
+        # Keep the unscaled workspace metrics here; colors come from theme.py.
+        style.window_padding = (10, 6)
+        style.frame_padding = (6, 4)
+        style.item_spacing = (6, 4)
+        style.cell_padding = (4, 2)
+        style.window_border_size = 1
+        style.frame_rounding = 3
+        style.frame_border_size = 0
+        style.popup_rounding = 6
+        style.grab_rounding = 3
+        style.tab_rounding = 4
+        style.scrollbar_size = 9
+        style.scrollbar_rounding = 4
+        theme.apply_palette(self.imgui, theme.WORKSPACE_PALETTE)
 
     def cancel_mouse_interaction(self) -> None:
         """Discard pending input and release widgets without completing a click."""
@@ -408,17 +462,66 @@ class UI:
 
         self.imgui.set_current_context(self._context)
         self.imgui.new_frame()
+        self._frame_recovery_state = self.imgui.internal.ErrorRecoveryState()
+        self.imgui.internal.error_recovery_store_state(self._frame_recovery_state)
         self.giz.begin_frame()
 
+    def _recover_state(self, state: imgui.internal.ErrorRecoveryState) -> None:
+        """Unwind an interrupted UI callback without obscuring its exception."""
+        ui = self.imgui
+        io = ui.get_io()
+        options = (
+            "config_error_recovery_enable_assert",
+            "config_error_recovery_enable_debug_log",
+            "config_error_recovery_enable_tooltip",
+        )
+        saved = [getattr(io, option) for option in options]
+        try:
+            for option in options:
+                setattr(io, option, False)
+            ui.internal.error_recovery_try_to_recover_state(state)
+        finally:
+            for option, value in zip(options, saved, strict=True):
+                setattr(io, option, value)
+
+    def abort_frame(self) -> None:
+        """Release unfinished windows and stacks before the next viewer frame."""
+        if self._frame_recovery_state is not None:
+            self._recover_state(self._frame_recovery_state)
+            self.imgui.end_frame()
+            self._frame_recovery_state = None
+
+    def draw_section(self, name: str, callback: Callable[[], None]) -> None:
+        """Isolate Python UI failures and restore ImGui stacks before continuing."""
+        ui = self.imgui
+        if name not in self.section_errors:
+            state = ui.internal.ErrorRecoveryState()
+            ui.internal.error_recovery_store_state(state)
+            try:
+                callback()
+            except (Exception, SystemExit) as error:
+                self.section_errors[name] = f"{type(error).__name__}: {error}"
+                logger.exception("Failed to draw %s", name)
+                # Report the original exception once. Stack recovery would
+                # otherwise assert on the unclosed widgets left by that error.
+                self._recover_state(state)
+        if name in self.section_errors:
+            ui.text_wrapped(f"{name} unavailable\n{self.section_errors[name]}")
+            if ui.button("Retry##section:" + name):
+                del self.section_errors[name]
+
     def end_frame(self):
+        """Poll pending file-dialog results, finalize ImGui draw data, and clear frame-recovery state."""
         if not self.is_available:
             return
 
         self._poll_file_dialog()
         self.imgui.render()
         self.imgui.end_frame()
+        self._frame_recovery_state = None
 
     def render(self):
+        """Submit finalized ImGui draw data through the platform backend when available."""
         if not self.is_available:
             return
 
@@ -428,24 +531,28 @@ class UI:
         self._update_mouse_cursor()
 
     def is_capturing_mouse(self):
+        """Return the raw ImGui mouse-capture request, or False without a GUI backend."""
         if not self.is_available:
             return False
 
         return self.io.want_capture_mouse
 
     def is_capturing_keyboard(self):
+        """Return the raw ImGui keyboard-capture request, before viewer shortcut policy is applied."""
         if not self.is_available:
             return False
 
         return self.io.want_capture_keyboard
 
     def is_capturing(self):
+        """Report whether ImGui requests either mouse or keyboard input."""
         if not self.is_available:
             return False
 
         return self.is_capturing_mouse() or self.is_capturing_keyboard()
 
     def resize(self, width, height):
+        """Refresh window metrics and rebuild scaled style and fonts only when the detected DPI changes."""
         if not self.is_available:
             return
 
@@ -458,7 +565,7 @@ class UI:
             self.dpi_scale = new_dpi_scale
             self._apply_dpi_scaling()
 
-    def get_theme_color(self, color_id, fallback_color=(1.0, 1.0, 1.0, 1.0)):
+    def get_theme_color(self, color_id, fallback_color=theme.WHITE):
         """Get a color from the current theme with fallback.
 
         Args:
@@ -541,7 +648,8 @@ class UI:
         except ImportError:
             logger.warning("portable_file_dialogs not available")
 
-    def shutdown(self):
+    def shutdown(self) -> None:
+        """Release owned GUI textures and the platform renderer once."""
         if not self.is_available:
             return
 
@@ -549,6 +657,7 @@ class UI:
         if getattr(self.window, "context", None) is None:
             return  # the window is gone, and its GL objects with it
         self.window.switch_to()
+        self.icon_atlas.close()
         self.imgui.set_current_context(self._context)
         self.imgui.backends.opengl3_shutdown()
         self.imgui.destroy_context(self._context)
