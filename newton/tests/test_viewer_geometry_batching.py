@@ -129,6 +129,21 @@ class TestViewerGeometryBatching(unittest.TestCase):
                 expected_indices = original[:, [0, 2, 1]] if np.prod(expected_scales[0]) < 0 else original
                 np.testing.assert_array_equal(indices.reshape(-1, 3), expected_indices)
 
+    def test_model_primitive_batches_follow_dimensions_and_flags(self):
+        """Batch primitives by their dimensions and render flags, in shape order."""
+        with wp.ScopedDevice("cpu"):
+            builder = newton.ModelBuilder()
+            hidden = newton.ModelBuilder.ShapeConfig(is_visible=False)
+            for half, cfg in (((0.1, 0.2, 0.3), None), ((0.3, 0.2, 0.1), None), ((0.1, 0.2, 0.3), hidden)) * 2:
+                builder.add_shape_box(-1, hx=half[0], hy=half[1], hz=half[2], cfg=cfg)
+            model = builder.finalize()
+            viewer = _ViewerMeshProbe()
+            viewer.set_model(model)
+            self.assertEqual(len(viewer._geometry_cache), 2)
+            self.assertEqual(
+                [batch.model_shapes.tolist() for batch in viewer._shape_instances.values()], [[0, 3], [1, 4], [2, 5]]
+            )
+
     def test_mesh_visual_attributes_have_distinct_prototypes(self):
         """Cache normals and UVs separately without changing physical mesh identity."""
         mesh = newton.Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [0, 1, 2], compute_inertia=False)

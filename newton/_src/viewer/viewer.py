@@ -3040,6 +3040,7 @@ class ViewerBase(ABC):
         )
 
         # loop over shapes
+        render_geometry = {}
         for s in range(shape_count):
             # skip shapes from non-visible worlds and variant rows
             if not self._should_render_world(shape_world[s]) or variant_row[s]:
@@ -3061,15 +3062,34 @@ class ViewerBase(ABC):
                 continue
 
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            geo_hash, mesh_name, flags, material, uses_scale = self._shape_render_geometry(
-                geo_type,
-                geo_scale,
+            # Shapes that share a source and its render options share render geometry.
+            # Mesh-class geometry depends on the scale only through its mirroring sign.
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
+                scale_key = geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
+            else:
+                scale_key = tuple(geo_scale)
+            render_key = (
+                int(geo_type),
+                scale_key,
                 float(shape_geo_thickness[s]),
                 bool(shape_geo_is_solid[s]),
-                geo_src,
+                id(geo_src),
                 int(shape_flags[s]),
-                sdf_idx,
+                sdf_idx >= 0,
             )
+            render = render_geometry.get(render_key)
+            if render is None:
+                render = self._shape_render_geometry(
+                    geo_type,
+                    geo_scale,
+                    float(shape_geo_thickness[s]),
+                    bool(shape_geo_is_solid[s]),
+                    geo_src,
+                    int(shape_flags[s]),
+                    sdf_idx,
+                )
+                render_geometry[render_key] = render
+            geo_hash, mesh_name, flags, material, uses_scale = render
 
             # shape options
             parent = shape_body[s]
@@ -3084,7 +3104,7 @@ class ViewerBase(ABC):
             scale = np.asarray(geo_scale, dtype=np.float32) if uses_scale else np.array([1.0, 1.0, 1.0])
 
             if shape_display_color is not None:
-                color = wp.vec3(shape_display_color[s])
+                color = wp.vec3(*shape_display_color[s].tolist())
             elif (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
                 color = wp.vec3(0.5, 0.5, 0.5)
             else:
