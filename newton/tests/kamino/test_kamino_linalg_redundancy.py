@@ -297,6 +297,24 @@ class TestRedundantRowCheck(NewtonTestCase):
         self.assertEqual(int(shift.shifted.numpy().sum()), 1)
         self.assertGreater(float(shift._reference.numpy()[0]), 1e-5)
 
+    def test_07_dependence_below_the_regularization(self):
+        """Check that kept rows with a reference eigenvalue below the check regularization fail once dependent."""
+        rows = 64
+        v = np.full(rows, 1.0 / np.sqrt(rows))
+        for threshold in (1e-5, 1e-8):
+            with self.subTest(threshold=threshold):
+                problem = RedundantProblem(
+                    dims=[rows], offsets=[0], num_rows=[rows], num_redundant=[0], device=self.device
+                )
+                shift = RedundantRowShift(1, rows, threshold=threshold, check=True, device=self.device)
+                for eigenvalue, eliminate in ((5e-7, True), (0.0, False)):
+                    D = np.eye(rows) - (1.0 - eigenvalue) * np.outer(v, v)
+                    problem.D_in[0, : rows * rows] = D.astype(np.float32).ravel()
+                    problem.detect(shift, reuse=not eliminate)
+                    if eliminate:
+                        self.assertEqual(int(shift.shifted.numpy().sum()), 0)
+                self.assertEqual(int(shift.pivot_rows.numpy()[0]), rows)
+
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()

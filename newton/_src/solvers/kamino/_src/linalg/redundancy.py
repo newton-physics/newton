@@ -685,7 +685,9 @@ def _make_check_kernel():
                     V_i[h] = z
                 rayleigh = wp.tile_sum(wp.tile(quotient))[0]
                 inv_norm = 1.0 / wp.sqrt(wp.tile_sum(wp.tile(norm))[0])
-            eigenvalue = 1.0 / rayleigh
+
+            # NOTE: The regularization of the checked block lifts its Jacobi-scaled eigenvalues by `FLOAT32_EPS`
+            eigenvalue = 1.0 / rayleigh - FLOAT32_EPS
 
         # The kept rows are dependent if the smallest eigenvalue is small, or much smaller than its reference
         limit = threshold
