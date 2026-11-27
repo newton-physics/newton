@@ -6,6 +6,9 @@ from __future__ import annotations
 import io
 import os
 import warnings
+from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 from urllib.request import urlopen
 
@@ -13,7 +16,17 @@ import numpy as np
 
 from ..exceptions import NewtonWarning
 
+if TYPE_CHECKING:
+    from concurrent.futures import Future
+
+    from PIL import Image
+
 _texture_url_cache: dict[str, bytes] = {}
+
+# Most decoded pixels [bytes] that the textures decoded ahead may hold while they wait for the
+# thread that loads them. A single texture may hold more. A bound on memory, not a setting to
+# tune: decoding further ahead than that thread consumes does not load faster.
+_MAX_PENDING_TEXTURE_BYTES = 256 * 1024 * 1024
 
 
 def _linear_to_srgb(linear: np.ndarray) -> np.ndarray:
@@ -153,6 +166,121 @@ def load_texture(texture: str | os.PathLike[str] | np.ndarray | None) -> np.ndar
         return np.ascontiguousarray(loaded)
 
     return np.ascontiguousarray(np.asarray(texture))
+
+
+def _count_usable_cpus() -> int:
+    """Count the CPUs this process may run on, which can be fewer than the machine has."""
+    if hasattr(os, "process_cpu_count"):
+        return os.process_cpu_count() or 1
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+
+def _convert_to_rgba(image: Image.Image) -> Image.Image:
+    """Decode an opened image file and convert it to RGBA, then close it."""
+    try:
+        return image.convert("RGBA")
+    finally:
+        # Closing the file alone would keep the decoded source pixels until the calling thread
+        # drops the image, one texture later.
+        image.close()
+
+
+def _load_textures(
+    textures: Sequence[str | os.PathLike[str] | np.ndarray | None],
+) -> Iterator[np.ndarray | None]:
+    """Load textures in order, decoding the image files ahead on worker threads.
+
+    Decoding an image and converting it to RGBA release the GIL, so workers do both while
+    the calling thread copies the previous images out and its caller consumes them. That
+    thread is the bottleneck, so the workers only decode as far ahead as it is seen to wait
+    for, and only while the pixels waiting fit in :data:`_MAX_PENDING_TEXTURE_BYTES`.
+
+    Close the iterator if it is not exhausted, so that no worker thread outlives it.
+
+    Args:
+        textures: Paths or URLs to texture images, or image arrays (H, W, C).
+
+    Yields:
+        What :func:`load_texture` returns for each texture, with the warnings it emits.
+    """
+    # Only files on disk decode on workers: the same ones that load_texture_from_file() opens directly.
+    paths: list[str | None] = []
+    for texture in textures:
+        path = os.fspath(texture) if isinstance(texture, os.PathLike) else texture
+        file_path = None
+        if isinstance(path, str):
+            try:
+                if not _is_http_url(path) and not _is_usd_package_path(path):
+                    file_path = _resolve_file_url(path)
+            except ValueError:
+                # Not a path that parses: left to load_texture(), which reports it once the texture is reached.
+                pass
+        paths.append(file_path)
+    file_count = len(paths) - paths.count(None)
+    # A single file has nothing to decode ahead of, and the calling thread keeps a CPU for itself.
+    worker_count = min(_count_usable_cpus() - 1, file_count) if file_count >= 2 else 0
+    if worker_count >= 1:
+        try:
+            from PIL import Image
+        except ImportError:
+            worker_count = 0
+    if worker_count < 1:
+        yield from map(load_texture, textures)
+        return
+
+    pool = ThreadPoolExecutor(worker_count, thread_name_prefix="newton-texture")
+    # The files that workers are decoding or have decoded, by texture index, each with its opened
+    # image and the size of its pixels.
+    pending: dict[int, tuple[Future[Image.Image], Image.Image, int]] = {}
+    pending_bytes = 0
+    next_index = 0
+    lookahead = 1
+    try:
+        for index, texture in enumerate(textures):
+            future, _, pixel_bytes = pending.pop(index, (None, None, 0))
+            pending_bytes -= pixel_bytes
+            # Waiting for a worker means the workers are behind: decode one more texture ahead.
+            if future is not None and not future.done() and lookahead < worker_count:
+                lookahead += 1
+            # Submit the next files before the copy below, so the workers decode during it.
+            next_index = max(next_index, index + 1)
+            while next_index < len(paths) and len(pending) < lookahead:
+                path = paths[next_index]
+                if path is not None:
+                    try:
+                        image = Image.open(path)
+                    except Exception:
+                        # Left to load_texture() below, which reports the failure once the texture is reached.
+                        pass
+                    else:
+                        pixel_bytes = 4 * image.width * image.height
+                        if pending and pending_bytes + pixel_bytes > _MAX_PENDING_TEXTURE_BYTES:
+                            # Opened again once fewer pixels wait: at the latest when none do.
+                            image.close()
+                            break
+                        pending[next_index] = (pool.submit(_convert_to_rgba, image), image, pixel_bytes)
+                        pending_bytes += pixel_bytes
+                next_index += 1
+
+            pixels = None
+            if future is not None:
+                try:
+                    pixels = np.ascontiguousarray(np.array(future.result()))
+                except Exception:
+                    # Decode again below, to report the failure the way load_texture() does.
+                    pass
+                # Drop the decoded image now rather than at the next texture.
+                future = None
+            if pixels is None:
+                pixels = load_texture(texture)
+            yield pixels
+    finally:
+        for future, image, _ in pending.values():
+            if future.cancel():
+                image.close()
+        pool.shutdown(wait=True)
 
 
 def linear_texture_to_srgb(texture_image: np.ndarray | None) -> np.ndarray | None:
