@@ -166,9 +166,9 @@ dynamics at zero joint acceleration instead.
 :class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
 contact force; the torque part is zero. Contacts whose rows were dropped for capacity
 report zero. Contacts of sleeping islands whose rows are skipped report the force from the
-previous solver step when every step requests ``CONTACT_F`` and, across collision passes,
-contacts are matched; otherwise they report zero until their island wakes. See
-:ref:`steel_sleep_observable`.
+previous solver step on the same contacts buffer, when every step requests ``CONTACT_F``
+and each collision pass matches to the contact set the solver last solved; otherwise they
+report zero until their island wakes. See :ref:`steel_sleep_observable`.
 
 Kamino exports contact points in the step's input body frames and world-frame
 wrenches about the input centers of mass.
@@ -368,14 +368,22 @@ Without sleeping the kind is unsupported and requesting it raises.
 With ``sleep_skip_constraints=True`` (the default), a sleeping island gets no contact
 rows. In :attr:`~newton.solvers.SolverBase.Observables.contact_f`, each of its contacts
 reports the force it reported on the previous solver step, so a resting body keeps its
-last solved support force while it sleeps. Across a collision pass the force follows
-:attr:`~newton.Contacts.rigid_contact_match_index`, so create the
-:class:`~newton.CollisionPipeline` with ``contact_matching="latest"`` (or ``"sticky"``);
-a step on the unchanged contact set carries it without matching. Every solver step must
-request ``CONTACT_F``. Otherwise, or without matching across a collision pass, these
-contacts report zero until their island wakes. With ``sleep_skip_constraints=False``
-the rows of sleeping islands are solved and their forces are reported directly, with or
-without matching.
+last solved support force while it sleeps. The force carries from one solver step to the
+next when all of these hold:
+
+- both steps request ``CONTACT_F`` and receive the same :class:`~newton.Contacts` buffer;
+- the contact set is the one the previous step solved, or comes from a single collision
+  pass whose :attr:`~newton.Contacts.rigid_contact_match_index` refers to that set
+  (:attr:`~newton.Contacts.rigid_contact_match_generation` equals the solved generation),
+  which needs a :class:`~newton.CollisionPipeline` created with
+  ``contact_matching="latest"`` (or ``"sticky"``).
+
+A step that does not request ``CONTACT_F``, a second collision pass between two solver
+steps, a collision pass without matching, or a different contacts buffer breaks the
+chain, even when match indices are valid: these contacts then report zero until their
+island wakes, and a later sleep carries the newly solved force. With
+``sleep_skip_constraints=False`` the rows of sleeping islands are solved and their forces
+are reported directly, with or without matching.
 
 .. _mujoco_overflow_observable:
 

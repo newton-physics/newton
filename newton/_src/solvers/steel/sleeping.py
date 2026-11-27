@@ -491,7 +491,7 @@ class _SleepState:
         """Report the last force of contacts whose rows sleeping skipped, then record this step's forces.
 
         A force carries only between consecutive solver steps that both request ``CONTACT_F``, on one buffer,
-        through contact matching or an unchanged contact set.
+        through an unchanged contact set or matches to the solved one.
         """
         device = self.model.device
         match_index = contacts.rigid_contact_match_index

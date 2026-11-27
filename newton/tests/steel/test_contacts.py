@@ -1629,6 +1629,35 @@ def test_sleeping_contact_f_needs_every_step(test, device, collide=True):
     np.testing.assert_array_equal(scene.net(), 0.0)
 
 
+def test_sleeping_contact_f_needs_the_solved_contact_set(test, device, interruption):
+    """Report zero once the contacts break from the solved set, and the solved force after a wake."""
+    scene = _SleepingContactForces(device)
+    scene.settle()
+    np.testing.assert_array_equal(scene.awake(), [0, 0])
+    scene.assert_resting(scene.net())
+    if interruption == "collision_pass":
+        # The next pass matches to this unsolved set, not to the one the solver last solved.
+        scene.pipeline.collide(scene.states[0], scene.contacts)
+    else:
+        scene.contacts = scene.pipeline.contacts()
+    scene.step()
+    count = int(scene.contacts.rigid_contact_count.numpy()[0])
+    test.assertTrue((scene.contacts.rigid_contact_match_index.numpy()[:count] >= 0).all())
+    for _ in range(2):
+        np.testing.assert_array_equal(scene.awake(), [0, 0])
+        np.testing.assert_array_equal(scene.net(), 0.0)
+        scene.step()
+    # A wake event restores the rows, and the next sleep carries the solved force again.
+    body_f = np.zeros((2, 6), dtype=np.float32)
+    body_f[1, 2] = 0.5 * UPPER_MASS * scene.weight
+    scene.step(body_f)
+    np.testing.assert_array_equal(scene.awake(), [1, 1])
+    np.testing.assert_allclose(scene.net()[1, 2], 0.5 * UPPER_MASS * scene.weight, rtol=0.05)
+    scene.settle()
+    np.testing.assert_array_equal(scene.awake(), [0, 0])
+    scene.assert_resting(scene.net())
+
+
 def test_sleeping_contact_f_in_a_captured_graph(test, device):
     """Carry the force through graph replays, which see the generations on the device."""
     scene = _SleepingContactForces(device)
@@ -1880,6 +1909,16 @@ add_function_test(
     devices=all_devices,
     collide=False,
 )
+
+
+for _interruption in ("collision_pass", "contacts_buffer"):
+    add_function_test(
+        TestSteelContactObservable,
+        f"test_sleeping_contact_f_needs_the_solved_contact_set_after_a_new_{_interruption}",
+        test_sleeping_contact_f_needs_the_solved_contact_set,
+        devices=all_devices,
+        interruption=_interruption,
+    )
 
 
 add_function_test(
