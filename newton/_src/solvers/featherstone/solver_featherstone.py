@@ -1,13 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
-
 import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...exceptions import NewtonDeprecationWarning
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -26,7 +23,7 @@ from ..semi_implicit.kernels_particle import (
     eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
@@ -62,11 +59,6 @@ from .kernels import (
 
 # armature substituted for kinematic joints so the solve leaves them unaccelerated
 _KINEMATIC_ARMATURE = 1.0e10
-
-_FRICTION_SMOOTHING_DEPRECATION_MSG = (
-    "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
-    "Remove its use; configure shape material kf for the low-speed friction slope and mu for the Coulomb limit."
-)
 
 
 def _group_view(array: wp.array, start: int, shape: tuple[int, int, int]) -> wp.array:
@@ -118,7 +110,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_velocity_limit`, :attr:`~newton.Model.joint_enabled`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
-          Equality constraints and the deprecated sparse mimic constraints are not supported.
+          Equality constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -167,7 +159,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
-        friction_smoothing: float | None = None,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -177,11 +168,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             model: The model to be simulated.
             angular_damping: Angular damping factor. Defaults to 0.05.
             update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). The update is also forced on the next step after :meth:`notify_model_changed` reports body, joint DOF or inertial changes. Both decisions are made on the host when :meth:`step` runs, so a captured CUDA graph replays the choice made at capture time; use an interval of 1 or recapture after such a notification. Defaults to 1.
-            friction_smoothing: Deprecated, ignored compatibility argument.
-
-                .. deprecated:: 1.8
-                    Remove this argument. Shape material ``kf`` controls the low-speed
-                    friction slope and ``mu`` controls the Coulomb limit.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled per distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -198,6 +184,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
 
         super().__init__(model)
+        warn_unsupported_friction_modes(model, "SolverFeatherstone")
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
         if self._has_joint_mimics:
             mimic_joints = model.joint_mimic_joint.numpy()
@@ -237,16 +224,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         borrowed_options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in borrowed_modules:
             self._set_module_options(borrowed_options, module=module)
+        # Gather contact wrenches per body instead of recording them as deterministic atomics.
+        self._gather_contact_wrenches = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
-        if friction_smoothing is not None:
-            warnings.warn(
-                _FRICTION_SMOOTHING_DEPRECATION_MSG,
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        self._friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
 
@@ -273,23 +255,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             else:
                 create_kernel = create_inertia_matrix_kernel
             self._tile_kernels_by_size = {size: create_kernel(*size) for size in self._group_to_art}
-
-    @property
-    def friction_smoothing(self) -> float:
-        """Legacy value retained for attribute access; it has no effect on friction.
-
-        .. deprecated:: 1.8
-            Reading or assigning this attribute warns. Use shape material ``kf``
-            for the low-speed friction slope and ``mu`` for the Coulomb limit.
-        """
-        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._friction_smoothing
-
-    @friction_smoothing.setter
-    def friction_smoothing(self, value: float) -> None:
-        """Store the legacy value without changing the friction force."""
-        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._friction_smoothing = value
 
     def _update_kinematic_state(self):
         """Recompute cached solver flags and effective joint armature."""
@@ -407,6 +372,13 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             # randomization reaches the mass matrix and the COM velocity transforms.
             self._update_body_inertial_buffers()
             self._mass_matrix_dirty = True
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The kinematic-state refresh reads joint and body data on the host and reallocates buffers.
+        return int(
+            ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
@@ -649,8 +621,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else None
         )
-        if body_parent_f is None:
-            body_parent_f = state_out.body_parent_f
         descendant_body_q_prev = state_in.body_q
 
         if not getattr(state_aug, "_featherstone_augmented", False):
@@ -846,7 +816,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         body_qd=state_aug.body_qd_fk,
                     )
 
-                eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f, body_qd=state_aug.body_qd_fk)
+                eval_body_contact_forces(
+                    model,
+                    state_in,
+                    contacts,
+                    body_f_out=body_f,
+                    body_qd=state_aug.body_qd_fk,
+                    deterministic=self._gather_contact_wrenches,
+                )
 
                 if self.has_kinematic_bodies and body_f is not None:
                     wp.launch(
@@ -1164,13 +1141,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # print(state_aug.joint_qdd.numpy())
                     # print("\n\n")
 
-            if (
-                body_parent_f is not None
-                and state_out.body_parent_f is not None
-                and state_out.body_parent_f.ptr != body_parent_f.ptr
-            ):
-                state_out.body_parent_f.assign(body_parent_f)
-
             # -------------------------------------
             # integrate bodies
 
@@ -1294,6 +1264,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self.integrate_particles(model, state_in, state_out, dt, particle_f=particle_f)
+            self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
 
             self._step += 1

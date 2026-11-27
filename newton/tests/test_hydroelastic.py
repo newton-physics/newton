@@ -146,7 +146,7 @@ def _test_hydro_voxel_record_roundtrip(
 
 
 def test_triangle_fraction_rotations(test, device):
-    """Verify triangle coverage is invariant to the distinct vertex rotation."""
+    """Preserve triangle coverage under vertex rotation and changes of scale."""
     depths_np = np.array(
         [
             [1.0, 2.0, 3.0],
@@ -157,10 +157,16 @@ def test_triangle_fraction_rotations(test, device):
             [1.0, -2.0, -3.0],
             [-2.0, 1.0, -3.0],
             [-2.0, -3.0, 1.0],
+            [0.0, -2.0, -3.0],
+            [-2.0, 0.0, -3.0],
+            [-2.0, -3.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
         ],
         dtype=np.float32,
     )
-    num_inside_np = np.array([0, 3, 1, 1, 1, 2, 2, 2], dtype=np.int32)
+    num_inside_np = np.sum(depths_np < 0.0, axis=1, dtype=np.int32)
     expected = np.array(
         [
             0.0,
@@ -171,9 +177,20 @@ def test_triangle_fraction_rotations(test, device):
             11.0 / 12.0,
             11.0 / 12.0,
             11.0 / 12.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
         ]
     )
 
+    # Submillimeter contact depths must cover the same fraction as meter-scale depths.
+    scales = np.array([1.0, 1.0e-5, 1.0e-20, 1.0e20], dtype=np.float32)
+    depths_np = (scales[:, None, None] * depths_np).reshape(-1, 3)
+    num_inside_np = np.tile(num_inside_np, len(scales))
+    expected = np.tile(expected, len(scales))
     fractions = wp.empty(len(depths_np), dtype=wp.float32, device=device)
     wp.launch(
         _test_triangle_fraction_rotations,
@@ -1264,7 +1281,10 @@ def test_deterministic_hydroelastic_speculative_contacts(test, device):
 def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
     """Generate penetrating, speculative, and absent hydroelastic contacts."""
     model, state, body_b = _build_margin_gap_boxes(device)
+    model.shape_material_ke.assign([1000.0, 2000.0])
+    model.shape_material_kd.assign([3.0, 14.0])
     config = HydroelasticSDF.Config(
+        generate_damping=True,
         reduce_contacts=reduce_contacts,
         pre_prune_contacts=reduce_contacts,
         output_contact_surface=True,
@@ -1316,6 +1336,10 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
         test.assertTrue(np.all(distances <= gap_sum + tolerance))
         stiffness = contacts.rigid_contact_stiffness.numpy()[: len(distances)]
         test.assertTrue(np.all(stiffness > 0.0))
+        damping = contacts.rigid_contact_damping.numpy()[: len(distances)]
+        # Reconstructed distances can round across zero at the boundary.
+        np.testing.assert_allclose(damping[distances < -1.0e-6], 0.01 * stiffness[distances < -1.0e-6], rtol=2.0e-6)
+        np.testing.assert_array_equal(damping[distances > 1.0e-6], 0.0)
         if expected_distance >= 0.0:
             test.assertTrue(np.all(distances >= -tolerance))
             if expected_distance > tolerance:
@@ -1330,6 +1354,13 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
                 active_keys = reducer.hashtable.keys.numpy()[active_slots[:active_count]]
                 bin_ids = (active_keys >> np.uint64(55)) & np.uint64(0xFF)
                 test.assertTrue(np.all(bin_ids >= 128), "Speculative contacts must use disjoint reduction keys.")
+
+        if expected_distance < 0.0:
+            model.shape_material_kd.zero_()
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            np.testing.assert_array_equal(contacts.rigid_contact_damping.numpy()[:count], 0.0)
+            model.shape_material_kd.assign([3.0, 14.0])
 
 
 def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_contacts):
@@ -1369,6 +1400,7 @@ def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_c
     distances = _get_contact_distances(contacts, model, state)
     test.assertGreater(len(distances), 0)
     test.assertTrue(np.all(distances < 0.0))
+    np.testing.assert_array_equal(contacts.rigid_contact_damping.numpy()[: len(distances)], 0.0)
 
 
 def test_hydroelastic_speculative_contact_stiffness(test, device, reduce_contacts):
@@ -2357,7 +2389,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_config = HydroelasticSDF.Config(output_contact_surface=True, buffer_fraction=1.0)
+    sdf_config = HydroelasticSDF.Config(output_contact_surface=True, buffer_fraction=1.0, generate_damping=True)
     collision_pipeline = newton.CollisionPipeline(
         model,
         broad_phase="explicit",

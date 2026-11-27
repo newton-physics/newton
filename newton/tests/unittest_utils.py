@@ -98,6 +98,9 @@ def requires(*modules: str):
 
 MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
 
+# Banner USD prints to stderr on import when the test runner limits its threads.
+PXR_WORK_THREAD_LIMIT_OUTPUT_RE = r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
+
 # Optional rich console prefix of an INFO log record.
 INFO_LOG_PREFIX_RE = r"(?:\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}\]\[[\w.-]+\.py:\d+\]\[INFO\]: )?"
 ASSET_CACHE_REFRESH_OUTPUT_RE = (
@@ -622,7 +625,7 @@ class _OutputCapture:
         return self._check_output()
 
     def _check_output(self) -> str | None:
-        output_by_stream = {stream: "".join(chunks) for stream, chunks in self.output.items()}
+        output_by_stream = {stream: "".join(chunks).replace("\r\n", "\n") for stream, chunks in self.output.items()}
         unmatched_by_stream = output_by_stream.copy()
         missing = []
         reported = []

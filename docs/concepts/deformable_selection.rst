@@ -102,9 +102,11 @@ use ``wp.int32`` bitmasks from :class:`~newton.ParticleFlags`.
 
 See the :ref:`particle-property example <selection-particle-properties>` for
 saving independent snapshots with ``wp.clone()``. Do not edit getter results:
-they may share Model storage or use a reusable buffer. Applying kinematic targets
-and restoring saved properties remain application responsibilities; the views do
-not provide property setters.
+they may share Model storage or use a reusable buffer. The views do not provide
+property setters: drive kinematic particles through
+:attr:`Control.particle_target_q <newton.Control.particle_target_q>` (see
+:ref:`deformable-objects-kinematic-particles`), and restore saved properties in
+application code.
 
 Update selected deformable objects
 ----------------------------------

@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib as _importlib
+import typing as _typing
+
 # ==================================================================================
 # core
 # ==================================================================================
@@ -53,6 +56,7 @@ __all__ += [
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
     BodyFlags,
+    CameraLensType,
     CollisionPipeline,
     CollisionSubstepScheduler,
     Contacts,
@@ -63,6 +67,7 @@ from ._src.sim import (  # noqa: E402
     ModelBuilder,
     ModelFlags,
     Rod,
+    ShapeFrictionMode,
     State,
     StateFlags,
     TendonGuide,
@@ -80,6 +85,7 @@ from ._src.sim import (  # noqa: E402
 
 __all__ += [
     "BodyFlags",
+    "CameraLensType",
     "CollisionPipeline",
     "CollisionSubstepScheduler",
     "Contacts",
@@ -90,6 +96,7 @@ __all__ += [
     "ModelBuilder",
     "ModelFlags",
     "Rod",
+    "ShapeFrictionMode",
     "State",
     "StateFlags",
     "TendonGuide",
@@ -108,20 +115,37 @@ __all__ += [
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import (  # noqa: E402
-    actuators,
-    config,
-    controllers,
-    geometry,
-    ik,
-    math,
-    selection,
-    sensors,
-    solvers,
-    usd,
-    utils,
-    viewer,
+# Imported on first access (PEP 562), so that `import newton` loads only what the core needs.
+_SUBMODULES = frozenset(
+    {
+        "actuators",
+        "config",
+        "controllers",
+        "geometry",
+        "ik",
+        "math",
+        "selection",
+        "sensors",
+        "solvers",
+        "usd",
+        "utils",
+        "viewer",
+    }
 )
+
+if _typing.TYPE_CHECKING:
+    from . import actuators, config, controllers, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer
+else:
+
+    def __getattr__(name: str):
+        if name not in _SUBMODULES:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return _importlib.import_module(f".{name}", __name__)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _SUBMODULES)
+
 
 __all__ += [
     "actuators",

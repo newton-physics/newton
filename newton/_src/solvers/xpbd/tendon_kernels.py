@@ -74,10 +74,9 @@ def solve_tendon_stretch(
     tendon_guide_offset: wp.array[wp.vec3],
     tendon_guide_axis: wp.array[wp.vec3],
     seg_rest_length: wp.array[float],
+    seg_length: wp.array[float],
     seg_attachment_l: wp.array[wp.vec3],
     seg_attachment_r: wp.array[wp.vec3],
-    seg_attachment_l_local: wp.array[wp.vec3],
-    seg_attachment_r_local: wp.array[wp.vec3],
     seg_compliance: wp.array[float],
     seg_damping: wp.array[float],
     seg_lambda: wp.array[float],
@@ -137,16 +136,16 @@ def solve_tendon_stretch(
         m_inv_r = body_inv_mass[body_r]
         I_inv_r = body_inv_inertia[body_r]
 
-    x_l = wp.transform_point(pose_l, seg_attachment_l_local[seg])
-    x_r = wp.transform_point(pose_r, seg_attachment_r_local[seg])
-    seg_attachment_l[seg] = x_l
-    seg_attachment_r[seg] = x_r
+    # Routing used this same pose. A world/local/world round trip can turn
+    # an unloaded segment into a small unilateral pull on every iteration.
+    x_l = seg_attachment_l[seg]
+    x_r = seg_attachment_r[seg]
     rest = seg_rest_length[seg]
     compliance = seg_compliance[seg]
     damping = seg_damping[seg]
 
     diff = x_r - x_l
-    d = wp.length(diff)
+    d = seg_length[seg]
 
     # Keep signed stretch because positive length rate may activate damping
     # before geometric stretch becomes positive.

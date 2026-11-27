@@ -67,8 +67,17 @@ class TestAnymalReset(unittest.TestCase):
             impratio = 100.0
 
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=300
+            self.model,
+            solver=2,
+            cone=cone_type,
+            impratio=impratio,
+            iterations=100,
+            ls_iterations=50,
+            njmax=300,
+            use_mujoco_contacts=False,
         )
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         if self.headless:
             self.viewer = None
@@ -103,9 +112,9 @@ class TestAnymalReset(unittest.TestCase):
         return cone_type.upper()
 
     def simulate(self):
-        self.contacts = None
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -229,6 +238,8 @@ class TestAnymalReset(unittest.TestCase):
         self.anymal.set_dof_positions(self.state_0, self.initial_dof_positions)
         self.anymal.set_root_velocities(self.state_0, self.default_root_velocities)
         self.anymal.set_dof_velocities(self.state_0, self.initial_dof_velocities)
+        # Collision detection reads body transforms before the solver reads joint state.
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.sim_time = 0.0
 
