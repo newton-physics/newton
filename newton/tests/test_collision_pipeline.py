@@ -511,12 +511,16 @@ class TestCollisionPipeline(unittest.TestCase):
 
 
 def test_collision_pipeline_first_call_capture(test, device):
+    """Capture the first collision call with kernels shared by equivalent pipelines."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
     builder.add_shape_sphere(body, radius=1.0)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model)
+    equivalent = newton.CollisionPipeline(model)
+    test.assertIs(pipeline.narrow_phase.primitive_kernel, equivalent.narrow_phase.primitive_kernel)
+    test.assertNotEqual(pipeline.narrow_phase.gjk_candidate_pairs.ptr, equivalent.narrow_phase.gjk_candidate_pairs.ptr)
     contacts = pipeline.contacts()
     state = model.state()
 
@@ -1828,6 +1832,46 @@ add_function_test(
     TestCollisionPipelineFilterPairs,
     "test_explicit_pairs_reach_shapes_without_shape_collision",
     test_explicit_pairs_reach_shapes_without_shape_collision,
+    devices=get_test_devices(),
+)
+
+
+def test_explicit_pairs_limit_shape_updates(test, device):
+    """Update only explicitly listed shapes unless particles can reach the others."""
+
+    def collide(with_particle):
+        builder = newton.ModelBuilder()
+        listed = [
+            builder.add_shape_sphere(builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0))), radius=0.5)
+            for x in (0.0, 0.9)
+        ]
+        cfg = builder.ShapeConfig(has_shape_collision=False)
+        unlisted = builder.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(0.0, 0.0, 5.0)), hx=0.5, hy=0.5, hz=0.5, cfg=cfg
+        )
+        if with_particle:
+            builder.add_particle(pos=(0.0, 0.0, 5.52), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        upper = pipeline.narrow_phase.shape_aabb_upper.numpy()
+        test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+        test.assertGreater(upper[listed[1]][0], 1.4)
+        return contacts, upper[unlisted]
+
+    _, unlisted_upper = collide(with_particle=False)
+    np.testing.assert_array_equal(unlisted_upper, 0.0)
+
+    contacts, unlisted_upper = collide(with_particle=True)
+    test.assertGreater(unlisted_upper[2], 5.5)
+    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
+
+
+add_function_test(
+    TestCollisionPipelineFilterPairs,
+    "test_explicit_pairs_limit_shape_updates",
+    test_explicit_pairs_limit_shape_updates,
     devices=get_test_devices(),
 )
 
@@ -8060,8 +8104,9 @@ def test_small_hull_broad_phase_bounds(test, device):
     model = ModelView(parent, "prefix")
     model.body_count = prefix_body_count
     model.shape_count = prefix_shape_count
+    # Only listed shapes get bounds, so list the static pairs too; the broad phase filters them.
     model.shape_contact_pairs = wp.array(
-        [[2 * world, 2 * world + 1] for world in range(64)], dtype=wp.vec2i, device=device
+        [[2 * world, 2 * world + 1] for world in range(66)], dtype=wp.vec2i, device=device
     )
     test.assertGreater(len(model.shape_source), model.shape_count)
     state = model.state()

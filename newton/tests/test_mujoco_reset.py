@@ -43,7 +43,7 @@ def _build_two_world_model(world_count: int = 2) -> newton.Model:
 class TestMuJoCoReset(unittest.TestCase):
     def _setup_stepped_solver(self):
         self.model = _build_two_world_model(world_count=2)
-        self.solver = SolverMuJoCo(self.model, iterations=2, ls_iterations=2)
+        self.solver = SolverMuJoCo(self.model, iterations=2, ls_iterations=2, use_mujoco_contacts=False)
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.control = self.model.control()

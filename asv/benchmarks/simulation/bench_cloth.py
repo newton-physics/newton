@@ -179,7 +179,7 @@ class FastDeformableSelfCollision:
 
     params = (DEFORMABLE_COLLISION_CASES,)
     param_names = ["case"]
-    repeat = 3
+    repeat = pr_gate_repeat(3)
     number = 1
     warmup_count = 3
     launch_count = 10
@@ -367,7 +367,7 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
 
 class FastExampleClothManipulation:
     timeout = 300
-    repeat = 3
+    repeat = pr_gate_repeat(3)
     number = 1
 
     def setup(self):

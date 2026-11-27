@@ -288,7 +288,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           including six-component world-frame wrenches for ROD joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
-          :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
+          :attr:`~newton.Model.joint_target_mode`, and equality constraints.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
           They contribute implicit finite-stiffness rows to the body solve, using
           ``rigid_joint_linear_ke`` or ``rigid_joint_angular_ke`` for each follower coordinate.
@@ -311,7 +311,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Attachments are compliant-ALM rows with a limit-row penalty: a finite
           ``stiffness`` keeps its physical spring offset under load, while infinite
           stiffness is the hard limit of the same row and ignores ``damping``.
-          Multipliers are retained across steps with ``rigid_avbd_gamma``. Finite
+          Multipliers are retained across steps, scaled by 0.999 per step by default. Finite
           iterations can leave residual error, especially for conflicting constraints.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.
@@ -467,7 +467,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_avbd_alpha: float | None = None,  # Shared alpha override; None uses zero
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override
         rigid_avbd_contact_alpha: float | None = None,  # Body-body contact alpha override
-        rigid_avbd_gamma: float = 0.999,  # Per-step decay for persisted lambda
+        rigid_avbd_gamma: float | None = None,  # Per-step decay for persisted lambda; None uses 0.999
         # Rigid body - contacts
         rigid_contact_history: bool | None = None,  # Body-body contact numeric warm-start
         rigid_contact_damping_bidirectional: bool = False,  # Body-body contact damping also while separating
@@ -575,19 +575,32 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``None`` raises :class:`TypeError`.
 
                 .. deprecated:: 1.9
-            rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
-                Controls both joints and body-body contacts when neither class-specific
+            rigid_avbd_alpha: Deprecated; omit it. C0 stabilization strength (``C_stab = C - alpha * C0``).
+                Range: [0, 1]. Controls both joints and body-body contacts when neither class-specific
                 override (``rigid_avbd_joint_alpha`` / ``rigid_avbd_contact_alpha``) is set.
                 ``None`` uses ``0.0`` for both constraint classes (the raw material residual).
-            rigid_avbd_joint_alpha: Joint-specific alpha override. ``None`` falls back to
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
+            rigid_avbd_joint_alpha: Deprecated; omit it. Joint-specific alpha override. ``None`` falls back to
                 ``rigid_avbd_alpha`` when set, otherwise to ``0.0``.
-            rigid_avbd_contact_alpha: Body-body contact alpha override. ``None`` falls back
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
+            rigid_avbd_contact_alpha: Deprecated; omit it. Body-body contact alpha override. ``None`` falls back
                 to ``rigid_avbd_alpha`` when set, otherwise ``0.0`` (authored
                 contact stiffness applies to the raw residual).
                 Alpha is stabilization only; retention is set separately by
                 ``rigid_avbd_gamma``.
-            rigid_avbd_gamma: Per-step retention factor for persisted lambda in joints,
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
+            rigid_avbd_gamma: Deprecated; omit it. Per-step retention factor for persisted lambda in joints,
                 particle-body attachments, and validated contacts. Lower values discard history faster.
+                ``None`` uses ``0.999``.
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
             rigid_contact_history: Whether to persist body-body numeric contact state
                 across steps using ``Contacts.rigid_contact_match_index``. Matched rows
                 restore their normal multiplier. With latest
@@ -1116,6 +1129,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 NewtonDeprecationWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
+        for name, value in (
+            ("rigid_avbd_alpha", rigid_avbd_alpha),
+            ("rigid_avbd_joint_alpha", rigid_avbd_joint_alpha),
+            ("rigid_avbd_contact_alpha", rigid_avbd_contact_alpha),
+            ("rigid_avbd_gamma", rigid_avbd_gamma),
+        ):
+            if value is not None:
+                warnings.warn(
+                    f"SolverVBD({name}=...) is deprecated as of Newton 1.9 and will be removed in a "
+                    "future release; omit the argument.",
+                    NewtonDeprecationWarning,
+                    stacklevel=_external_warning_stacklevel(),
+                )
 
     def _init_particle_system(
         self,
@@ -1230,7 +1256,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self,
         model: Model,
         rigid_avbd_alpha: float | None,
-        rigid_avbd_gamma: float,
+        rigid_avbd_gamma: float | None,
         rigid_avbd_joint_alpha: float | None,
         rigid_avbd_contact_alpha: float | None,
         rigid_contact_history: bool,
@@ -1254,7 +1280,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError(f"rigid_avbd_joint_alpha must be in [0, 1], got {rigid_avbd_joint_alpha}")
         if rigid_avbd_contact_alpha is not None and not (0.0 <= rigid_avbd_contact_alpha <= 1.0):
             raise ValueError(f"rigid_avbd_contact_alpha must be in [0, 1], got {rigid_avbd_contact_alpha}")
-        if not (0.0 <= rigid_avbd_gamma <= 1.0):
+        if rigid_avbd_gamma is None:
+            rigid_avbd_gamma = 0.999
+        elif not (0.0 <= rigid_avbd_gamma <= 1.0):
             raise ValueError(f"rigid_avbd_gamma must be in [0, 1], got {rigid_avbd_gamma}")
         if rigid_joint_linear_ke < 0:
             raise ValueError(f"rigid_joint_linear_ke must be >= 0, got {rigid_joint_linear_ke}")
