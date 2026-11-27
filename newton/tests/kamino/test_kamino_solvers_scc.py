@@ -33,6 +33,7 @@ from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.scc import SCCSolver, sparse_factor
 from newton._src.solvers.kamino._src.solvers.scc.decoupling import SparseDecoupledRows
+from newton._src.solvers.kamino._src.solvers.scc.effort_limit_condensation import EffortLimitCondensation
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
@@ -5149,7 +5150,12 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
                 config.scc.use_schur_complement = use_schur_complement
                 config.scc.unilateral_solver = unilateral_solver
                 configs.append(config)
-            with self.subTest(use_schur_complement=use_schur_complement, unilateral_solver=unilateral_solver):
+            with (
+                self.subTest(use_schur_complement=use_schur_complement, unilateral_solver=unilateral_solver),
+                mock.patch.object(
+                    EffortLimitCondensation, "publish", autospec=True, side_effect=EffortLimitCondensation.publish
+                ) as publish,
+            ):
                 (_, dense), (solver, sparse) = rollout(configs[0]), rollout(configs[1])
                 np.testing.assert_allclose(sparse, dense, rtol=0.0, atol=1.0e-4 * np.max(np.abs(dense)))
                 if use_schur_complement and wp.get_device(test_context.device).is_cuda:
@@ -5159,6 +5165,10 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
                     self.assertTrue(_can_use_cooperative_articulation(path))
                     self.assertGreaterEqual(path.size.max_of_num_bilateral_joint_cts, 32)
                     self.assertGreaterEqual(path.max_alternating_iterations, 4)
+                    if unilateral_solver == "pgs":
+                        # The compact PGS solve condenses the effort limits of each world
+                        self.assertIsNotNone(path.effort_limit_condensation)
+                        self.assertGreater(publish.call_count, 0)
 
     def test_raw_jacobian_transpose_matches_column_major_with_decoupled_rows(self):
         """Apply the body Jacobian of decoupled joint rows in the raw transpose product used by large batches."""
