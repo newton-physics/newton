@@ -5140,7 +5140,7 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
                 solver.step(state_in, state_out, control=control, contacts=None, dt=0.005)
                 state_in, state_out = state_out, state_in
                 velocities.append(state_in.joint_qd.numpy())
-            return np.array(velocities)
+            return solver, np.array(velocities)
 
         for use_schur_complement, unilateral_solver in product((True, False), ("pgs", "apgd")):
             configs = []
@@ -5150,8 +5150,15 @@ class TestSCCSparseDecoupledJointRows(NewtonTestCase):
                 config.scc.unilateral_solver = unilateral_solver
                 configs.append(config)
             with self.subTest(use_schur_complement=use_schur_complement, unilateral_solver=unilateral_solver):
-                dense, sparse = rollout(configs[0]), rollout(configs[1])
+                (_, dense), (solver, sparse) = rollout(configs[0]), rollout(configs[1])
                 np.testing.assert_allclose(sparse, dense, rtol=0.0, atol=1.0e-4 * np.max(np.abs(dense)))
+                if use_schur_complement and wp.get_device(test_context.device).is_cuda:
+                    # The chain must keep taking the paths that form row products and matrix
+                    # entries from the Jacobian blocks themselves.
+                    path = solver._solver_kamino._solver_fd._sparse_path
+                    self.assertTrue(_can_use_cooperative_articulation(path))
+                    self.assertGreaterEqual(path.size.max_of_num_bilateral_joint_cts, 32)
+                    self.assertGreaterEqual(path.max_alternating_iterations, 4)
 
     def test_raw_jacobian_transpose_matches_column_major_with_decoupled_rows(self):
         """Apply the body Jacobian of decoupled joint rows in the raw transpose product used by large batches."""
