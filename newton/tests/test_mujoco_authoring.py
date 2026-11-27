@@ -3,6 +3,7 @@
 
 """Tests for programmatic MuJoCo-specific model authoring helpers."""
 
+import array
 import unittest
 
 import numpy as np
@@ -902,8 +903,11 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 blueprint = newton.ModelBuilder()
                 body = blueprint.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
                 row = {"mujoco:equality_constraint_body2": body}
+                anchor = wp.vec3()
                 if explicit_anchor:
-                    row["mujoco:equality_constraint_anchor"] = wp.vec3()
+                    # Any value finalize() accepts as a vector, not only Warp ones.
+                    row["mujoco:equality_constraint_anchor"] = array.array("f", (0.2, -0.1, 0.4))
+                    anchor = wp.vec3(*row["mujoco:equality_constraint_anchor"])
                 blueprint.add_custom_values(**row)
                 blueprint.add_custom_values(
                     **{
@@ -916,7 +920,8 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 builder.add_world(blueprint)
                 builder.replicate(blueprint, 3, xforms=[placement, placement, wp.transform_identity()])
                 anchors = builder.custom_attributes["mujoco:equality_constraint_anchor"].values
-                np.testing.assert_allclose(anchors[2:6], np.tile(placement.p, (4, 1)), atol=1e-6)
+                placed = np.tile((wp.transform_point(placement, anchor), placement.p), (2, 1))
+                np.testing.assert_allclose(anchors[2:6], placed, atol=1e-6)
                 relposes = builder.custom_attributes["mujoco:equality_constraint_relpose"].values
                 np.testing.assert_allclose(
                     [pose.q for pose in relposes[3:6:2]], np.tile(wp.quat_inverse(placement.q), (2, 1)), atol=1e-6

@@ -4879,7 +4879,7 @@ class ModelBuilder:
 
         if len(anchored):
             anchors = source("anchor")
-            points = np.asarray([axis_to_vec3(anchors[row]) for row in anchored.tolist()], dtype=np.float32)
+            points = pack_warp_values([anchors[row] for row in anchored.tolist()], wp.vec3)
             points = quat_rotate_rows(xforms[:, None, 3:], points[None]) + xforms[:, None, :3]
             values = destination("anchor")
             targets = (starts[:, None] + anchored[None]).ravel().tolist()
