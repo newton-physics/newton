@@ -3245,7 +3245,9 @@ def test_multi_world_distance_limits_match_single_worlds(test, device):
         return state_0.body_q.numpy(), np.array(distances)
 
     batched, distances = run()
-    np.testing.assert_array_equal(run()[0], batched)
+    rerun, rerun_distances = run()
+    np.testing.assert_array_equal(rerun, batched)
+    np.testing.assert_array_equal(rerun_distances, distances)
     # Each bounded world holds its bounds over the whole run; the unbounded one falls past the other worlds' cap.
     test.assertLess(distances[:, 0].max(), 0.4 + 1.0e-3)
     test.assertGreater(distances[:, 1].min(), 0.2 - 1.0e-3)
