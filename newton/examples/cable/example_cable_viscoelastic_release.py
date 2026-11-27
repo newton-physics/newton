@@ -1,16 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Viscoelastic Release
-#
-# Demonstrates generalized-Maxwell cable viscoelasticity in SolverVBD: a fast
-# and a slow relaxing branch on bending and twisting, on top of the relaxed
-# cable stiffness. The left endpoint is clamped while a temporary world joint
-# holds the raised tip, then releases it without resetting the cable material
-# history.
-#
-###########################################################################
+"""Example Cable Viscoelastic Release
+
+Demonstrates generalized-Maxwell cable viscoelasticity in SolverVBD: a fast and
+a slow relaxing branch on bending and twisting, on top of the relaxed cable
+stiffness. The left end of a 0.4 m cable is clamped while a temporary world
+joint holds its raised tip; at the release time the joint is disabled without
+resetting the cable's material history, and the cable swings down under
+gravity.
+
+Success criteria:
+- The cable is held nearly straight and raised toward its tip until the release.
+- After the release the tip falls and swings below the clamp without exploding.
+- With the default viscoelastic branches the swing dies out within about two
+  seconds of the release.
+
+Runs:
+- `python -m newton.examples cable_viscoelastic_release`
+  - The cable swings down and comes nearly to rest about two seconds after the release.
+- `python -m newton.examples cable_viscoelastic_release --no-visco`
+  - Without the branches the cable keeps swinging visibly for several seconds.
+- `python -m newton.examples cable_viscoelastic_release --release-time 0.1`
+  - The cable is released almost at once and behaves like the default run.
+"""
 
 import math
 
