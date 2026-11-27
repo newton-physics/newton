@@ -375,14 +375,16 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         for name, kwargs in cases.items():
             _, reference, travel = _simulate("sphere", anchor_deg=0.0, **kwargs)
             # The rows act on the identity-anchor reference before the rotated runs are compared with it.
-            if name == "normal spin, rolling rows":
-                np.testing.assert_allclose(reference[3:6], (0.0, 0.0, 6.0 * (1.0 - 0.05 * _DT) ** 120), atol=1.0e-3)
-            elif name == "rolling stop":
-                self.assertLess(np.linalg.norm(reference[3:6]), 1.0e-3)
-                expected = _coulomb_stopping_distance(0.3, 0.004)
-                self.assertAlmostEqual(travel, expected, delta=0.05 * expected)
-            else:
-                self.assertAlmostEqual(reference[5], 6.0 - rate * 0.2, delta=0.1)
+            with self.subTest(case=name, anchor_deg=0.0):
+                if name == "normal spin, rolling rows":
+                    expected_spin = 6.0 * (1.0 - 0.05 * _DT) ** 120
+                    np.testing.assert_allclose(reference[3:6], (0.0, 0.0, expected_spin), atol=1.0e-3)
+                elif name == "rolling stop":
+                    self.assertLess(np.linalg.norm(reference[3:6]), 1.0e-3)
+                    expected = _coulomb_stopping_distance(0.3, 0.004)
+                    self.assertAlmostEqual(travel, expected, delta=0.05 * expected)
+                else:
+                    self.assertAlmostEqual(reference[5], 6.0 - rate * 0.2, delta=0.1)
             for graph in (False, True) if name == "spin row" else (False,):
                 with self.subTest(case=name, graph=graph):
                     _, twist, rotated_travel = _simulate("sphere", anchor_deg=45.0, graph=graph, **kwargs)
