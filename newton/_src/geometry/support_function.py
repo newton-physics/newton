@@ -647,6 +647,35 @@ def create_triangle_prism_penetration_refiner(support_func: Any):
     return refine_penetration
 
 
+TRIANGLE_PRISM_PROXY_FACE_TOLERANCE = wp.constant(1.0e-5)
+"""Distance [m] below a prism's triangle plane from which a witness point counts as on an extruded face."""
+
+
+@wp.func
+def triangle_prism_witness_on_proxy_face(geom_a: Any, point_a: wp.vec3) -> bool:
+    """Whether a separated-pair witness on shape A lies on a triangle prism's extruded side or bottom face.
+
+    Those faces only give a heightfield cell volume. Inside the terrain they are shared with the
+    neighboring cells, so a shape whose closest point to this prism lies on one is inside a neighboring
+    prism, which reports the contact against its physical face. Left in, the extruded wall pushes the
+    shape sideways once it sinks below the surface.
+
+    Args:
+        geom_a: Shape A data; anything but a triangle prism returns False.
+        point_a: GJK witness point on shape A, in shape A's frame.
+    """
+    if geom_a.shape_type != int(GeoTypeEx.TRIANGLE_PRISM):
+        return False
+    surface_normal = wp.cross(geom_a.scale, geom_a.auxiliary)
+    normal_length_sq = wp.length_sq(surface_normal)
+    if normal_length_sq < 1.0e-24:
+        return False
+    surface_normal /= wp.sqrt(normal_length_sq)
+    if surface_normal[2] < 0.0:
+        surface_normal = -surface_normal
+    return wp.dot(point_a, surface_normal) < -TRIANGLE_PRISM_PROXY_FACE_TOLERANCE
+
+
 @wp.func
 def _shape_center(geom: Any) -> wp.vec3:
     """Return a local interior-point approximation for a supported shape."""

@@ -744,6 +744,38 @@ class TestHeightfield(unittest.TestCase):
                     self.assertGreater(float(normal[deepest][2]), 0.999)
                     self.assertAlmostEqual(float(point0[deepest][2]), 0.0, places=5)
 
+    def test_heightfield_sunken_sphere_has_no_skirt_contact(self):
+        """A sphere sunk past its radius must not collide with the neighboring cells' extruded walls.
+
+        Once the sphere's center is below the surface it lies inside one cell's prism but beside its
+        neighbors', within a radius of their extruded side walls. Those walls are inside the terrain;
+        a contact on one has a horizontal normal that pushes the sphere sideways instead of up.
+        """
+        radius = 0.034
+        for reduce_contacts in (False, True):
+            for x, y in ((0.0, 0.0), (0.037, 0.012), (0.051, 0.049), (0.013, 0.081)):
+                for depth in (0.04, 0.06, 0.1):
+                    with self.subTest(reduce_contacts=reduce_contacts, x=x, y=y, depth=depth):
+                        builder = newton.ModelBuilder()
+                        self._add_flat_heightfield(builder)
+
+                        body = builder.add_body(xform=wp.transform((x, y, radius - depth), wp.quat_identity()))
+                        builder.add_shape_sphere(body=body, radius=radius)
+
+                        model = builder.finalize()
+                        distance, normal, _point0 = self._get_contact_kinematics(
+                            model, model.state(), reduce_contacts=reduce_contacts
+                        )
+
+                        penetrating = distance < 0.0
+                        self.assertTrue(np.any(penetrating), "no penetrating contact between sphere and heightfield")
+                        self.assertGreater(
+                            float(np.min(normal[penetrating, 2])),
+                            0.999,
+                            f"a penetrating contact is not along the surface normal: {normal[penetrating]}",
+                        )
+                        self.assertAlmostEqual(float(np.min(distance)), -depth, places=3)
+
     def test_heightfield_sloped_penetration_uses_surface(self):
         """Verify penetration follows a sloped heightfield face normal."""
         slope = 0.25
