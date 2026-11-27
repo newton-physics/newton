@@ -242,7 +242,7 @@ class _ShapeContactPairs:
 
         # Sorting by (group, body) makes both a positive group and its excluded
         # same-body runs contiguous, even when no body dominates the whole set.
-        codes = (second_groups.astype(np.int64) << 32) | (self.shape_body[second].astype(np.int64) + 1)
+        codes = (second_groups.astype(np.int64) * (1 << 32)) | (self.shape_body[second].astype(np.int64) + 1)
         order = np.argsort(codes, kind="stable")
         codes = codes[order]
         second = second[order]
@@ -262,7 +262,7 @@ class _ShapeContactPairs:
         # negatives and their matching positive group, excluding the same body.
         left = np.searchsorted(second_groups, groups, side="left")
         right = np.searchsorted(second_groups, groups, side="right")
-        first_codes = (groups.astype(np.int64) << 32) | (self.shape_body[first].astype(np.int64) + 1)
+        first_codes = (groups.astype(np.int64) * (1 << 32)) | (self.shape_body[first].astype(np.int64) + 1)
         body_left = np.searchsorted(codes, first_codes, side="left")
         body_right = np.searchsorted(codes, first_codes, side="right")
         negative_end = int(np.searchsorted(second_groups, 0))
