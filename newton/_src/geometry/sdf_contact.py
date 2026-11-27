@@ -19,6 +19,7 @@ from ..geometry.sdf_texture import (
 from ..geometry.types import GeoType
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield, sample_sdf_heightfield
 from .broad_phase_common import check_aabb_overlap, check_aabb_sweep
+from .collision_core import sat_box_intersection
 from .contact_reduction_global import (
     GlobalContactReducerData,
     _export_and_reduce_contact_centered_two_spatial_depths,
@@ -1298,6 +1299,34 @@ def _mesh_to_sdf_transform(mesh_pose: wp.transform, sdf_pose: wp.transform) -> w
     delta = wp.transform_get_translation(mesh_pose) - wp.transform_get_translation(sdf_pose)
     rotation = wp.quat_inverse(sdf_rotation) * wp.transform_get_rotation(mesh_pose)
     return wp.transform(wp.quat_rotate_inv(sdf_rotation, delta), rotation)
+
+
+@wp.func
+def _mesh_bounds_overlap(
+    pose_a: wp.transform,
+    pose_b: wp.transform,
+    lower_a: wp.vec3,
+    upper_a: wp.vec3,
+    lower_b: wp.vec3,
+    upper_b: wp.vec3,
+    clearance: float,
+) -> bool:
+    relative = _mesh_to_sdf_transform(pose_a, pose_b)
+    center_a = wp.transform_point(relative, 0.5 * (lower_a + upper_a))
+    center_b = 0.5 * (lower_b + upper_b)
+    centered_a = wp.transform(center_a - center_b, wp.transform_get_rotation(relative))
+
+    # Include local offsets in the roundoff bound before the centers cancel.
+    size_a = wp.max(wp.max(wp.abs(lower_a), wp.abs(upper_a)))
+    size_b = wp.max(wp.max(wp.abs(lower_b), wp.abs(upper_b)))
+    magnitude = wp.max(size_a + size_b, wp.max(wp.abs(wp.transform_get_translation(relative))))
+    padding = wp.max(clearance, 0.0) + 2.0e-6 * wp.max(magnitude, 1.0)
+    return sat_box_intersection(
+        centered_a,
+        0.5 * (upper_a - lower_a) + wp.vec3(padding),
+        wp.transform_identity(),
+        0.5 * (upper_b - lower_b),
+    )
 
 
 @wp.func

@@ -1108,6 +1108,10 @@ Two approaches available:
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
+For discrete BVH queries between closed, unit-scale meshes, Newton first
+checks their oriented bounds with the contact gap and margins. This can skip
+pairs whose world-space boxes overlap while their oriented boxes are separated.
+
 When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
 single contact on the shorter exit path. Both shapes need texture SDFs and
 the probe surface must be connected. A mesh query verifies the two locally

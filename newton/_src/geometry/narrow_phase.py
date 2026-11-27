@@ -75,6 +75,7 @@ from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
     MESH_SDF_BLOCK_DIM,
+    _mesh_bounds_overlap,
     _mesh_sweep_may_contact,
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
@@ -522,6 +523,7 @@ def create_narrow_phase_primitive_kernel(
     speculative: bool = False,
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
+    mesh_bounds_culling: bool = False,
     _tetrahedron_separation: bool = False,
 ):
     """
@@ -537,12 +539,15 @@ def create_narrow_phase_primitive_kernel(
         speculative: Enable predictive contact admission.
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
+        mesh_bounds_culling: Cull separated oriented mesh bounds in discrete BVH queries.
         _tetrahedron_separation: Reject distant four-vertex hulls using padded local bounds.
 
     Returns:
         A warp kernel for primitive collision detection
     """
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
+    if mesh_bounds_culling:
+        _module += "_mesh_bounds"
     if _tetrahedron_separation:
         _module += "_tetrahedra"
 
@@ -751,6 +756,34 @@ def create_narrow_phase_primitive_kernel(
                 and has_sdf_edges_b
                 and not (is_box_a and is_box_b)
             ):
+                if wp.static(mesh_bounds_culling):
+                    # Unit-scale BVH distances measure the same geometry as
+                    # the mesh bounds. Texture samples and rescaled distances
+                    # can admit contacts across a wider envelope.
+                    if (
+                        is_mesh_a
+                        and is_mesh_b
+                        and shape_sdf_index[shape_a] < 0
+                        and shape_sdf_index[shape_b] < 0
+                        and (shape_mesh_properties[shape_a] & MeshProperties.WATERTIGHT) != 0
+                        and (shape_mesh_properties[shape_b] & MeshProperties.WATERTIGHT) != 0
+                        and wp.min(scale_a) == 1.0
+                        and wp.max(scale_a) == 1.0
+                        and wp.min(scale_b) == 1.0
+                        and wp.max(scale_b) == 1.0
+                        and not _mesh_bounds_overlap(
+                            shape_transform[shape_a],
+                            shape_transform[shape_b],
+                            shape_collision_aabb_lower[shape_a],
+                            shape_collision_aabb_upper[shape_a],
+                            shape_collision_aabb_lower[shape_b],
+                            shape_collision_aabb_upper[shape_b],
+                            mesh_search_envelope(
+                                shape_base_gap[shape_a] + shape_base_gap[shape_b], data_a[3] + data_b[3]
+                            ),
+                        )
+                    ):
+                        continue
                 if wp.static(speculative):
                     if (
                         is_mesh_a
@@ -3019,6 +3052,7 @@ class NarrowPhase:
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
+            mesh_bounds_culling=has_meshes and not speculative and not self.mesh_sdf_texture_only,
             _tetrahedron_separation=self._tetrahedron_separation,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
