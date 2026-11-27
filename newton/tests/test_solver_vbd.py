@@ -5460,42 +5460,49 @@ def _cable_viscoelastic_bend_and_twist_branches_act_separately(test, device):
 
 
 def _cable_viscoelastic_iteration_restart_replays_history(test, device):
-    """A coupler's restarted solve of one step must start from the same branch history as the first attempt."""
-    dt = 0.1
+    """A coupler's restarted interval must start from the same branch history as the first attempt.
+
+    The coupler notifies the solver once per interval and then steps it once per substep, so the history
+    to replay is the one at the start of the interval, after any first-step rebaseline.
+    """
+    interval_dt = 0.1
     theta = 0.3
     flags = int(newton.StateFlags.BODY_Q)
 
-    def run(restart):
+    def run(restart, substeps):
         model = _make_vbd_dahl_detection_model(
             device, visco_bend_ke=[4.0, 1.0], visco_twist_ke=[2.0, 0.0], visco_tau=[0.5, 5.0]
         )
         solver = newton.solvers.SolverVBD(model, iterations=0)
         solver.coupling_notify_iteration_restarts(restart)
-        state_in, state_out = model.state(), model.state()
+        work = [model.state(), model.state()]
+        # copies: on CPU, numpy() views the array the step updates in place
+        saved_q, saved_qd = work[0].body_q.numpy().copy(), work[0].body_qd.numpy().copy()
         moments = []
-        for step in range(4):
-            if step > 0:
-                posed_q = state_in.body_q.numpy()
-                posed_q[1, 3:] = [math.sin(0.5 * theta * step), 0.0, 0.0, math.cos(0.5 * theta * step)]
-                state_in.body_q.assign(posed_q)
-                state_in.body_qd.zero_()
-            # step 0 also applies the first-step rebaseline, which a restart must replay
-            attempts = 2 if restart else 1
-            # copies: on CPU, numpy() views the array the step updates in place
-            saved_q, saved_qd = state_in.body_q.numpy().copy(), state_in.body_qd.numpy().copy()
-            for attempt in range(attempts):
-                # the step integrates state_in in place; a restart supplies the same input again
+        for interval in range(4):
+            if interval > 0:
+                saved_q[1, 3:] = [math.sin(0.5 * theta * interval), 0.0, 0.0, math.cos(0.5 * theta * interval)]
+                saved_qd[:] = 0.0
+            # interval 0 also applies the first-step rebaseline, which a restart must replay
+            for attempt in range(2 if restart else 1):
+                state_in, state_out = work
                 state_in.body_q.assign(saved_q)
                 state_in.body_qd.assign(saved_qd)
-                solver.coupling_notify_input_state_update(state_in, flags, iteration_restart=attempt > 0, dt=dt)
-                solver.step(state_in, state_out, None, None, dt)
+                solver.coupling_notify_input_state_update(
+                    state_in, flags, iteration_restart=attempt > 0, dt=interval_dt
+                )
+                for _ in range(substeps):
+                    solver.step(state_in, state_out, None, None, interval_dt / substeps)
+                    state_in, state_out = state_out, state_in
             moments.append(solver.joint_visco_moment_prev.numpy()[0].copy())
-            state_in, state_out = state_out, state_in
+            saved_q, saved_qd = state_in.body_q.numpy().copy(), state_in.body_qd.numpy().copy()
         return np.array(moments)
 
-    single = run(False)
-    test.assertGreater(np.abs(single).max(), 1.0e-3)
-    np.testing.assert_allclose(run(True), single, rtol=1.0e-6, atol=1.0e-9)
+    for substeps in (1, 3):
+        with test.subTest(substeps=substeps):
+            single = run(False, substeps)
+            test.assertGreater(np.abs(single).max(), 1.0e-3)
+            np.testing.assert_allclose(run(True, substeps), single, rtol=1.0e-6, atol=1.0e-9)
 
 
 def _cable_viscoelastic_masked_reset_rebaselines_selected_world(test, device):

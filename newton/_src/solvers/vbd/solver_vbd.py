@@ -1492,6 +1492,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._coupling_iteration_restarts = False
             self._coupling_visco_moment_snapshot = None
             self._coupling_visco_kappa_snapshot = None
+            # Set by a coupler's new interval; the interval's first step then saves the history.
+            self._coupling_visco_snapshot_pending = False
 
             visco_names = ("visco_bend_ke", "visco_twist_ke", "visco_tau")
             if model.joint_count > 0 and vbd_attrs is not None and all(hasattr(vbd_attrs, n) for n in visco_names):
@@ -1666,7 +1668,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         return True
 
     def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
-        """Save the cable viscoelastic history for restarted solves only when a restart can follow.
+        """Save the cable viscoelastic history for restarted intervals only when a restart can follow.
+
+        The history is saved once per coupled interval, at its first step after any rebaseline, so a
+        restarted interval replays it even when the coupler steps the solver over several substeps.
 
         Args:
             enabled: Whether the coupler may restart a step's solve.
@@ -1696,6 +1701,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._apply_module_options()
         flags = int(flags)
 
+        if dt > 0.0 and getattr(self, "_coupling_visco_moment_snapshot", None) is not None:
+            if iteration_restart:
+                # Replay the cable branch history the interval's first attempt started from.
+                wp.copy(dest=self.joint_visco_moment_prev, src=self._coupling_visco_moment_snapshot)
+                wp.copy(dest=self.joint_visco_kappa_prev, src=self._coupling_visco_kappa_snapshot)
+            else:
+                # A new interval: its first step saves the history after applying any rebaseline.
+                self._coupling_visco_snapshot_pending = True
+
         if (
             flags & StateFlags.PARTICLE_Q
             and dt > 0.0
@@ -1723,10 +1737,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if iteration_restart:
             # Restore the beginning-of-iteration history after a previous solve advanced it.
             wp.copy(dest=self.body_q_prev, src=self._coupling_body_q_prev_snapshot)
-            if getattr(self, "_coupling_visco_moment_snapshot", None) is not None:
-                # Cable branch history as the first attempt's solve started from it, rebaseline included.
-                wp.copy(dest=self.joint_visco_moment_prev, src=self._coupling_visco_moment_snapshot)
-                wp.copy(dest=self.joint_visco_kappa_prev, src=self._coupling_visco_kappa_snapshot)
 
         wp.launch(
             _update_vbd_body_input_state_kernel,
@@ -4240,10 +4250,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     dim=model.joint_count,
                     device=self.device,
                 )
-                if self._coupling_visco_moment_snapshot is not None:
-                    # The launch above applied any rebaseline; a restarted solve of this step resumes here.
+                if self._coupling_visco_snapshot_pending:
+                    # First step of a coupled interval: the launch above applied any rebaseline, so a
+                    # restarted interval resumes from here. Later substeps keep this snapshot.
                     wp.copy(dest=self._coupling_visco_moment_snapshot, src=self.joint_visco_moment_prev)
                     wp.copy(dest=self._coupling_visco_kappa_snapshot, src=self.joint_visco_kappa_prev)
+                    self._coupling_visco_snapshot_pending = False
 
             # The forward step and any enabled rod update have consumed the mask.
             self._rigid_pose_rebaseline_mask.zero_()
