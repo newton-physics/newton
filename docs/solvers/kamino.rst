@@ -472,6 +472,40 @@ matrix to about 23,000 constraints. Larger worlds raise an error during
 solver construction; for these, consider sparse Jacobians and dynamics
 (``sparse_jacobian=True`` and ``sparse_dynamics=True``).
 
+.. _kamino-d6-joints:
+
+D6 joints
+---------
+
+SCC, LOX, and PADMM support D6 joints authored with
+:meth:`newton.ModelBuilder.add_joint_d6` or imported from USD. A D6 joint
+has zero to three linear axes and zero to three angular axes. Each family
+must consist of unit-length, mutually orthogonal axes. Both families must
+use the same orthonormal frame, so every linear axis must be parallel or
+perpendicular to every angular axis. Either direction along a frame axis
+is allowed. Omitted degrees of freedom are locked.
+On models with D6 joints, issue ``ModelFlags.JOINT_PROPERTIES`` notifications
+outside CUDA graph capture so Kamino can validate axis updates.
+
+Coordinates and rates follow the authored order, with linear components
+first (meters and meters per second), then angular components (radians and
+radians per second). Angular coordinates are intrinsic angles applied in
+order about successive rotated axes. Two angular axes give universal-joint
+rotation and three give gimbal rotation.
+
+Each active axis supports position limits, direct effort, implicit drives,
+effort limits, armature, damping, and Coulomb friction. With three angular
+axes, individual Euler rates become indeterminate at gimbal lock. Kamino
+uses the minimum-norm rate split at float32 rank loss and the exact coordinate
+derivative at regular poses.
+
+Use ``use_fk_solver=False`` (the default) for general D6 layouts. The
+optional Kamino forward-kinematics solver supports D6 layouts that map to
+its specialized joints: fixed, prismatic, revolute, same-axis cylindrical,
+universal, right-handed Cartesian, and three-axis gimbal. Newton's
+:func:`newton.eval_fk` can initialize articulated D6 body states for any
+supported D6 layout.
+
 .. _kamino-rod-joints:
 
 Rod joints
@@ -564,8 +598,7 @@ passive armature, damping, and Coulomb friction are likewise configured per
 DoF. Implicit-PD target modes require a non-zero applicable gain: velocity
 mode requires derivative gain, while position-based modes require proportional
 or derivative gain. Coulomb friction supports all non-free joint types, while
-joint dynamics and implicit PD currently support revolute, prismatic, and
-gimbal joint types only.
+joint dynamics and implicit PD support revolute, prismatic, and D6 joints.
 
 The forward-kinematics solver still partitions each joint as entirely passive
 or entirely actuated. Different non-passive target modes are allowed within a
