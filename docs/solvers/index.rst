@@ -544,7 +544,7 @@ attachment reaches its spring over several iterations. The penalty affects conve
 A finite ``stiffness`` [N/m] converges to a spring with ``damping`` [N·s/m], so a
 loaded attachment keeps a physical offset. Set ``stiffness=math.inf`` to request
 a hard point constraint; damping is ignored for hard attachments. Multipliers are
-retained across steps, scaled by ``rigid_avbd_gamma``. A finite iteration budget
+retained across steps, scaled by 0.999 per step. A finite iteration budget
 can leave constraint error, especially for heavy free bodies at large time steps;
 more iterations or smaller steps reduce it. Incompatible hard attachments cannot
 all be satisfied. Separated initial anchors can cause large correction impulses.

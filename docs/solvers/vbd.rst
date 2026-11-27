@@ -299,8 +299,7 @@ The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
 ``integrate_with_external_rigid_solver``, and ``collision_pipeline`` with
 ``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
 self-contact on or off, margin and gap, the candidate buffer sizes, the
-topological and rest-shape filters, and the tile solve. ``rigid_*``: the
-ALM stabilization and retention factors, body-body
+topological and rest-shape filters, and the tile solve. ``rigid_*``: body-body
 contact history and two-sided damping (``rigid_contact_damping_bidirectional``),
 the per-body contact list capacities, the rigid-soft barrier law and DAT, and
 the structural joint stiffness and damping. Defaults and exact
@@ -399,7 +398,7 @@ The real call tree, with the control flow written out:
      _initialize_particles      -> forward_step                (predicted positions y)
      _initialize_particle_body_attachments -> step_particle_body_attachment_lambda_rho
                                 (attachment rho from the endpoints' support; retained
-                                 multipliers scaled by rigid_avbd_gamma)
+                                 multipliers scaled by 0.999)
      collision detection (default: self-contact before and after this initialization;
                           rigid contacts before it only, or before and after it with rigid-soft DAT)
      for iteration in range(iterations):
@@ -477,8 +476,8 @@ as compliant augmented-Lagrangian (ALM) rows. A row has a residual :math:`C`,
 a material stiffness :math:`k`, an internal metric :math:`\rho` that the solver
 sets when it initialises the row (once per step for joints, at every rigid
 contact detection for body-body contacts), and a multiplier :math:`\lambda`.
-With ``rigid_avbd_alpha`` above zero the residual is stabilised to
-:math:`C - \alpha C_0`; the default under compliant ALM is zero, and the
+With the deprecated ``rigid_avbd_alpha`` above zero the residual is stabilised
+to :math:`C - \alpha C_0`; the default under compliant ALM is zero, and the
 formulas below use that default. Its force along the row and the dual update
 after every iteration are
 
@@ -496,7 +495,7 @@ and :math:`k_{\text{eff}}` enters the Hessian blocks through the row's
 Jacobian. A bilateral row keeps the full force. A unilateral row keeps only
 the admissible sign: for contact :math:`f_n = \max(f, 0)` and
 :math:`\lambda_n \leftarrow \max(\,\cdot\,, 0)`. Joint multipliers persist
-across steps, scaled by ``rigid_avbd_gamma`` (0.999); body-body contacts
+across steps, scaled by 0.999 per step; body-body contacts
 restart theirs at zero unless ``rigid_contact_history=True``.
 
 *Joints* (``evaluate_joint_force_hessian``). The structural rows of a joint
@@ -820,7 +819,7 @@ particle and the opposite force, with its torque, to the body;
 :math:`k` and the metric :math:`\rho` as above. The solver sets :math:`\rho`
 once per step to the row's support, the endpoints' reduced inverse mass over
 :math:`h^2` plus the particle's incident material Hessian, and at the same time
-scales the retained multiplier by ``rigid_avbd_gamma``
+scales the retained multiplier by 0.999
 (``step_particle_body_attachment_lambda_rho``). The multiplier advances once
 per iteration after both primal blocks, :math:`\lambda \leftarrow s\,(\lambda +
 \rho\,C)` (``update_duals_particle_body_attachments``). Infinite stiffness is

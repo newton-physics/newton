@@ -2269,7 +2269,7 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
 
 
 def _rigid_compliant_alm_defaults_to_compliant(test, device):
-    """Keep omission silent, warn for explicit ALM, and reject removed options."""
+    """Keep omission silent, warn for deprecated options, and reject removed options."""
     builder = newton.ModelBuilder()
     builder.add_body()
     builder.color()
@@ -2292,6 +2292,18 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
         # Other invalid inputs are not masked by the deprecation warning, even when validated late.
         with test.assertRaisesRegex(ValueError, "rigid_joint_linear_kd"):
             newton.solvers.SolverVBD(model, rigid_compliant_alm=True, rigid_joint_linear_kd=np.nan)
+    # Deprecated stabilization and retention options still apply their explicit values.
+    for parameter, attribute in (
+        ("rigid_avbd_alpha", "rigid_joint_alpha"),
+        ("rigid_avbd_joint_alpha", "rigid_joint_alpha"),
+        ("rigid_avbd_contact_alpha", "rigid_contact_alpha"),
+        ("rigid_avbd_gamma", "rigid_avbd_gamma"),
+    ):
+        with test.subTest(parameter=parameter):
+            with test.assertWarnsRegex(NewtonDeprecationWarning, parameter) as warning:
+                solver = newton.solvers.SolverVBD(model, **{parameter: 0.5})
+            test.assertEqual(warning.filename, __file__)
+            test.assertEqual(getattr(solver, attribute), 0.5)
     for parameter, value in (
         ("rigid_avbd_beta", 0.0),
         ("rigid_avbd_beta", 5.0),
@@ -4971,13 +4983,9 @@ def _rigid_contact_reset_lifecycle(test, device):
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
     contacts = pipeline.contacts()
     # Dynamic bodies supply ALM support; zero iterations and gravity keep their geometry fixed.
-    # gamma=1 disables the per-step multiplier decay, so a restored dual survives a step unchanged.
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=0,
-        rigid_contact_history=True,
-        rigid_avbd_gamma=1.0,
-    )
+    # A restored dual survives a step scaled only by the per-step multiplier retention.
+    retention = 0.999
+    solver = newton.solvers.SolverVBD(model, iterations=0, rigid_contact_history=True)
     state_in = model.state()
     state_out = model.state()
 
@@ -5042,20 +5050,20 @@ def _rigid_contact_reset_lifecycle(test, device):
 
     # Frame 2: first fresh refresh after reset. Selected-world rows cold-start to a
     # zero dual despite a seeded warm value (proving the intent survived the
-    # contactless step); the unselected world warm-restores its exact seed vector.
+    # contactless step); the unselected world warm-restores its seed vector.
     pipeline.collide(state_in, contacts)
     n2, rw2, normal2 = seed_saved_dual(7.0, 8.0)
     advance(contacts)
     lam2 = solver.body_body_contact_lambda.numpy()[:n2]
-    expected2 = np.where(rw2[:, None] == 0, 0.0, normal2 * 8.0)
+    expected2 = np.where(rw2[:, None] == 0, 0.0, normal2 * 8.0 * retention)
     np.testing.assert_allclose(lam2, expected2, atol=1.0e-3)
 
-    # Frame 3: the reset was one-shot, so both worlds warm-restore their exact seeds.
+    # Frame 3: the reset was one-shot, so both worlds warm-restore their seeds.
     pipeline.collide(state_in, contacts)
     n3, rw3, normal3 = seed_saved_dual(6.0, 9.0)
     advance(contacts)
     lam3 = solver.body_body_contact_lambda.numpy()[:n3]
-    expected3 = np.where(rw3[:, None] == 0, normal3 * 6.0, normal3 * 9.0)
+    expected3 = np.where(rw3[:, None] == 0, normal3 * 6.0 * retention, normal3 * 9.0 * retention)
     np.testing.assert_allclose(lam3, expected3, atol=1.0e-3)
 
     # A disabled pipeline does not overwrite an allocated match-index array, so
