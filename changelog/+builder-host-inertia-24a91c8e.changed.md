@@ -1,1 +1,1 @@
-Reduce model construction overhead when accumulating rigid-body mass and inertia from multiple shapes.
+Speed up adding several shapes to one body in `ModelBuilder` by accumulating mass and inertia with less host overhead.

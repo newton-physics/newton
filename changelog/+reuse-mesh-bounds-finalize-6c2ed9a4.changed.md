@@ -1,1 +1,1 @@
-Reuse mesh-local bounds when finalizing differently scaled instances, avoiding repeated vertex scans while preserving signed-scale collision bounds and mesh cache invalidation.
+Speed up `ModelBuilder.finalize()` for differently scaled instances of a mesh by reusing the mesh-local bounds; signed-scale collision bounds are unchanged.

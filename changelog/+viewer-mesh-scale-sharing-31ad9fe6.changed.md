@@ -1,1 +1,1 @@
-Reuse viewer mesh geometry across differently scaled instances to reduce scene loading time, preserving instance scales and mirrored triangle winding.
+Speed up viewer scene loading by sharing mesh geometry across differently scaled instances; instance scales and mirrored triangle winding are preserved.
