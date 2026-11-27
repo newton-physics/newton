@@ -646,7 +646,7 @@ def build_stacked_cubes_scene(
         rigid_contact_max=rigid_contact_max,
         broad_phase="explicit",
         sdf_hydroelastic_config=sdf_hydroelastic_config,
-        deterministic=deterministic,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED,
     )
 
     return model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half
@@ -1145,7 +1145,10 @@ def _make_pipelines(model, configs, rigid_contact_maxes=None, deterministic=Fals
     result = []
     for cfg, rcm in zip(configs, rigid_contact_maxes, strict=True):
         pipe = newton.CollisionPipeline(
-            model, rigid_contact_max=rcm, sdf_hydroelastic_config=cfg, deterministic=deterministic
+            model,
+            rigid_contact_max=rcm,
+            sdf_hydroelastic_config=cfg,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED,
         )
         result.append((pipe, pipe.contacts()))
     return result
@@ -1234,7 +1237,7 @@ def test_deterministic_hydroelastic_speculative_contacts(test, device):
             reduce_contacts=True,
             buffer_fraction=1.0,
         ),
-        deterministic=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
     )
     contacts = pipeline.contacts()
     reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer

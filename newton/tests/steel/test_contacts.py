@@ -1511,7 +1511,7 @@ def test_contact_f_of_compliant_hydroelastic_rows(test, device):
         pipeline = newton.CollisionPipeline(
             model,
             rigid_contact_max=512,
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             sdf_hydroelastic_config=HydroelasticSDF.Config(
                 reduce_contacts=True, moment_matching=True, anchor_contact=True, buffer_fraction=1.0
             ),
@@ -4026,7 +4026,7 @@ def _momentum_solves(model, kick=None, reference_iterations=8000, **options):
     """
     dt = 1.0 / 60.0
     control = model.control()
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state, output = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -4204,7 +4204,7 @@ def test_nesterov_momentum_skips_velocity_limit_rows(test, device):
     builder.add_shape_box(box, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=4000.0))
     builder.joint_qd[:9] = [0.2, -0.2, 0.2, 0.0, 0.0, -0.8, 2.0, 0.0, 0.0]
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state, start, output = model.state(), model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)

@@ -28,7 +28,7 @@ the solver, which consumes them.
 
    import newton
 
-   pipeline = newton.CollisionPipeline(model, deterministic=True)
+   pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
    solver = newton.solvers.SolverXPBD(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
    contacts = pipeline.contacts()
@@ -38,16 +38,15 @@ the solver, which consumes them.
        solver.step(state_0, state_1, control, contacts, dt)
        state_0, state_1 = state_1, state_0
 
-A solver's ``deterministic`` argument defaults to ``None``, which inherits
-``wp.config.deterministic`` at construction. Prefer the per-object arguments
-over setting ``wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN``
-process-wide: the global setting is also Warp's default for every module that
-does not set its own option, so it additionally compiles the collision
-pipeline's kernels, other Newton utility kernels, and your own kernels with
-recorded atomics. That costs speed and memory and can overflow the record
-buffers of kernels with many atomics per thread. It does not enable the
-collision pipeline's contact sorting, which follows only the pipeline's own
-``deterministic`` flag.
+The ``deterministic`` argument of the collision pipeline and of the solvers
+defaults to ``None``, which inherits ``wp.config.deterministic`` at
+construction. Prefer the per-object arguments over setting
+``wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN`` process-wide: the
+global setting is also Warp's default for every module that does not set its
+own option, so it additionally compiles the collision pipeline's kernels, other
+Newton utility kernels, and your own kernels with recorded atomics. That costs
+speed and memory and can overflow the record buffers of kernels with many
+atomics per thread.
 
 Sources of nondeterminism
 -------------------------
@@ -76,12 +75,16 @@ thread are already deterministic and cost nothing extra.
 Collision pipeline
 ------------------
 
-``CollisionPipeline(deterministic=True)`` sorts contacts into a canonical order
-after the narrow phase, breaks contact-reduction ties with geometry-derived
-fingerprints, and accumulates hydroelastic aggregates in fixed point; see
-:ref:`Deterministic Contacts`. Contact matching (``contact_matching`` other than
-``"disabled"``) implies ``deterministic=True``. Deterministic mode disables
-hydroelastic pre-pruning, so its contact set differs from the default.
+``CollisionPipeline(deterministic=wp.DeterministicMode.RUN_TO_RUN)`` sorts
+contacts into a canonical order after the narrow phase, breaks
+contact-reduction ties with geometry-derived fingerprints, and accumulates
+hydroelastic aggregates in fixed point; see :ref:`Deterministic Contacts`.
+Contact matching (``contact_matching`` other than ``"disabled"``) implies
+``RUN_TO_RUN``. Deterministic mode disables hydroelastic pre-pruning, so its
+contact set differs from the default. The pipeline does not support
+``GPU_TO_GPU``: passing it raises :class:`ValueError`, and inheriting it from
+``wp.config.deterministic`` emits a :class:`~newton.NewtonWarning` and runs
+``RUN_TO_RUN``. Passing a ``bool`` is deprecated.
 
 Solver support
 --------------

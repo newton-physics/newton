@@ -141,7 +141,7 @@ def _mesh_incline_model(mus):
 def _run_mesh_incline(model, seconds: float, dt: float, iterations: int):
     """Step the inclines with friction patches; return per-step body poses and velocities, and the solver."""
     solver = newton.solvers.SolverSteel(model, iterations=iterations, friction_anchor_beta=0.2)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
     control = model.control()
@@ -594,7 +594,7 @@ def _slide(
         friction_mode=mode,
     )
     solver._rigid_body_angular_damping.zero_()
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=128, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=128, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state, next_state = model.state(), model.state()
     control = model.control()
@@ -1113,7 +1113,7 @@ def _box_on_support(device, mode, articulated, support_speed, steps=60, window=3
         articulation_constraint_max=64,
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
     )
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state, next_state, control = model.state(), model.state(), model.control()
     if support_speed != 0.0:
@@ -1202,7 +1202,7 @@ def _surface_belt(device, *, articulated=False, box_z=0.05, gap=0.0, restitution
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
         **solver_kwargs,
     )
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     states = [model.state(), model.state()]
     control = model.control()
@@ -1304,7 +1304,7 @@ def test_surface_velocity_of_a_body_variant_mesh_drives_the_body(test, device):
     solver = SolverSteel(model, iterations=32, friction_anchor_beta=0.2)
     solver.notify_model_changed(model.select_body_variants(wp.array([1], dtype=wp.int32, device=device)))
     meshes[1].mesh.velocities.fill_(wp.vec3(0.5, 0.0, 0.0))
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     states = [model.state(), model.state()]
     control = model.control()
@@ -2142,7 +2142,9 @@ def _run_rolling(
     model = builder.finalize(device=device)
     kwargs = {} if friction_anchor_beta is None else {"friction_anchor_beta": friction_anchor_beta}
     solver = newton.solvers.SolverSteel(model, **kwargs)
-    pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
+    pipeline = newton.CollisionPipeline(
+        model, deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED
+    )
     contacts = pipeline.contacts()
     s0, s1 = model.state(), model.state()
     s0.joint_qd.assign(np.ravel([[direction, 0, 0, 0, 20 * direction, 0] for _phase, direction, _mu in launches]))
@@ -2769,7 +2771,9 @@ class _ModeScene:
             self.solver = SolverSteel(self.model, **args)
         if variant:
             select_colored_variant(test, self.solver, variant)
-        self.pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=16 * worlds, deterministic=True)
+        self.pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=16 * worlds, deterministic=wp.DeterministicMode.RUN_TO_RUN
+        )
         self.contacts = self.pipeline.contacts()
         self.state_in, self.state_out = self.model.state(), self.model.state()
         self.control = self.model.control()

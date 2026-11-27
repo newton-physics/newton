@@ -509,6 +509,73 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertEqual(disabled_contacts.soft_contact_max, 0)
         self.assertEqual(int(disabled_contacts.soft_contact_count.numpy()[0]), 0)
 
+    def test_deterministic_option_follows_the_warp_mode(self):
+        """Inherit ``wp.config.deterministic``, fall back from inherited GPU_TO_GPU and reject explicit GPU_TO_GPU."""
+        mode = wp.DeterministicMode
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.5)
+        model = builder.finalize(device="cpu")
+
+        def pipeline_mode(**kwargs):
+            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", **kwargs)
+            self.assertEqual(pipeline.narrow_phase.deterministic, pipeline.deterministic)
+            self.assertEqual(pipeline._sort_key_array.shape[0] > 0, pipeline.deterministic == mode.RUN_TO_RUN)
+            return pipeline.deterministic
+
+        saved = wp.config.deterministic
+        try:
+            wp.config.deterministic = mode.NOT_GUARANTEED
+            self.assertEqual(pipeline_mode(), mode.NOT_GUARANTEED)
+            self.assertEqual(pipeline_mode(deterministic=mode.RUN_TO_RUN), mode.RUN_TO_RUN)
+            self.assertEqual(pipeline_mode(contact_matching="latest"), mode.RUN_TO_RUN)
+            self.assertEqual(
+                pipeline_mode(deterministic=mode.NOT_GUARANTEED, contact_matching="latest"), mode.RUN_TO_RUN
+            )
+            wp.config.deterministic = mode.RUN_TO_RUN
+            self.assertEqual(pipeline_mode(), mode.RUN_TO_RUN)
+            self.assertEqual(pipeline_mode(deterministic=mode.NOT_GUARANTEED), mode.NOT_GUARANTEED)
+            wp.config.deterministic = mode.GPU_TO_GPU
+            with self.assertWarnsRegex(newton.NewtonWarning, "is GPU_TO_GPU; CollisionPipeline supports at most"):
+                self.assertEqual(pipeline_mode(), mode.RUN_TO_RUN)
+            with self.assertWarnsRegex(newton.NewtonWarning, "is GPU_TO_GPU; NarrowPhase supports at most"):
+                self.assertEqual(
+                    NarrowPhase(max_candidate_pairs=1, device="cpu", has_meshes=False).deterministic, mode.RUN_TO_RUN
+                )
+        finally:
+            wp.config.deterministic = saved
+        with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
+            newton.CollisionPipeline(model, deterministic=mode.GPU_TO_GPU)
+        with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
+            NarrowPhase(max_candidate_pairs=1, device="cpu", has_meshes=False, deterministic=mode.GPU_TO_GPU)
+        with self.assertRaises(TypeError):
+            newton.CollisionPipeline(model, deterministic=1)
+
+    def test_deterministic_bool_is_deprecated(self):
+        """Map a ``bool`` ``deterministic`` to the matching mode with a deprecation warning."""
+        mode = wp.DeterministicMode
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        for value, expected in ((True, mode.RUN_TO_RUN), (False, mode.NOT_GUARANTEED)):
+            with self.subTest(deterministic=value):
+                with self.assertWarnsRegex(
+                    newton.NewtonDeprecationWarning,
+                    rf"CollisionPipeline\(deterministic={value}\) is deprecated.*{expected.name}",
+                ) as caught:
+                    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=value)
+                self.assertEqual(caught.filename, __file__)
+                self.assertEqual(len(caught.warnings), 1)
+                self.assertIs(type(pipeline.deterministic), mode)
+                self.assertEqual(pipeline.deterministic, expected)
+                self.assertEqual(pipeline.narrow_phase.deterministic, expected)
+                with self.assertWarnsRegex(newton.NewtonDeprecationWarning, r"NarrowPhase\(deterministic="):
+                    narrow_phase = NarrowPhase(
+                        max_candidate_pairs=1, device="cpu", has_meshes=False, deterministic=value
+                    )
+                self.assertEqual(narrow_phase.deterministic, expected)
+
 
 def test_collision_pipeline_first_call_capture(test, device):
     """Capture the first collision call with kernels shared by equivalent pipelines."""
@@ -809,7 +876,7 @@ def test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage(test, device)
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        deterministic=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         rigid_contact_max=128,
         max_triangle_pairs=128,
     )
@@ -3022,11 +3089,13 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         self.assertEqual(CollisionPipeline(model).narrow_phase.max_triangle_pairs, _TRIANGLE_PAIRS_MIN_CAPACITY)
         with mock.patch("newton._src.sim.collide._TRIANGLE_PAIRS_PER_MESH_PAIR", 1 << 20):
             with self.assertWarnsRegex(newton.NewtonWarning, "deterministic contact reduction"):
-                pipeline = CollisionPipeline(model, deterministic=True)
+                pipeline = CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
             self.assertEqual(pipeline.narrow_phase.max_triangle_pairs, (1 << 20) - 1)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", newton.NewtonWarning)
-                unreduced = CollisionPipeline(model, deterministic=True, reduce_contacts=False)
+                unreduced = CollisionPipeline(
+                    model, deterministic=wp.DeterministicMode.RUN_TO_RUN, reduce_contacts=False
+                )
             self.assertEqual(unreduced.narrow_phase.max_triangle_pairs, 3 << 20)
         with self.assertRaises(ValueError):
             CollisionPipeline(model, max_triangle_pairs=0)
@@ -3840,7 +3909,7 @@ for shape_type in particle_shape_tests:
 
 
 class TestDeterministicPipeline(unittest.TestCase):
-    """Test that deterministic=True yields bit-identical contacts across collide calls."""
+    """Test that deterministic=RUN_TO_RUN yields bit-identical contacts across collide calls."""
 
     pass
 
@@ -4629,14 +4698,14 @@ def test_deterministic_pipeline_500_steps(test, device):
         pipeline_a = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             reduce_contacts=True,
             rigid_contact_max=50000,
         )
         pipeline_b = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             reduce_contacts=True,
             rigid_contact_max=50000,
         )
@@ -4752,13 +4821,13 @@ def test_static_empty_gjk_specialization_under_graph_capture(test, device, broad
     specialized = newton.CollisionPipeline(
         model,
         broad_phase=broad_phase,
-        deterministic=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         rigid_contact_max=64,
     )
     reference = newton.CollisionPipeline(
         model,
         broad_phase=broad_phase,
-        deterministic=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         rigid_contact_max=64,
     )
     test.assertFalse(specialized.narrow_phase.has_generic_convex_pairs)
@@ -4891,7 +4960,7 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         model,
         broad_phase="sap",
         shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
-        deterministic=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         rigid_contact_max=16384,
         verify_buffers=False,
     )
@@ -4899,7 +4968,7 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         model,
         broad_phase="sap",
         shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD - 1,
-        deterministic=True,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         rigid_contact_max=16384,
         verify_buffers=False,
     )
@@ -5099,12 +5168,16 @@ def test_mesh_scale_update_matches_rebuild(test, device):
         for mesh_name, mesh in meshes.items():
             with test.subTest(terrain=terrain, mesh=mesh_name):
                 model = _build_meshes_on_terrain(device, terrain, mesh, _INITIAL_MESH_SCALES)
-                pipeline = newton.CollisionPipeline(model, deterministic=True, dynamic_shape_scale=True)
+                pipeline = newton.CollisionPipeline(
+                    model, deterministic=wp.DeterministicMode.RUN_TO_RUN, dynamic_shape_scale=True
+                )
                 rebuilt = _build_meshes_on_terrain(device, terrain, mesh, _UPDATED_MESH_SCALES)
                 _assign_rebuilt_shape_scale(model, rebuilt)
 
                 points = collide(model, pipeline)
-                expected = collide(rebuilt, newton.CollisionPipeline(rebuilt, deterministic=True))
+                expected = collide(
+                    rebuilt, newton.CollisionPipeline(rebuilt, deterministic=wp.DeterministicMode.RUN_TO_RUN)
+                )
                 test.assertGreater(len(expected), 0)
                 test.assertEqual(len(points), len(expected))
                 np.testing.assert_allclose(points, expected, atol=1.0e-5)
@@ -5199,7 +5272,9 @@ def test_unit_scale_sdf_rescale_on_plane_matches_rebuild(test, device):
                 with test.subTest(broad_phase=broad_phase, with_terrain=with_terrain, use_graph=use_graph):
                     model = build((1.0, 1.0, 1.0), with_terrain)
                     rebuilt = build((2.0, 2.0, 2.0), with_terrain)
-                    pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, deterministic=True)
+                    pipeline = newton.CollisionPipeline(
+                        model, broad_phase=broad_phase, deterministic=wp.DeterministicMode.RUN_TO_RUN
+                    )
                     contacts = pipeline.contacts()
                     state = model.state()
                     pipeline.collide(state, contacts)
@@ -5212,7 +5287,9 @@ def test_unit_scale_sdf_rescale_on_plane_matches_rebuild(test, device):
                     else:
                         pipeline.collide(state, contacts)
                     points = _sorted_contact_points(contacts)
-                    expected_pipeline = newton.CollisionPipeline(rebuilt, broad_phase=broad_phase, deterministic=True)
+                    expected_pipeline = newton.CollisionPipeline(
+                        rebuilt, broad_phase=broad_phase, deterministic=wp.DeterministicMode.RUN_TO_RUN
+                    )
                     if with_terrain:
                         test.assertGreater(int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0]), 0)
                     expected = expected_pipeline.contacts()
@@ -5232,7 +5309,7 @@ def test_dynamic_shape_scale_graph_replay_matches_rebuild(test, device):
     cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
     cube.build_sdf(max_resolution=32, device=device)
     model = _build_meshes_on_terrain(device, "heightfield", cube, _INITIAL_MESH_SCALES)
-    pipeline = newton.CollisionPipeline(model, deterministic=True, dynamic_shape_scale=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN, dynamic_shape_scale=True)
     contacts = pipeline.contacts()
     state = model.state()
     pipeline.collide(state, contacts)
@@ -5244,7 +5321,7 @@ def test_dynamic_shape_scale_graph_replay_matches_rebuild(test, device):
     rebuilt = _build_meshes_on_terrain(device, "heightfield", cube, _UPDATED_MESH_SCALES)
     _assign_rebuilt_shape_scale(model, rebuilt)
     wp.capture_launch(capture.graph)
-    rebuilt_pipeline = newton.CollisionPipeline(rebuilt, deterministic=True)
+    rebuilt_pipeline = newton.CollisionPipeline(rebuilt, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     expected = rebuilt_pipeline.contacts()
     rebuilt_pipeline.collide(rebuilt.state(), expected)
     points = _sorted_contact_points(contacts)
@@ -5295,7 +5372,7 @@ def test_packed_mesh_edges_use_mesh_coordinates(test, device):
             return super().launch_custom_write(**kwargs)
 
     def collide(edge_centers, edge_halves):
-        pipeline = newton.CollisionPipeline(model, deterministic=True)
+        pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
         pipeline.narrow_phase = PackedEdgeNarrowPhase(pipeline.narrow_phase, edge_centers, edge_halves)
         contacts = pipeline.contacts()
         pipeline.collide(model.state(), contacts)
@@ -5394,7 +5471,7 @@ def test_deterministic_pipeline_sticky_500_steps(test, device):
             "broad_phase": "nxn",
             "reduce_contacts": True,
             "rigid_contact_max": 50000,
-            # contact_matching="sticky" implies deterministic=True.
+            # contact_matching="sticky" implies deterministic=RUN_TO_RUN.
             "contact_matching": "sticky",
         }
         pipeline_a = newton.CollisionPipeline(model, **common_kwargs)
@@ -8003,7 +8080,7 @@ def test_plane_convex_support(test, device):
     model = builder.finalize(device=device)
     test.assertGreater(model._convex_support_lut.shape[0], 1)
     state = model.state()
-    for deterministic in (False, True):
+    for deterministic in (wp.DeterministicMode.NOT_GUARANTEED, wp.DeterministicMode.RUN_TO_RUN):
         pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
         pipeline.narrow_phase.split_gjk_mpr = False
         contacts = pipeline.contacts()

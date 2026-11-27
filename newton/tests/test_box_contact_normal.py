@@ -320,7 +320,7 @@ def test_convex_contact_near_plate_end(test, device, *, split=False):
         builder.end_world()
         cases.append((plate_shape, body, rotation, penetration, (plate, partner, swap, thickness, distance)))
     model = builder.finalize(device)
-    pipeline = newton.CollisionPipeline(model, broad_phase="explicit", deterministic=True)
+    pipeline = newton.CollisionPipeline(model, broad_phase="explicit", deterministic=wp.DeterministicMode.RUN_TO_RUN)
     test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
     state = model.state()
     contacts = pipeline.contacts()

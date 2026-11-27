@@ -281,7 +281,7 @@ def _make_pipeline(model, reduce_body_pairs, *, reduce_mesh_contacts=True, body_
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        deterministic=deterministic,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED,
         reduce_contacts=reduce_mesh_contacts,
         body_pair_reduction=(
             newton.CollisionPipeline.BodyPairReductionConfig(**config_kwargs) if reduce_body_pairs else None
@@ -708,7 +708,10 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
 
         def mesh_and_other_rows(body_pair_reduction):
             pipeline = newton.CollisionPipeline(
-                model, broad_phase="nxn", deterministic=True, body_pair_reduction=body_pair_reduction
+                model,
+                broad_phase="nxn",
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
+                body_pair_reduction=body_pair_reduction,
             )
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
@@ -739,7 +742,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
             pipeline = newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
-                deterministic=True,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
                 reduce_contacts=False,
                 body_pair_reduction=body_pair_reduction,
             )
@@ -791,7 +794,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
             pipeline = newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
-                deterministic=True,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
                 rigid_contact_max=rigid_contact_max,
                 reduce_contacts=reduce_contacts,
                 body_pair_reduction=body_pair_reduction,
@@ -864,7 +867,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         pipeline = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             sdf_hydroelastic_config=HydroelasticSDF.Config(),
         )
@@ -917,7 +920,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         pipeline = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            deterministic=False,
+            deterministic=wp.DeterministicMode.NOT_GUARANTEED,
             body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
         )
         contacts = pipeline.contacts()
@@ -1546,7 +1549,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             reduced = newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
-                deterministic=True,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
                 rigid_contact_max=8,
                 # Keep all eight admitted candidates in one cell so this tests
                 # overflow reporting and actual reduction of the partial stage.
@@ -1604,7 +1607,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         model = builder.finalize(device=wp.get_device())
         state = model.state()
 
-        base = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        base = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         contacts_base = base.contacts()
         base.collide(state, contacts_base)
         n_base = int(contacts_base.rigid_contact_count.numpy()[0])
@@ -1703,7 +1706,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         model = builder.finalize(device=wp.get_device())
         state = model.state()
 
-        base = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        base = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         contacts_base = base.contacts()
         base.collide(state, contacts_base)
         n_base = int(contacts_base.rigid_contact_count.numpy()[0])
@@ -1737,7 +1740,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         model = builder.finalize(device=wp.get_device())
         state = model.state()
 
-        base = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        base = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         contacts_base = base.contacts()
         base.collide(state, contacts_base)
         n_base = int(contacts_base.rigid_contact_count.numpy()[0])
@@ -1771,7 +1774,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         state = model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
-        raw = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        raw = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         raw_contacts = raw.contacts()
         observed_in = 0
         observed_kept = 0
@@ -1855,7 +1858,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
             newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
-                deterministic=True,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
                 contact_matching="sticky",
                 body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             )
@@ -2006,7 +2009,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         pipeline = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             requires_grad=True,
         )

@@ -337,7 +337,7 @@ def test_unmatched_pipeline_clears_stale_contact_identity(test, device):
     builder.add_ground_plane()
     model = builder.finalize(device=device)
     matched = newton.CollisionPipeline(model, contact_matching="latest")
-    unmatched = newton.CollisionPipeline(model, deterministic=True)
+    unmatched = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     state, contacts = model.state(), matched.contacts()
     matched.collide(state, contacts)
     matched.collide(state, contacts)
@@ -873,7 +873,9 @@ def _final_joint_q(model, steps=60, solve_mode="serial", response="immediate", f
         articulated_contact_response=response,
         deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else None,
     )
-    pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
+    pipeline = newton.CollisionPipeline(
+        model, deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED
+    )
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
     if from_fk:

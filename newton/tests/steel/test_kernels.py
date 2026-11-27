@@ -964,7 +964,7 @@ def _legged_base(device, worlds=2):
 
 def _legged_trajectory(model, steps=90, **solver_kwargs):
     solver = SolverSteel(model, **solver_kwargs)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
     qd = np.zeros(model.joint_dof_count, dtype=np.float32)
@@ -1057,7 +1057,7 @@ def _stream_trajectory(model, steps=60, capture=False, **solver_kwargs):
     solver = SolverSteel(
         model, enable_joint_limits=True, friction_anchor_beta=0.0, articulation_constraint_max=96, **solver_kwargs
     )
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
@@ -1145,7 +1145,7 @@ def _run_sequence(model, plan, *, delay_clear=False, **solver_kwargs):
     graph is first launched.
     """
     solver = SolverSteel(model, friction_anchor_beta=0.0, articulation_constraint_max=96, **solver_kwargs)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
@@ -2052,7 +2052,7 @@ def _row_phase_rollout(model, *, reference=None, capture=False, **options):
 
     solver._launch_mf_gs_phase = record_phase
     # Ordered contacts and rows, so separate rollouts can be compared bit for bit.
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state, next_state, control = model.state(), model.state(), model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)

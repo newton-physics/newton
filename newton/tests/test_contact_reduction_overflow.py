@@ -309,11 +309,13 @@ def test_deterministic_limit_applies_only_with_reducer(test, device):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", newton.NewtonWarning)
-        unreduced = newton.CollisionPipeline(model, reduce_contacts=False, deterministic=True)
+        unreduced = newton.CollisionPipeline(
+            model, reduce_contacts=False, deterministic=wp.DeterministicMode.RUN_TO_RUN
+        )
     test.assertIsNone(unreduced.narrow_phase.global_contact_reducer)
     test.assertGreater(unreduced.narrow_phase.max_triangle_pairs, packing_limit)
 
-    for kwargs in ({"deterministic": True}, {"contact_matching": "latest"}):
+    for kwargs in ({"deterministic": wp.DeterministicMode.RUN_TO_RUN}, {"contact_matching": "latest"}):
         with test.subTest(**kwargs):
             with test.assertWarnsRegex(newton.NewtonWarning, r"deterministic contact reduction.*at most 1,048,575"):
                 pipeline = newton.CollisionPipeline(model, **kwargs)

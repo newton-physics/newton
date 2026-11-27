@@ -290,7 +290,7 @@ def _sample(state):
 def _make_pipeline(model, options):
     if options.get("contact_warmstart"):
         return newton.CollisionPipeline(model, contact_matching="latest")
-    return newton.CollisionPipeline(model, deterministic=True)
+    return newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
 
 def _run_hashes(model, options, steps, graph=False):
@@ -612,7 +612,7 @@ def _route_contacts(model, state, contacts, **options):
 def test_deterministic_overflow_keeps_earliest_contacts(test, device):
     """Keep a contact-order prefix of each overflowing world's rows and report the rest as dropped."""
     model = _build_contact_scene(device, worlds=4, boxes=12, ants=0)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -637,7 +637,7 @@ def test_deterministic_overflow_keeps_earliest_contacts(test, device):
 def test_overflow_warning_names_deterministic_mode(test, device):
     """Print one row-overflow warning line; in deterministic mode it ends with the drop rule, which holds."""
     model = _build_contact_scene(device, worlds=2, boxes=12, ants=0)
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -851,7 +851,7 @@ def _check_inherited_global_mode(device):
     def run(deterministic):
         solver = SolverSteel(model, deterministic=deterministic, **MATRIX_FREE_OPTIONS)
         with _warp_lowering_off():
-            pipeline = newton.CollisionPipeline(model, deterministic=True)
+            pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
             contacts = pipeline.contacts()
         state_0, state_1, control = model.state(), model.state(), model.control()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)

@@ -1257,7 +1257,7 @@ def _articulations(device, tiles=False, profile=None, torsion_radius=None):
     if torsion_radius is not None:
         set_torsion_radius(model, torsion_radius)
     # Deterministic contact order, as in production, so A/B trajectories compare bitwise.
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=512, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     solver = newton.solvers.SolverSteel(model, **(profile or PROFILE))
     return model, pipeline, solver, [model.state(), model.state()], model.control()
 

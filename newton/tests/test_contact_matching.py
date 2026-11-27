@@ -594,11 +594,11 @@ def test_contact_report_broken_indices(test, device):
 
 
 def test_deterministic_implied(test, device):
-    """Any non-disabled contact_matching mode should imply deterministic=True."""
+    """Any non-disabled contact_matching mode should imply deterministic=RUN_TO_RUN."""
     with wp.ScopedDevice(device):
         model, _state = _build_simple_scene(device)
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
-        test.assertTrue(pipeline.deterministic)
+        test.assertEqual(pipeline.deterministic, wp.DeterministicMode.RUN_TO_RUN)
         test.assertEqual(pipeline.contact_matching, "latest")
         test.assertEqual(pipeline._contact_sort_sub_key_bits, CONTACT_SORT_CONVEX_SUB_KEY_BITS)
 
@@ -657,7 +657,7 @@ def test_matching_disabled_no_allocation(test, device):
     """DISABLED mode: match_index and report arrays should be None."""
     with wp.ScopedDevice(device):
         model, _state = _build_simple_scene(device)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         contacts = pipeline.contacts()
         test.assertIsNone(contacts.rigid_contact_match_index)
         test.assertIsNone(contacts.rigid_contact_new_indices)
@@ -789,7 +789,7 @@ def test_match_index_reset_without_matcher(test, device):
         count = _collide_once(matching, state, contacts)
         test.assertTrue(np.all(contacts.rigid_contact_match_index.numpy()[:count] >= 0))
 
-        plain = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+        plain = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=wp.DeterministicMode.RUN_TO_RUN)
         count = _collide_once(plain, state, contacts)
         test.assertGreater(count, 0)
         test.assertEqual(contacts.contact_matching_mode, "disabled")
@@ -910,7 +910,11 @@ def test_pipeline_sorter_omits_unused_simple_scratch(test, device):
         model, state = _build_simple_scene(device)
         for mode in ("disabled", "latest", "sticky"):
             pipeline = newton.CollisionPipeline(
-                model, broad_phase="nxn", deterministic=True, contact_matching=mode, rigid_contact_max=64
+                model,
+                broad_phase="nxn",
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
+                contact_matching=mode,
+                rigid_contact_max=64,
             )
             sorter = pipeline._contact_sorter
             unused_scratch = (
@@ -1365,7 +1369,9 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
             pose[0, 1] += 0.01
         pose[0, 3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1))
         state.body_q.assign(pose)
-        reference = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=64, deterministic=True)
+        reference = newton.CollisionPipeline(
+            model, broad_phase="nxn", rigid_contact_max=64, deterministic=wp.DeterministicMode.RUN_TO_RUN
+        )
         reference_contacts = reference.contacts()
         test.assertEqual(count, int(_collide_once(reference, state, reference_contacts)))
         fresh = {

@@ -132,7 +132,7 @@ def _rollout(device, scene, mode):
             deterministic=wp.DeterministicMode.RUN_TO_RUN,
             **_SCENES[scene][1],
         )
-    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    pipeline = newton.CollisionPipeline(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
     contacts = pipeline.contacts()
     state_a, state_b, control = model.state(), model.state(), model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_a)

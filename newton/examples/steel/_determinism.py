@@ -169,12 +169,9 @@ class _SimulationCopy:
             builder.shape_opacity[shape] = COPY_OPACITY
         builder.add_ground_plane()
         self.model = builder.finalize()
-        self.solver = SolverSteel(
-            self.model,
-            deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED,
-            **solver_options,
-        )
-        self.collision_pipeline = newton.CollisionPipeline(self.model, deterministic=deterministic)
+        mode = wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED
+        self.solver = SolverSteel(self.model, deterministic=mode, **solver_options)
+        self.collision_pipeline = newton.CollisionPipeline(self.model, deterministic=mode)
         self.contacts = self.collision_pipeline.contacts()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

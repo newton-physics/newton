@@ -49,7 +49,7 @@ def test_transformed_convex_contacts(test, device):
         pipeline = newton.CollisionPipeline(
             model,
             reduce_contacts=False,
-            deterministic=True,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
             contact_matching=matching,
             rigid_contact_max=32 * len(cases),
         )
