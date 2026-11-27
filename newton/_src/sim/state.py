@@ -3,9 +3,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import ClassVar
-
 import warp as wp
 
 
@@ -58,50 +55,6 @@ class State:
     store and update the simulation's current configuration and derived data.
     """
 
-    @dataclass(frozen=True)
-    class ExtendedAttributeTemplate:
-        """Allocation metadata for an optional built-in state attribute."""
-
-        frequency: str
-        dtype: type
-
-    EXTENDED_ATTRIBUTE_TEMPLATES: ClassVar[dict[str, ExtendedAttributeTemplate]] = {
-        "body_qdd": ExtendedAttributeTemplate("BODY", wp.spatial_vector),
-        "body_parent_f": ExtendedAttributeTemplate("BODY", wp.spatial_vector),
-        "mujoco:qfrc_actuator": ExtendedAttributeTemplate("JOINT_DOF", wp.float32),
-    }
-    """Optional extended state attributes and their allocation metadata."""
-
-    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(EXTENDED_ATTRIBUTE_TEMPLATES)
-    """
-    Deprecated optional solver-produced state attributes.
-
-    .. deprecated:: 1.7
-
-        Request :class:`newton.solvers.SolverBase.Observables` from the solver instead.
-    """
-
-    @classmethod
-    def validate_extended_attributes(cls, attributes: tuple[str, ...]) -> None:
-        """Validate names passed to request_state_attributes().
-
-        Only extended state attributes listed in :attr:`EXTENDED_ATTRIBUTES` are accepted.
-
-        Args:
-            attributes: Tuple of attribute names to validate.
-
-        Raises:
-            ValueError: If any attribute name is not in :attr:`EXTENDED_ATTRIBUTES`.
-        """
-        if not attributes:
-            return
-
-        invalid = sorted(set(attributes).difference(cls.EXTENDED_ATTRIBUTES))
-        if invalid:
-            allowed = ", ".join(sorted(cls.EXTENDED_ATTRIBUTES))
-            bad = ", ".join(invalid)
-            raise ValueError(f"Unknown extended state attribute(s): {bad}. Allowed: {allowed}.")
-
     def __init__(self) -> None:
         """
         Initialize an empty State object.
@@ -142,16 +95,6 @@ class State:
         last three: angular velocity [rad/s] in world frame.
         See :ref:`Twist conventions in Newton <Twist conventions>` for more information."""
 
-        self.body_qdd: wp.array | None = None
-        """Rigid body accelerations (spatial) [m/s², rad/s²], shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear acceleration [m/s²] relative to the body's center of mass in world frame;
-        last three: angular acceleration [rad/s²] in world frame.
-
-        .. deprecated:: 1.7
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_QDD` from the solver and read
-            :attr:`newton.solvers.SolverBase.Observables.body_qdd` instead.
-        """
-
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial) [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force [N] in world frame applied at the body's center of mass (COM).
@@ -163,18 +106,6 @@ class State:
 
         .. note::
             :attr:`body_f` represents an external wrench in world frame with the body's center of mass (COM) as reference point.
-        """
-
-        self.body_parent_f: wp.array | None = None
-        """Parent interaction forces [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear force [N]; last three: torque [N·m].
-
-        .. deprecated:: 1.7
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` from the solver and read
-            :attr:`newton.solvers.SolverBase.Observables.body_parent_f` instead.
-
-        .. note::
-            :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).
         """
 
         self.joint_q: wp.array | None = None
@@ -235,9 +166,8 @@ class State:
         _copy_arrays(self, other)
 
         # Discover all AttributeNamespace containers on either state and
-        # descend into each. This uniformly covers both EXTENDED_ATTRIBUTES
-        # (e.g. ``mujoco.qfrc_actuator``) and custom namespaced attributes
-        # registered via ``ModelBuilder.add_custom_attribute``.
+        # descend into each to cover custom namespaced attributes registered
+        # via ``ModelBuilder.add_custom_attribute``.
         ns_self = {k: v for k, v in self.__dict__.items() if isinstance(v, Model.AttributeNamespace)}
         ns_other = {k: v for k, v in other.__dict__.items() if isinstance(v, Model.AttributeNamespace)}
 

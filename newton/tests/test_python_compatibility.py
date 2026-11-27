@@ -21,6 +21,12 @@ class TestPythonCompatibility(unittest.TestCase):
             with self.subTest(name=name):
                 _ = getattr(newton.solvers, name)
 
+    def test_public_exports_resolve(self):
+        """Resolve every public export, including the submodules that load on first access."""
+        for name in newton.__all__:
+            with self.subTest(name=name):
+                _ = getattr(newton, name)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

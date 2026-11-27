@@ -2671,11 +2671,11 @@ class TestSteelSparseSolver(unittest.TestCase):
         self.assertGreater(solver._J_by_size[9].size, 1)
 
 
-def _build_y_tree(device, *, mimic=False, legacy_mimic=False, closure=False, closure_enabled=True):
+def _build_y_tree(device, *, mimic=False, equality=False, closure=False, closure_enabled=True):
     """Build a fixed-base Y tree (a root link with two child links), optionally coupled.
 
     The tree's mass factor has structural zeros, so it selects sparse factors on its own.
-    The couplings are a joint-owned or legacy mimic between the two children, or a BALL
+    The couplings are a joint-owned mimic or a joint equality between the two children, or a BALL
     loop-closing joint between their tips.
     """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -2697,8 +2697,8 @@ def _build_y_tree(device, *, mimic=False, legacy_mimic=False, closure=False, clo
     builder.add_articulation(joints)
     if mimic:
         builder.set_joint_mimic(joints[2], joints[1], coeffs=(0.0, 1.0))
-    if legacy_mimic:
-        builder.add_constraint_mimic(joints[2], joints[1], coef1=1.0)
+    if equality:
+        newton.solvers.mujoco.add_equality_joint(builder, joints[2], joints[1])
     if closure:
         builder.add_joint_ball(
             children[0],
@@ -2715,19 +2715,14 @@ class TestSteelSparseSelectionGuard(unittest.TestCase):
 
     def test_bilateral_constraints_are_detected_on_the_model(self):
         """Detect mimic relationships and loop-closing joints, including disabled closures."""
-        import warnings  # noqa: PLC0415
-
         from newton._src.solvers.steel.solver_steel import (  # noqa: PLC0415
             _model_has_bilateral_constraints,
         )
 
         self.assertFalse(_model_has_bilateral_constraints(_build_y_tree("cpu")))
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            legacy = _build_y_tree("cpu", legacy_mimic=True)
         for label, model in (
             ("joint mimic", _build_y_tree("cpu", mimic=True)),
-            ("legacy mimic", legacy),
+            ("joint equality", _build_y_tree("cpu", equality=True)),
             ("closure", _build_y_tree("cpu", closure=True)),
             ("disabled closure", _build_y_tree("cpu", closure=True, closure_enabled=False)),
         ):

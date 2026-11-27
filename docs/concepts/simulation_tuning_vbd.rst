@@ -209,9 +209,11 @@ deprecation warning, so always pass both.
 
 .. _vbd-rigid-compliance:
 
-Rigid constraints use compliant ALM. Initially keep ``rigid_avbd_alpha`` and
-``rigid_avbd_gamma`` at their defaults. Scenes tuned for the removed legacy
-AVBD path need revalidation; the same settings can produce different behavior.
+Rigid constraints use compliant ALM. The ``rigid_avbd_alpha``,
+``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``, and
+``rigid_avbd_gamma`` arguments are deprecated; omit them. Scenes tuned for the
+removed legacy AVBD path need revalidation; the same settings can produce
+different behavior.
 
 Finite stiffness permits some stretch, joint displacement, or contact
 penetration even after convergence. If deformation is larger than expected,
@@ -677,13 +679,17 @@ frictionless. Unexpected slip can also come from missing contacts or an
 incomplete solve.
 
 **Torsional and rolling friction.** Body-body contacts resist spin about the
-contact normal and rolling in the contact plane.
+contact normal when the
+:attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` of either shape is
+``SLIDING_TORSIONAL`` or ``SLIDING_TORSIONAL_ROLLING``, and rolling in the
+contact plane when it is ``SLIDING_ROLLING`` or ``SLIDING_TORSIONAL_ROLLING``;
+the default ``SLIDING`` mode applies neither.
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional` and
 :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling` are lengths [m]: each
-torque limit is the coefficient times the normal force. Both defaults are
-nonzero. Pair coefficients use the geometric mean, so zero on either shape
-disables that channel. For small parts and thin cables, reduce the
-coefficients or set them to zero if angular resistance is too strong.
+torque limit is the coefficient times the normal force. Both coefficients
+default to nonzero values. Pair coefficients use the geometric mean, so zero
+on either shape disables that channel. For small parts and thin cables, reduce
+the coefficients or set them to zero if angular resistance is too strong.
 
 **Body coloring.** VBD updates bodies in the same color group in parallel.
 Automatic coloring uses joint and tendon connections, but does not include

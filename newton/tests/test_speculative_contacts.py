@@ -14,6 +14,7 @@ from newton._src.geometry.contact_reduction_global import (
     PREDICTIVE_BIN_ID,
     GlobalContactReducer,
     GlobalContactReducerData,
+    create_export_marked_contacts_kernel,
     create_export_reduced_contacts_kernel,
     export_and_reduce_contact_centered_two_spatial_depths,
     export_and_reduce_predictive_contact,
@@ -550,6 +551,7 @@ def _expected_contended_clearances(clearance_order: int) -> list[float]:
 
 
 _export_reduced_contacts = create_export_reduced_contacts_kernel(write_contact_simple)
+_export_marked_contacts = create_export_marked_contacts_kernel(write_contact_simple)
 
 
 def _make_predictive_reducer(capacity, device, deterministic):
@@ -650,6 +652,8 @@ def _export_reducer_contacts(reducer: GlobalContactReducer, device):
     writer_data.collision_update_dt = 0.0
     writer_data.max_speculative_extension = 0.0
     reducer.exported_flags.zero_()
+    shape_types = wp.zeros(2, dtype=wp.int32, device=device)
+    shape_data = wp.zeros(2, dtype=wp.vec4, device=device)
     total_blocks = 128
     wp.launch_tiled(
         _export_reduced_contacts,
@@ -663,8 +667,8 @@ def _export_reducer_contacts(reducer: GlobalContactReducer, device):
             reducer.shape_pairs,
             reducer.contact_fingerprints,
             reducer.exported_flags,
-            wp.zeros(2, dtype=wp.int32, device=device),
-            wp.zeros(2, dtype=wp.vec4, device=device),
+            shape_types,
+            shape_data,
             shape_gap,
             writer_data,
             total_blocks,
@@ -674,6 +678,13 @@ def _export_reducer_contacts(reducer: GlobalContactReducer, device):
         device=device,
         block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
     )
+    if reducer.deterministic:
+        wp.launch(
+            _export_marked_contacts,
+            dim=total_blocks,
+            inputs=[reducer.get_data_struct(), shape_types, shape_data, shape_gap, writer_data, total_blocks],
+            device=device,
+        )
     return int(contact_count.numpy()[0]), contact_position.numpy()
 
 

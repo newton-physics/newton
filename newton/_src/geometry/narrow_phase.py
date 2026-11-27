@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import math
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import Any
 
 import warp as wp
@@ -59,6 +59,7 @@ from ..geometry.contact_reduction_global import (
     GlobalContactReducer,
     GroupReductionConfig,
     create_export_group_contacts_kernel,
+    create_export_marked_contacts_kernel,
     create_export_reduced_contacts_kernel,
     finish_group_frame_kernel,
     mesh_triangle_contacts_to_reducer_kernel,
@@ -504,6 +505,9 @@ def _tetrahedra_separated(
     return wp.max(wp.max(lower_b - upper_a), wp.max(lower_a - upper_b)) > cutoff
 
 
+# Reuse Warp definitions by specialization so equivalent pipelines do not
+# repeat code generation. Launch buffers and counters belong to each pipeline.
+@lru_cache
 def create_narrow_phase_primitive_kernel(
     writer_func: Any,
     speculative: bool = False,
@@ -1161,6 +1165,7 @@ def create_narrow_phase_primitive_kernel(
     return narrow_phase_primitive_kernel
 
 
+@lru_cache
 def create_narrow_phase_kernel_gjk_mpr(
     external_aabb: bool,
     writer_func: Any,
@@ -1396,6 +1401,7 @@ def create_narrow_phase_kernel_gjk_mpr(
     return narrow_phase_kernel_gjk_mpr
 
 
+@lru_cache
 def create_narrow_phase_kernels_gjk_mpr_split(
     external_aabb: bool,
     writer_func: Any,
@@ -1890,6 +1896,7 @@ def compute_shape_interior_points_kernel(
     shape_interior_point[shape] = point
 
 
+@lru_cache
 def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
     """Create the mesh/heightfield-vs-convex midphase kernel.
 
@@ -2033,6 +2040,7 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
 narrow_phase_find_mesh_triangle_overlaps_kernel = _create_find_mesh_triangle_overlaps_kernel(0)
 
 
+@lru_cache
 def create_narrow_phase_process_mesh_triangle_contacts_kernel(
     writer_func: Any,
     convex_support_acceleration: bool = False,
@@ -2233,6 +2241,7 @@ def compute_mesh_plane_block_offsets_scan(
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
+@lru_cache
 def create_narrow_phase_process_mesh_plane_contacts_kernel(
     writer_func: Any,
     reduce_contacts: bool = False,
@@ -3019,6 +3028,9 @@ class NarrowPhase:
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
+            self._export_marked_contacts_kernel = (
+                create_export_marked_contacts_kernel(writer_func) if deterministic else None
+            )
             # Global contact reducer for all mesh contact types
             self.global_contact_reducer = GlobalContactReducer(
                 max_triangle_pairs,
@@ -3029,6 +3041,7 @@ class NarrowPhase:
             )
         else:
             self.export_reduced_contacts_kernel = None
+            self._export_marked_contacts_kernel = None
             self.global_contact_reducer = None
 
         self.hydroelastic_sdf = hydroelastic_sdf
@@ -4160,6 +4173,21 @@ class NarrowPhase:
                     block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
                     record_tape=False,
                 )
+                if self.global_contact_reducer.deterministic:
+                    wp.launch(
+                        kernel=self._export_marked_contacts_kernel,
+                        dim=self.total_num_threads,
+                        inputs=[
+                            reducer_data,
+                            shape_types,
+                            shape_data,
+                            shape_gap,
+                            writer_data,
+                            self.total_num_threads,
+                        ],
+                        device=device,
+                        record_tape=False,
+                    )
         if self.hydroelastic_sdf is not None:
             self.hydroelastic_sdf.launch(
                 texture_sdf_data,

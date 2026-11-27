@@ -1073,6 +1073,46 @@ def _gather_cell_velocity(rows: Any, row: int, inv_mass: wp.array[float], veloci
     return cache
 
 
+_StrainNodes8 = wp.types.vector(length=8, dtype=int)
+_StrainMasses8 = wp.types.vector(length=8, dtype=float)
+_StrainVectors8 = wp.types.matrix(shape=(8, 3), dtype=float)
+
+
+@wp.func
+def _gather_strain_block(rows: Any, row: int, start: int, velocity: wp.array[wp.vec3], tau: vec6):
+    """Load eight independent entries together, then accumulate strain in row order."""
+    nodes = _StrainNodes8()
+    weights = _StrainVectors8()
+    velocities = _StrainVectors8()
+    for k in range(8):
+        node, weight = _strain_row_entry(rows, row, start + k)
+        nodes[k] = node
+        weights[k] = weight
+    for k in range(8):
+        velocities[k] = velocity[nodes[k]]
+    for k in range(8):
+        tau += _symmetric_part_op(weights[k], velocities[k])
+    return tau
+
+
+@wp.func
+def _scatter_strain_block(
+    rows: Any, row: int, start: int, ds: vec6, inv_mass: wp.array[float], velocity: wp.array[wp.vec3]
+):
+    """Group the independent loads and apply velocity increments in row order."""
+    nodes = _StrainNodes8()
+    weights = _StrainVectors8()
+    inverse_masses = _StrainMasses8()
+    for k in range(8):
+        node, weight = _strain_row_entry(rows, row, start + k)
+        nodes[k] = node
+        weights[k] = weight
+    for k in range(8):
+        inverse_masses[k] = inv_mass[nodes[k]]
+    for k in range(8):
+        velocity[nodes[k]] += inverse_masses[k] * _symmetric_part_transposed_op(weights[k], ds)
+
+
 def make_solve_strain_rows(
     has_viscosity: bool,
     has_dilatancy: bool,
@@ -1133,7 +1173,12 @@ def make_solve_strain_rows(
             entries = n
             if wp.static(max_entries > 0):
                 entries = wp.static(max_entries)
-            for k in range(entries):
+            gather_end = int(0)
+            if wp.static(not cache_cell_velocity):
+                gather_end = entries - entries % 8
+                for start in range(0, gather_end, 8):
+                    tau = _gather_strain_block(rows, row, start, velocity, tau)
+            for k in range(gather_end, entries):
                 node, weight = _strain_row_entry(rows, row, k)
                 v = wp.vec3(0.0)
                 if wp.static(cache_cell_velocity):
@@ -1155,7 +1200,12 @@ def make_solve_strain_rows(
                 scatter_entries = n
                 if wp.static(cache_cell_velocity):
                     scatter_entries = 8
-                for k in range(scatter_entries):
+                scatter_end = int(0)
+                if wp.static(not cache_cell_velocity):
+                    scatter_end = scatter_entries - scatter_entries % 8
+                    for start in range(0, scatter_end, 8):
+                        _scatter_strain_block(rows, row, start, ds, inv_mass, velocity)
+                for k in range(scatter_end, scatter_entries):
                     node, weight = _strain_row_entry(rows, row, k)
                     dv = _symmetric_part_transposed_op(weight, ds)
                     if wp.static(cache_cell_velocity):
