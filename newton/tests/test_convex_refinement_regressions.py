@@ -11,7 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.support_function import _CONVEX_HULL_VALID
+from newton._src.geometry.support_function import _CONVEX_HULL_VALID, GenericShapeData, triangle_seam_normal
 from newton.tests.test_convex_contact_witness import (
     _create_witness_kernel,
     _failed_distance_query,
@@ -388,6 +388,7 @@ def _bottle_heel_hull():
     return newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
 
 
+@requires("scipy")
 def test_refinement_triangle_hull_seam_support(test, device):
     """Retain near-face support for a beveled hull crossing a flat mesh seam."""
     builder = newton.ModelBuilder()
@@ -438,6 +439,7 @@ def test_refinement_triangle_hull_seam_support(test, device):
             test.assertTrue(np.all(normals[:, 2] > 0.9999))
 
 
+@requires("scipy")
 def test_refinement_triangle_hull_tilted_seam_support(test, device):
     """Support a tilted hull whose witnesses lie on coplanar seams of every triangle.
 
@@ -475,6 +477,7 @@ def test_refinement_triangle_hull_tilted_seam_support(test, device):
     test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999))
 
 
+@requires("scipy")
 def test_refinement_triangle_hull_chamfer_seam(test, device):
     """Keep a heel straddling two chamfered belts on their top faces.
 
@@ -517,6 +520,7 @@ def test_refinement_triangle_hull_chamfer_seam(test, device):
             test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999), f"chamfer normals {normals.round(3).tolist()}")
 
 
+@requires("scipy")
 def test_refinement_triangle_hull_rim_on_seam(test, device):
     """Keep the face normal where a heel's rim just crosses a coplanar seam.
 
@@ -550,6 +554,28 @@ def test_refinement_triangle_hull_rim_on_seam(test, device):
             test.assertGreater(count, 0)
             normals = contacts.rigid_contact_normal.numpy()[:count]
             test.assertGreater(float(np.min(normals[:, 2])), 0.9999, normals)
+
+
+@wp.kernel(enable_backward=False)
+def _sliver_seam_normal_kernel(on_seam: wp.array[int], face: wp.array[wp.vec3]):
+    geom = GenericShapeData()
+    geom.scale = wp.vec3(10.0, 0.0, 0.0)
+    geom.auxiliary = wp.vec3(10.0, 0.001, 0.0)
+    geom.smooth_edges = 1
+    seam, normal = triangle_seam_normal(
+        geom, wp.vec3(5.0, 0.0, 0.0), wp.normalize(wp.vec3(0.0, -1.0, 1.0)), wp.vec3(5.0, 0.0, 1.0)
+    )
+    on_seam[0] = int(seam)
+    face[0] = normal
+
+
+def test_refinement_triangle_sliver_seam_normal(test, device):
+    """Resolve the seam of a sliver triangle whose float32 Gram determinant cancels to zero."""
+    on_seam = wp.zeros(1, dtype=int, device=device)
+    face = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_sliver_seam_normal_kernel, dim=1, outputs=[on_seam, face], device=device)
+    test.assertEqual(int(on_seam.numpy()[0]), 1)
+    np.testing.assert_allclose(face.numpy()[0], [0.0, 0.0, 1.0], atol=1.0e-6)
 
 
 def test_refinement_triangle_capsule_sunk_across_seam(test, device):
@@ -867,6 +893,7 @@ for function in (
     test_refinement_triangle_hull_tilted_seam_support,
     test_refinement_triangle_hull_chamfer_seam,
     test_refinement_triangle_hull_rim_on_seam,
+    test_refinement_triangle_sliver_seam_normal,
     test_refinement_triangle_capsule_sunk_across_seam,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,

@@ -145,6 +145,29 @@ def triangle_smooth_edges(metadata: wp.vec4i, topology: wp.array[int], triangle:
 
 
 @wp.func
+def triangle_barycentric(ab: wp.vec3, ac: wp.vec3, point: wp.vec3) -> tuple[float, float, wp.vec3, float]:
+    """Return the barycentric coordinates of ``point`` along ``ab`` and ``ac``, the unit normal, and twice the area.
+
+    Cross products avoid the cancellation of the Gram determinant, which
+    float32 rounds to zero for slivers that still have a well-defined plane.
+    A collapsed triangle returns zero area.
+
+    Args:
+        ab: Edge from vertex A to B [m].
+        ac: Edge from vertex A to C [m].
+        point: Point relative to vertex A [m], projected along the normal.
+    """
+    normal = wp.cross(ab, ac)
+    area_sq = wp.dot(normal, normal)
+    if area_sq <= 0.0:
+        return 0.0, 0.0, wp.vec3(0.0), 0.0
+    u = wp.dot(wp.cross(point, ac), normal) / area_sq
+    v = wp.dot(wp.cross(ab, point), normal) / area_sq
+    area = wp.sqrt(area_sq)
+    return u, v, normal / area, area
+
+
+@wp.func
 def triangle_witness_tolerance(point: wp.vec3) -> float:
     """Return the world-distance accuracy [m] of a convex-query witness at ``point``."""
     return 1.0e-5 * wp.max(1.0, wp.length(point))
@@ -176,22 +199,17 @@ def triangle_seam_normal(
     if mask == 0:
         return False, normal
     ab, ac = geom.scale, geom.auxiliary
-    aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
-    denominator = aa * cc - bb * bb
-    if denominator <= 0.0:
+    u, v, face, area = triangle_barycentric(ab, ac, point)
+    if area <= 0.0:
         return False, normal
-    face = wp.normalize(wp.cross(ab, ac))
     if wp.dot(face, interior) < 0.0:
         face = -face
-    u = (cc * wp.dot(point, ab) - bb * wp.dot(point, ac)) / denominator
-    v = (aa * wp.dot(point, ac) - bb * wp.dot(point, ab)) / denominator
     # Match MPR's world-distance witness accuracy, rather than using a
     # dimensionless barycentric tolerance that varies with triangle size.
     tolerance = triangle_witness_tolerance(point)
-    area = wp.sqrt(denominator)
-    edge_ab = wp.abs(v) * area <= tolerance * wp.sqrt(aa)
+    edge_ab = wp.abs(v) * area <= tolerance * wp.length(ab)
     edge_bc = wp.abs(1.0 - u - v) * area <= tolerance * wp.length(ac - ab)
-    edge_ca = wp.abs(u) * area <= tolerance * wp.sqrt(cc)
+    edge_ca = wp.abs(u) * area <= tolerance * wp.length(ac)
     smooth = False
     if edge_ab and edge_ca:
         smooth = (mask & 5) == 5
@@ -240,18 +258,14 @@ def triangle_contains_projection(geom: GenericShapeData, point: wp.vec3, toleran
         tolerance: Distance [m] by which the projection may lie outside the triangle.
     """
     ab, ac = geom.scale, geom.auxiliary
-    aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
-    denominator = aa * cc - bb * bb
-    if denominator <= 0.0:
+    u, v, _face, area = triangle_barycentric(ab, ac, point)
+    if area <= 0.0:
         return False
-    u = (cc * wp.dot(point, ab) - bb * wp.dot(point, ac)) / denominator
-    v = (aa * wp.dot(point, ac) - bb * wp.dot(point, ab)) / denominator
     # Compare each barycentric coordinate with the distance to its opposite edge.
-    area = wp.sqrt(denominator)
     return (
-        v * area >= -tolerance * wp.sqrt(aa)
+        v * area >= -tolerance * wp.length(ab)
         and (1.0 - u - v) * area >= -tolerance * wp.length(ac - ab)
-        and u * area >= -tolerance * wp.sqrt(cc)
+        and u * area >= -tolerance * wp.length(ac)
     )
 
 
