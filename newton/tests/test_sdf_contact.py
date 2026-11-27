@@ -19,8 +19,10 @@ from newton._src.geometry.sdf_contact import (
     compute_mesh_boundary_flags,
     compute_mesh_mesh_edge_counts,
     mesh_sdf_contact_search_precision,
+    scan_block_counts,
 )
 from newton._src.geometry.sdf_texture import TextureSDFData
+from newton._src.geometry.utils import _scan_scratch_size
 from newton._src.utils.heightfield import HeightfieldData
 from newton._src.utils.mesh import create_mesh_sphere
 from newton.sensors import SensorContact
@@ -1131,35 +1133,32 @@ class TestSDFContact(unittest.TestCase):
                 np.testing.assert_array_equal(blocks.numpy(), np.ones(6, dtype=np.int32))
 
     def test_block_count_scan_ignores_inactive_tail(self) -> None:
-        """Keep active block offsets independent of stale inactive slots."""
+        """Keep active block offsets and their total independent of stale inactive slots."""
         for device in get_test_devices():
             with self.subTest(device=device):
+                # Production arrays hold one slot per pair plus the total.
+                max_pairs = 7
                 weights = wp.array([1024, 2048, 1024, 99, 99, 99, 99, 99], dtype=wp.int32, device=device)
                 pair_count = wp.array([3], dtype=wp.int32, device=device)
                 total_weight = wp.array([4096], dtype=wp.int32, device=device)
-                block_counts = wp.full(8, 77, dtype=wp.int32, device=device)
-                offsets = wp.empty_like(block_counts)
-                minimum_edges = wp.full(8, 256, dtype=wp.int32, device=device)
+                block_counts = wp.full(max_pairs + 1, 77, dtype=wp.int32, device=device)
+                offsets = wp.full(max_pairs + 1, 77, dtype=wp.int32, device=device)
+                minimum_edges = wp.full(max_pairs + 1, 256, dtype=wp.int32, device=device)
+                scan_scratch = wp.zeros(_scan_scratch_size(max_pairs, device), dtype=wp.int64, device=device)
+                scan_total = wp.zeros(1, dtype=int, device=device)
 
-                wp.launch(
-                    compute_block_counts_from_weights,
-                    dim=2,
-                    inputs=[total_weight, weights, minimum_edges, pair_count, len(weights), 4, block_counts, 2],
-                    device=device,
-                )
-                wp.utils.array_scan(block_counts, offsets, inclusive=False)
-                np.testing.assert_array_equal(offsets.numpy()[:4], [0, 1, 3, 4])
-
-                pair_count.assign([1])
-                total_weight.assign([1024])
-                wp.launch(
-                    compute_block_counts_from_weights,
-                    dim=2,
-                    inputs=[total_weight, weights, minimum_edges, pair_count, len(weights), 4, block_counts, 2],
-                    device=device,
-                )
-                wp.utils.array_scan(block_counts, offsets, inclusive=False)
-                np.testing.assert_array_equal(offsets.numpy()[:2], [0, 4])
+                # The total follows the active prefix, where the contact kernels look it up.
+                for active, total, expected in ((3, 4096, [0, 1, 3, 4]), (1, 1024, [0, 4]), (0, 0, [0])):
+                    pair_count.assign([active])
+                    total_weight.assign([total])
+                    wp.launch(
+                        compute_block_counts_from_weights,
+                        dim=2,
+                        inputs=[total_weight, weights, minimum_edges, pair_count, max_pairs, 4, block_counts, 2],
+                        device=device,
+                    )
+                    scan_block_counts(pair_count, block_counts, offsets, scan_scratch, scan_total, device)
+                    np.testing.assert_array_equal(offsets.numpy()[: active + 1], expected)
 
     def test_mesh_sdf_contact_search_precision_uses_inner_envelope(self) -> None:
         device = wp.get_preferred_device()
