@@ -1468,9 +1468,7 @@ class SolverSteel(SolverBase, CouplingInterface):
       ``max_distance``. A step that would cross the parent anchor with both bounds active can
       also pass ``max_distance``. The rows take their direction from the anchor velocity before
       the solve, so a velocity change from contacts or other rows in the same step can carry the
-      anchor past ``max_distance``: for a centered COM with only that bound active, a change
-      ``du`` across the row ends the step at most ``sqrt(max_distance**2 + (dt du)**2)`` from the
-      parent anchor, and with an offset COM it can go further. A shorter timestep reduces these errors; more
+      anchor past ``max_distance``. A shorter timestep reduces these errors; more
       iterations of the same rows do not remove them. A kinematic root gets no rows. Any other
       DISTANCE joint raises :class:`NotImplementedError` when
       limits are enabled. Joint limits are not enforced by default. Joint velocity limits

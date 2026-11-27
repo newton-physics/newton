@@ -8196,9 +8196,7 @@ def build_distance_limit_rows(
     anchor's transverse velocity and rotation adds integration error, so the anchor can pass a bound. A zero maximum
     distance bounds each axis of ``p`` at zero with two opposing rows, which are always active; with an offset COM the
     anchor drifts from zero the same way. ``u`` is taken before the solve, so a velocity change from contacts or other
-    rows in the same step can carry the anchor past the upper bound: for a centered COM with only that bound active, a
-    change ``du`` across the row ends the step at most ``sqrt(upper^2 + (dt du)^2)`` from the parent anchor, and with an
-    offset COM it can go further. A kinematic root follows its prescribed motion and gets no rows.
+    rows in the same step can carry the anchor past the upper bound. A kinematic root follows its prescribed motion and gets no rows.
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
