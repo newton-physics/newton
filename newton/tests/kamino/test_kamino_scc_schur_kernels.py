@@ -167,8 +167,8 @@ class TestKaminoCompactSchur(NewtonTestCase):
                 # No decoupled joint rows
                 data.update(
                     zip(
-                        ("has_coupled_rows", "coupled_row", "coupled_value"),
-                        SparseDecoupledRows(None, 0, self.device).inputs,
+                        ("has_coupled_rows", "coupled_row", "coupled_coef", "jacobian_row_scale"),
+                        SparseDecoupledRows(self.device).disabled_inputs(data["problem_P"]),
                         strict=True,
                     )
                 )
@@ -396,14 +396,15 @@ class TestKaminoFullSchurAssembly(NewtonTestCase):
 
         for device in wp.get_devices():
             arrays = {}
-            # No decoupled joint rows
+            # No decoupled joint rows: the row scale is the preconditioner
             arrays.update(
                 zip(
-                    ("has_coupled_rows", "coupled_row", "coupled_value"),
-                    SparseDecoupledRows(None, 0, device).inputs,
+                    ("has_coupled_rows", "coupled_row", "coupled_coef"),
+                    SparseDecoupledRows(device).disabled_inputs(None)[:3],
                     strict=True,
                 )
             )
+            data["jacobian_row_scale"] = data["problem_P"]
             for arg in kernel.adj.args:
                 name = arg.label
                 if name in arrays:

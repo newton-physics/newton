@@ -111,9 +111,9 @@ def _fixture(device, *, topology="chain"):
         bilateral_nzb_pairs=(ints(pair_world), ints(pair_row), ints(pair_col), *[ints(np.zeros(len(pair_world)))] * 3),
         bilateral_entry_starts=ints(np.arange(len(pair_world) + 1)),
         # No decoupled joint rows
-        decoupled_rows=SparseDecoupledRows(None, 0, device),
+        decoupled_rows=SparseDecoupledRows(device),
     )
-    problem = SimpleNamespace(data=SimpleNamespace(dim=ints(n + nus), njc=info.dim))
+    problem = SimpleNamespace(data=SimpleNamespace(dim=ints(n + nus), njc=info.dim), joint_decoupling=None)
     return path, problem, dense, matrix, vio, rio, nus, scale, coupling
 
 

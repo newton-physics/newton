@@ -1046,8 +1046,8 @@ class TestSCCSolver(NewtonTestCase):
                     int32_array([6]),  # transpose_max_cols
                     column_major,  # transpose_column_major
                     0,  # world_start
-                    *SparseDecoupledRows(None, 0, self.device).inputs,  # no decoupled joint rows
-                    float_array([1.0]),  # jacobian_row_scale
+                    # No decoupled joint rows
+                    *SparseDecoupledRows(self.device).disabled_inputs(float_array([1.0])),
                 ],
                 device=self.device,
                 block_dim=threads_per_world,

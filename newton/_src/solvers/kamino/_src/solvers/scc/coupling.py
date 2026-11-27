@@ -73,7 +73,8 @@ def _assemble(
     values: wp.array[wp.float32],
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[wp.int32],
-    coupled_value: wp.array2d[wp.float32],
+    coupled_coef: wp.array2d[wp.float32],
+    jacobian_row_scale: wp.array[wp.float32],
 ):
     """Cache exact shared-body coefficients without materializing zero blocks.
 
@@ -133,7 +134,9 @@ def _assemble(
                             value += weighted_j[component] * jac1[component]
             value *= scale
             if has_coupled_rows and row >= 0 and col < nbc[w]:
-                value += coupled_rows_entry(vio[w] + row, njc[w] + col, coupled_row, coupled_value)
+                value += coupled_rows_entry(
+                    vio[w] + row, vio[w], njc[w] + col, coupled_row, coupled_coef, jacobian_row_scale
+                )
             values[((w * slots + slot) * 6 + local) * width + col] = value
         slot += 1
         remaining = remaining & (remaining - wp.uint64(1))
@@ -251,7 +254,7 @@ class PackedCoupling:
                 self.slots,
                 self.masks,
                 self.values,
-                *path.decoupled_rows.inputs,
+                *path.decoupled_rows.inputs(problem),
             ],
             device=self._device,
         )

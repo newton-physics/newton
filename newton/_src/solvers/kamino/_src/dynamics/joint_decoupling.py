@@ -120,6 +120,23 @@ def _decouple_free_velocity(
 
 
 @wp.func
+def _decouple_solution_row(
+    row: wp.int32,
+    row_dyn: wp.int32,
+    c: wp.float32,
+    P: wp.array[wp.float32],
+    lambdas: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
+):
+    """Apply the change of variables to the preconditioned solution of one friction or effort row, if any."""
+    if row < 0:
+        return
+    ratio = c * P[row] / P[row_dyn]
+    lambdas[row_dyn] -= ratio * lambdas[row]
+    v_plus[row] += ratio * v_plus[row_dyn]
+
+
+@wp.func
 def _decouple_warmstart_row(
     row: wp.int32,
     row_dyn: wp.int32,
@@ -129,13 +146,14 @@ def _decouple_warmstart_row(
     y: wp.array[wp.float32],
     z: wp.array[wp.float32],
 ):
-    """Apply the change of variables to the preconditioned iterates of one friction or effort row, if any."""
+    """Apply the change of variables to the preconditioned iterates of one friction or effort row, if any.
+
+    The primal and dual iterates map like a solution, and the slack iterate like the primal one.
+    """
     if row < 0:
         return
-    ratio = c * P[row] / P[row_dyn]
-    x[row_dyn] -= ratio * x[row]
-    y[row_dyn] -= ratio * y[row]
-    z[row] += ratio * z[row_dyn]
+    _decouple_solution_row(row, row_dyn, c, P, x, z)
+    y[row_dyn] -= c * P[row] / P[row_dyn] * y[row]
 
 
 @wp.kernel
@@ -155,23 +173,6 @@ def _decouple_warmstart(
     c = body_share[tid] - 1.0
     _decouple_warmstart_row(dof.friction_row, dof.dynamic_row, c, P, x, y, z)
     _decouple_warmstart_row(dof.effort_row, dof.dynamic_row, c, P, x, y, z)
-
-
-@wp.func
-def _decouple_solution_row(
-    row: wp.int32,
-    row_dyn: wp.int32,
-    c: wp.float32,
-    P: wp.array[wp.float32],
-    lambdas: wp.array[wp.float32],
-    v_plus: wp.array[wp.float32],
-):
-    """Apply the change of variables to the preconditioned solution of one friction or effort row, if any."""
-    if row < 0:
-        return
-    ratio = c * P[row] / P[row_dyn]
-    lambdas[row_dyn] -= ratio * lambdas[row]
-    v_plus[row] += ratio * v_plus[row_dyn]
 
 
 @wp.kernel

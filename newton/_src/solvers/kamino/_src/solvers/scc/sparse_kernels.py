@@ -228,7 +228,8 @@ def _sparse_bilateral_gemv(
     # Joint-space couplings of decoupled joint rows:
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
-    coupled_value: wp.array2d[float32],
+    coupled_coef: wp.array2d[float32],
+    jacobian_row_scale: wp.array[float32],
 ):
     wid, block_idx = wp.tid()
 
@@ -244,7 +245,9 @@ def _sparse_bilateral_gemv(
             vec_idx = row_start[wid] + row
             value = eta[vec_idx] * lambdas[vec_idx]
             if has_coupled_rows:
-                value += coupled_rows_product(vec_idx, row_start[wid], coupled_row, coupled_value, lambdas)
+                value += coupled_rows_product(
+                    vec_idx, row_start[wid], coupled_row, coupled_coef, jacobian_row_scale, lambdas
+                )
             wp.atomic_add(y, vec_idx, value)
 
     if block_idx >= num_nzb[wid]:
@@ -860,7 +863,8 @@ def _assemble_sparse_bilateral_unilateral_coupling(
     compact_layout: wp.bool,
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
-    coupled_value: wp.array2d[float32],
+    coupled_coef: wp.array2d[float32],
+    jacobian_row_scale: wp.array[float32],
 ):
     """Assemble the bilateral-unilateral coupling with one thread per column and row group.
 
@@ -942,7 +946,9 @@ def _assemble_sparse_bilateral_unilateral_coupling(
                     value += mass_weighted[component] * jacobian_1[component]
         value *= scale
         if has_coupled_rows and unilateral < nbc:
-            value += coupled_rows_entry(problem_vio[wid] + row, col, coupled_row, coupled_value)
+            value += coupled_rows_entry(
+                problem_vio[wid] + row, problem_vio[wid], col, coupled_row, coupled_coef, jacobian_row_scale
+            )
         coupling[offset + row * stride + unilateral] = value
 
 
@@ -1353,7 +1359,7 @@ def _solve_scc_sparse_inequalities_pgs(
     world_start: int32,
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
-    coupled_value: wp.array2d[float32],
+    coupled_coef: wp.array2d[float32],
     jacobian_row_scale: wp.array[float32],
 ):
     """Apply one conflict-free sparse PGS schedule to every inequality."""
@@ -1516,7 +1522,7 @@ def _solve_scc_sparse_inequalities_pgs(
                                 bound_value += problem_v_f[vec_idx]
                                 if has_coupled_rows:
                                     bound_value += coupled_rows_product(
-                                        vec_idx, vio, coupled_row, coupled_value, solution_lambdas
+                                        vec_idx, vio, coupled_row, coupled_coef, jacobian_row_scale, solution_lambdas
                                     )
                                 # The body impulse of a decoupled joint row includes its body share
                                 P_bound = jacobian_row_scale[vec_idx]
@@ -2068,7 +2074,7 @@ def _cooperative_sparse_bounded_update(
     bounded_nzb_offsets: wp.array[wp.vec2i],
     problem_bound_lower: wp.array[float32],
     problem_bound_upper: wp.array[float32],
-    problem_P: wp.array[float32],
+    jacobian_row_scale: wp.array[float32],
     problem_v_f: wp.array[float32],
     projected_diag: wp.array[float32],
     eta: wp.array[float32],
@@ -2076,12 +2082,14 @@ def _cooperative_sparse_bounded_update(
     solution_lambdas: wp.array[float32],
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
-    coupled_value: wp.array2d[float32],
+    coupled_coef: wp.array2d[float32],
 ) -> float32:
     offsets = bounded_nzb_offsets[bounded_id]
     value = eta[row_start + row] * solution_lambdas[vec_idx] + bilateral_value
     if has_coupled_rows:
-        value += coupled_rows_product(vec_idx, vec_idx - row, coupled_row, coupled_value, solution_lambdas)
+        value += coupled_rows_product(
+            vec_idx, vec_idx - row, coupled_row, coupled_coef, jacobian_row_scale, solution_lambdas
+        )
     for k in range(2):
         nzb_idx = offsets[k]
         if nzb_idx >= int32(0) and nzb_idx < matrix_end and bsm_nzb_coords[nzb_idx, 0] == row:
@@ -2102,7 +2110,7 @@ def _cooperative_sparse_bounded_update(
     )
     lambda_delta = new_lambda - old_lambda
     solution_lambdas[vec_idx] = new_lambda
-    body_delta = problem_P[vec_idx] * lambda_delta
+    body_delta = jacobian_row_scale[vec_idx] * lambda_delta
     for k in range(2):
         nzb_idx = offsets[k]
         if nzb_idx >= int32(0) and nzb_idx < matrix_end and bsm_nzb_coords[nzb_idx, 0] == row:
@@ -2353,7 +2361,8 @@ def _prepare_full_sparse_unilateral_schur(
     workers_per_world: int32,
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
-    coupled_value: wp.array2d[float32],
+    coupled_coef: wp.array2d[float32],
+    jacobian_row_scale: wp.array[float32],
 ):
     """Build the full compact operator with parallel rows and matrix entries."""
     tid = wp.tid()
@@ -2407,7 +2416,9 @@ def _prepare_full_sparse_unilateral_schur(
                 for component in range(6):
                     value += block[component] * body_space[body + component]
         if has_coupled_rows and unilateral < nbc:
-            value += coupled_rows_product(vio + row, vio, coupled_row, coupled_value, solution_lambdas)
+            value += coupled_rows_product(
+                vio + row, vio, coupled_row, coupled_coef, jacobian_row_scale, solution_lambdas
+            )
         compact_q[vio + row] = value + problem_v_f[vio + row]
     for entry in range(lane, num_unilateral_rows * num_unilateral_rows, workers_per_world):
         column = entry / num_unilateral_rows
@@ -2460,7 +2471,9 @@ def _prepare_full_sparse_unilateral_schur(
         if row == column:
             value += eta[row_start + njc + row]
         elif has_coupled_rows and row < nbc and column < nbc:
-            value += coupled_rows_entry(vio + njc + row, njc + column, coupled_row, coupled_value)
+            value += coupled_rows_entry(
+                vio + njc + row, vio, njc + column, coupled_row, coupled_coef, jacobian_row_scale
+            )
         compact_schur[response_offset + column * num_unilateral_rows + row] -= value
 
 
@@ -2520,7 +2533,7 @@ def _solve_scc_sparse_inequalities_pgs_cooperative(
     solution_lambdas: wp.array[float32],
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
-    coupled_value: wp.array2d[float32],
+    coupled_coef: wp.array2d[float32],
     jacobian_row_scale: wp.array[float32],
 ):
     """Apply sparse PGS with one warp cooperating on each articulated world.
@@ -2796,7 +2809,7 @@ def _solve_scc_sparse_inequalities_pgs_cooperative(
                                             solution_lambdas,
                                             has_coupled_rows,
                                             coupled_row,
-                                            coupled_value,
+                                            coupled_coef,
                                         )
                                 elif uid < scalar_count:
                                     if phase == int32(0):
@@ -3465,7 +3478,8 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
         world_start: int32,
         has_coupled_rows: wp.bool,
         coupled_row: wp.array2d[int32],
-        coupled_value: wp.array2d[float32],
+        coupled_coef: wp.array2d[float32],
+        jacobian_row_scale: wp.array[float32],
     ):
         wid, lane = wp.tid()
         wid += world_start
@@ -3510,7 +3524,9 @@ def make_sparse_bilateral_inverse_kernel(body_capacity: int):
                     value += contribution
                 if has_coupled_rows:
                     # The couplings of joint rows only reach unilateral rows
-                    value += coupled_rows_product(pvio + row, pvio, coupled_row, coupled_value, solution_lambdas)
+                    value += coupled_rows_product(
+                        pvio + row, pvio, coupled_row, coupled_coef, jacobian_row_scale, solution_lambdas
+                    )
                 value = -bilateral_P[bvio + row] * (value + problem_v_f[pvio + row])
                 bilateral_rhs[bvio + row] = value
                 workspace[body_capacity + row] = value

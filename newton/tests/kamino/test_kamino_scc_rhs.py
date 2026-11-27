@@ -166,7 +166,7 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 wp.array(blocks, dtype=vec6f, device=device),
                                 int(row_storage),  # world_start
                                 # No decoupled joint rows
-                                *SparseDecoupledRows(None, 0, device).inputs,
+                                *SparseDecoupledRows(device).disabled_inputs(floats(scale)),
                             ],
                             device=device,
                             block_dim=128,
@@ -282,7 +282,7 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 3,
                                 compact,
                                 # No decoupled joint rows
-                                *SparseDecoupledRows(None, 0, device).inputs,
+                                *SparseDecoupledRows(device).disabled_inputs(floats(scale)),
                             ],
                             device=device,
                         )

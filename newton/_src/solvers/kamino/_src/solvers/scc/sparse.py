@@ -155,8 +155,8 @@ class SparseSCCPath:
         self.joint_block_solver: JointBlockSolver | None = None
         self.packed_coupling: PackedCoupling | None = None
         self.effort_limit_condensation: EffortLimitCondensation | None = None
-        # Decoupled joint rows of the problem (see `prepare`)
-        self.decoupled_rows = SparseDecoupledRows(None, 0, device)
+        # Kernel inputs for the decoupled joint rows of the problem
+        self.decoupled_rows = SparseDecoupledRows(device)
         self.bilateral_solver = bilateral_solver
         self.use_schur_complement = use_schur_complement
         self.max_alternating_iterations = max_alternating_iterations
@@ -220,11 +220,6 @@ class SparseSCCPath:
     def prepare(self, problem: DualProblem) -> None:
         """Precompute host-derived sparse topology before the first solve."""
         delassus = _get_sparse_delassus(problem)
-        # Without bilateral rows, `prepare` runs on every solve. Decoupled DoFs always have a
-        # bilateral dynamics row, so keep the placeholder from `__init__` instead of reallocating it.
-        decoupling = problem.joint_decoupling
-        if decoupling is not None and decoupling.num_dofs > 0:
-            self.decoupled_rows = SparseDecoupledRows(decoupling, self.size.sum_of_max_total_cts, self.device)
         # General PGS and fused inverse solves read transpose values directly. The raw transpose
         # product applies the row scale, which includes the body share of decoupled joint rows.
         delassus._set_raw_transpose_enabled(
@@ -804,7 +799,7 @@ def _launch_sparse_inequality_pgs(
                 path.body_space,
                 path.data.solution.lambdas,
                 schur_workers,
-                *path.decoupled_rows.inputs,
+                *path.decoupled_rows.inputs(problem),
             ],
             device=path.device,
             block_dim=128,
@@ -918,9 +913,8 @@ def _launch_sparse_inequality_pgs(
     if kernel == _solve_scc_sparse_inequalities_pgs:
         kernel_inputs.extend(body_inputs)
     if kernel in (_solve_scc_sparse_inequalities_pgs, _solve_scc_sparse_inequalities_pgs_cooperative):
-        kernel_inputs.extend(path.decoupled_rows.inputs)
-        # Row scale of the body impulse of bounded rows, with the body share of decoupled joint rows
-        kernel_inputs.append(path.decoupled_rows.row_scale(problem))
+        # The row scale also scales the body impulse of bounded rows, with the body share of decoupled joint rows
+        kernel_inputs.extend(path.decoupled_rows.inputs(problem))
     wp.launch(
         kernel=kernel,
         dim=world_count * threads_per_world,
@@ -1006,7 +1000,7 @@ def _sparse_bilateral_matvec(path: SparseSCCPath, problem: DualProblem) -> None:
             state.v_aug,
             path.data.solution.lambdas,
             path.all_worlds_mask,
-            *path.decoupled_rows.inputs,
+            *path.decoupled_rows.inputs(problem),
         ],
         device=path.device,
     )
@@ -1268,7 +1262,7 @@ def _solve_sparse_bilateral_block(
                 delassus.bsm.nzb_coords,
                 delassus.bsm.nzb_values,
                 world_start,
-                *path.decoupled_rows.inputs,
+                *path.decoupled_rows.inputs(problem),
             ],
             device=path.device,
             block_dim=128,
@@ -1928,7 +1922,7 @@ def _assemble_sparse_bilateral_coupling(path: SparseSCCPath, problem: DualProble
             state.bilateral_coupling,
             coupling_row_groups,
             wp.bool(compact_layout),
-            *path.decoupled_rows.inputs,
+            *path.decoupled_rows.inputs(problem),
         ],
         device=path.device,
     )
