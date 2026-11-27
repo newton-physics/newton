@@ -22,7 +22,7 @@ from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
 from .penetration import create_solve_box_penetration
 from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
-from .support_function import triangle_seam_normal, triangle_witness_tolerance
+from .support_function import triangle_contains_projection, triangle_seam_normal, triangle_witness_tolerance
 
 
 @wp.struct
@@ -168,8 +168,10 @@ def _create_triangle_seam_contact(support_map_b: Any):
         At a coplanar seam, the face supports B if no point of B lies deeper
         below the face than the contact found, so the face is a minimum
         penetration direction. Such a contact takes the face normal, measured
-        from B's witness. Otherwise the leaning normal is an artifact of the
-        triangle's boundary and the contact is rejected.
+        from B's witness. The face also supports B's deepest point when that
+        point lies over the triangle, and the contact then moves there.
+        Otherwise the leaning normal is an artifact of the triangle's boundary
+        and the contact is rejected.
         """
         interior_b = wp.quat_rotate(relative_orientation_b, geom_b.center) + relative_position_b
         on_seam, face = triangle_seam_normal(geom_a, point_a, normal, interior_b)
@@ -177,7 +179,13 @@ def _create_triangle_seam_contact(support_map_b: Any):
             return True, point_a, point_b, normal, signed_distance
         deepest = support_map_b(geom_b, -face, relative_orientation_b, relative_position_b, data_provider)
         # Triangle vertex A is the frame origin, so the face plane passes through it.
-        if wp.dot(face, deepest) < signed_distance - triangle_witness_tolerance(point_a):
+        deepest_depth = wp.dot(face, deepest)
+        tolerance = triangle_witness_tolerance(point_a)
+        if deepest_depth < signed_distance - tolerance:
+            # A shape sunk through a flat triangulated surface reaches deepest
+            # over the face, while the shallowest direction leans across a seam.
+            if triangle_contains_projection(geom_a, deepest, tolerance):
+                return True, deepest - deepest_depth * face, deepest, face, deepest_depth
             return False, point_a, point_b, normal, signed_distance
         depth = wp.dot(face, point_b)
         return True, point_b - depth * face, point_b, face, depth

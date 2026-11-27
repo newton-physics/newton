@@ -552,6 +552,35 @@ def test_refinement_triangle_hull_rim_on_seam(test, device):
             test.assertGreater(float(np.min(normals[:, 2])), 0.9999, normals)
 
 
+def test_refinement_triangle_capsule_sunk_across_seam(test, device):
+    """Push a capsule sunk through a flat two-triangle mesh out along the face.
+
+    The capsule stands on the internal diagonal. Each triangle's shallowest
+    exit leans across that seam, while the capsule reaches deeper below the
+    face. Its deepest point lies over the triangles, so the face supports it.
+    """
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, margin=0.0, gap=0.0)
+    ground = newton.Mesh(
+        np.array([(-5.0, -5.0, 0.0), (5.0, -5.0, 0.0), (5.0, 5.0, 0.0), (-5.0, 5.0, 0.0)], dtype=np.float32),
+        [0, 1, 2, 0, 2, 3],
+        compute_inertia=False,
+    )
+    builder.add_shape_mesh(-1, mesh=ground, cfg=cfg)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+    )
+    builder.add_shape_capsule(body, radius=0.05, half_height=0.15, cfg=cfg)
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "coplanar seam rejected the sunk capsule's contacts")
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    test.assertGreater(float(np.min(np.abs(normals[:, 2]))), 0.9999, normals)
+
+
 def test_refinement_triangle_box_tilted_rest(test, device):
     """Keep a slightly tilted mesh resting on a wide box at its true depth.
 
@@ -838,6 +867,7 @@ for function in (
     test_refinement_triangle_hull_tilted_seam_support,
     test_refinement_triangle_hull_chamfer_seam,
     test_refinement_triangle_hull_rim_on_seam,
+    test_refinement_triangle_capsule_sunk_across_seam,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
     test_refinement_triangle_box_tilted_face,

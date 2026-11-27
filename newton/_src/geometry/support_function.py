@@ -231,6 +231,31 @@ def triangle_seam_normal(
 
 
 @wp.func
+def triangle_contains_projection(geom: GenericShapeData, point: wp.vec3, tolerance: float) -> bool:
+    """Return whether ``point`` projects onto mesh triangle ``geom`` along its face normal.
+
+    Args:
+        geom: Triangle shape data in its local frame, with vertex A at the origin.
+        point: Point [m] in the triangle frame.
+        tolerance: Distance [m] by which the projection may lie outside the triangle.
+    """
+    ab, ac = geom.scale, geom.auxiliary
+    aa, bb, cc = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
+    denominator = aa * cc - bb * bb
+    if denominator <= 0.0:
+        return False
+    u = (cc * wp.dot(point, ab) - bb * wp.dot(point, ac)) / denominator
+    v = (aa * wp.dot(point, ac) - bb * wp.dot(point, ab)) / denominator
+    # Compare each barycentric coordinate with the distance to its opposite edge.
+    area = wp.sqrt(denominator)
+    return (
+        v * area >= -tolerance * wp.sqrt(aa)
+        and (1.0 - u - v) * area >= -tolerance * wp.length(ac - ab)
+        and u * area >= -tolerance * wp.sqrt(cc)
+    )
+
+
+@wp.func
 def _has_verified_hull(geom: Any, provider: Any) -> bool:
     """Check topology independently of whether a mesh has support acceleration."""
     if geom.shape_type != int(GeoType.CONVEX_MESH):
