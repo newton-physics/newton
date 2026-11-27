@@ -1290,6 +1290,15 @@ def compute_mesh_mesh_block_offsets_scan(
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
+@wp.func
+def _mesh_to_sdf_transform(mesh_pose: wp.transform, sdf_pose: wp.transform) -> wp.transform:
+    """Compose the local transform without rotating large world offsets separately."""
+    sdf_rotation = wp.transform_get_rotation(sdf_pose)
+    delta = wp.transform_get_translation(mesh_pose) - wp.transform_get_translation(sdf_pose)
+    rotation = wp.quat_inverse(sdf_rotation) * wp.transform_get_rotation(mesh_pose)
+    return wp.transform(wp.quat_rotate_inv(sdf_rotation, delta), rotation)
+
+
 @lru_cache
 def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     writer_func: Any,
@@ -1562,7 +1571,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if not use_bvh_for_sdf and texture_sdf.scale_baked:
                             sdf_scale = wp.vec3(1.0, 1.0, 1.0)
 
-                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
+                X_mesh_to_sdf = _mesh_to_sdf_transform(X_tri_ws, X_sdf_ws)
 
                 triangle_mesh_margin = scale_data_tri[3]
                 sdf_mesh_margin = scale_data_sdf[3]
@@ -2017,7 +2026,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if not use_bvh_for_sdf and texture_sdf.scale_baked:
                             sdf_scale = wp.vec3(1.0, 1.0, 1.0)
 
-                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws_search), X_tri_ws_search)
+                X_mesh_to_sdf = _mesh_to_sdf_transform(X_tri_ws_search, X_sdf_ws_search)
 
                 triangle_mesh_margin = scale_data_tri[3]
                 sdf_mesh_margin = scale_data_sdf[3]
