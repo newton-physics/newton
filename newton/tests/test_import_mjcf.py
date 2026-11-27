@@ -13501,7 +13501,7 @@ class TestImportMjcfBodyShapeLabels(unittest.TestCase):
 
     @requires("pxr", "newton_usd_schemas")
     def test_usd_import_populates_mujoco_body_and_shape_prim_labels(self):
-        from pxr import Usd, UsdGeom, UsdPhysics
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -13515,19 +13515,69 @@ class TestImportMjcfBodyShapeLabels(unittest.TestCase):
         UsdPhysics.CollisionAPI.Apply(sph.GetPrim())
         vis = UsdGeom.Cube.Define(stage, "/World/robot/link_a/vis_box")
         vis.CreateSizeAttr(0.08)
+        vis.GetPrim().CreateAttribute("mjc:group", Sdf.ValueTypeNames.Int).Set(2)
         site = UsdGeom.Sphere.Define(stage, "/World/robot/link_a/tip_site")
         site.CreateRadiusAttr(0.02)
         site.GetPrim().AddAppliedSchema("MjcSiteAPI")
+        site.GetPrim().CreateAttribute("mjc:group", Sdf.ValueTypeNames.Int).Set(4)
+
+        box = newton.Mesh.create_box(
+            0.05,
+            0.05,
+            0.05,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        vis_mesh = UsdGeom.Mesh.Define(stage, "/World/robot/link_a/vis_mesh")
+        vis_mesh.CreatePointsAttr([Gf.Vec3f(*pt) for pt in box.vertices.tolist()])
+        face_count = len(box.indices) // 3
+        vis_mesh.CreateFaceVertexCountsAttr([3] * face_count)
+        vis_mesh.CreateFaceVertexIndicesAttr(box.indices.tolist())
+        vis_mesh.GetPrim().CreateAttribute("mjc:group", Sdf.ValueTypeNames.Int).Set(3)
+        vis_mesh.GetPrim().CreateAttribute("mjc:priority", Sdf.ValueTypeNames.Int).Set(5)
+
+        for name, color, face_indices in (
+            ("Red", (1.0, 0.0, 0.0), range(4)),
+            ("Blue", (0.0, 0.0, 1.0), range(4, 8)),
+        ):
+            material = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+            shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Shader")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            subset = UsdGeom.Subset.CreateGeomSubset(
+                vis_mesh, name, UsdGeom.Tokens.face, list(face_indices), familyName="materialBind"
+            )
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(material)
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        result = builder.add_usd(stage)
         model = builder.finalize(device="cpu")
+
+        shape_map = result["path_shape_map"]
+        geom_groups = model.mujoco.geom_group.numpy()
+        geom_priorities = model.mujoco.geom_priority.numpy()
 
         self.assertEqual(model.mujoco.body_label, ["/World/robot/link_a"])
         self.assertIn("/World/robot/link_a/col_sphere", model.mujoco.shape_label)
         self.assertIn("/World/robot/link_a/vis_box", model.mujoco.shape_label)
         self.assertIn("/World/robot/link_a/tip_site", model.mujoco.shape_label)
+        self.assertEqual(int(geom_groups[shape_map["/World/robot/link_a/vis_box"]]), 2)
+        self.assertEqual(int(geom_groups[shape_map["/World/robot/link_a/tip_site"]]), 4)
+
+        for subset_path in (
+            "/World/robot/link_a/vis_mesh",
+            "/World/robot/link_a/vis_mesh/Red",
+            "/World/robot/link_a/vis_mesh/Blue",
+        ):
+            idx = shape_map[subset_path]
+            self.assertEqual(model.shape_label[idx], subset_path)
+            self.assertEqual(model.mujoco.shape_label[idx], "/World/robot/link_a/vis_mesh")
+            self.assertEqual(int(geom_groups[idx]), 3)
+            self.assertEqual(int(geom_priorities[idx]), 5)
 
 
 if __name__ == "__main__":
