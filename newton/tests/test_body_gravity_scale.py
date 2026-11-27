@@ -248,11 +248,17 @@ def test_scale_checked_only_on_gravity_notify(test, device, solver_fn, mujoco):
     builder.add_body(mass=1.0, inertia=INERTIA, gravity_scale=0.5)
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    with mock.patch.object(solver, "_validate_body_gravity_scale") as validate:
+    model.body_gravity_scale.fill_(float("nan"))
+    with mock.patch.object(wp.array, "numpy", autospec=True, side_effect=wp.array.numpy) as body_notify_reads:
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
-        validate.assert_not_called()
-        solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
-        validate.assert_called_once()
+    with mock.patch.object(wp.array, "numpy", autospec=True, side_effect=wp.array.numpy) as gravity_notify_reads:
+        with test.assertRaisesRegex(ValueError, "body_gravity_scale of body 0 must be finite"):
+            solver.notify_model_changed(newton.ModelFlags.BODY_GRAVITY_PROPERTIES)
+
+    summary = solver._body_gravity_scale_summary
+    test.assertIsNotNone(summary)
+    test.assertEqual(sum(call.args[0] is summary for call in body_notify_reads.call_args_list), 0)
+    test.assertEqual(sum(call.args[0] is summary for call in gravity_notify_reads.call_args_list), 1)
 
 
 def test_unsupported_solver_raises(test, device, solver_fn):
