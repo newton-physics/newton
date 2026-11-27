@@ -613,22 +613,23 @@ def test_overflow_raise_waits_for_a_captured_reset(test, device):
     model, pipeline, contacts = _pad_slider(device)
     states = (model.state(), model.state())
     for raised in (False, True):
-        solver = SolverSteel(
-            model, articulation_constraint_max=32, warn_constraint_overflow=False, raise_constraint_overflow=True
-        )
-        _step(solver, model, pipeline, contacts, states)
-        if raised:
-            with test.assertRaisesRegex(RuntimeError, "articulation_constraint_max"):
-                _step(solver, model, pipeline, contacts, states)
-        for _ in range(3):
-            with wp.ScopedCapture(device) as capture:
-                solver.reset(states[0])
-            joint_qd = states[1].joint_qd.numpy()
-            with test.assertRaisesRegex(RuntimeError, "articulation_constraint_max"):
-                _step(solver, model, pipeline, contacts, states)
-            np.testing.assert_array_equal(states[1].joint_qd.numpy(), joint_qd)
-        wp.capture_launch(capture.graph)
-        _step(solver, model, pipeline, contacts, states)
+        with test.subTest(raised=raised):
+            solver = SolverSteel(
+                model, articulation_constraint_max=32, warn_constraint_overflow=False, raise_constraint_overflow=True
+            )
+            _step(solver, model, pipeline, contacts, states)
+            if raised:
+                with test.assertRaisesRegex(RuntimeError, "articulation_constraint_max"):
+                    _step(solver, model, pipeline, contacts, states)
+            for _ in range(3):
+                with wp.ScopedCapture(device) as capture:
+                    solver.reset(states[0])
+                joint_qd = states[1].joint_qd.numpy()
+                with test.assertRaisesRegex(RuntimeError, "articulation_constraint_max"):
+                    _step(solver, model, pipeline, contacts, states)
+                np.testing.assert_array_equal(states[1].joint_qd.numpy(), joint_qd)
+            wp.capture_launch(capture.graph)
+            _step(solver, model, pipeline, contacts, states)
 
 
 def test_default_step_reads_nothing_back(test, device):
