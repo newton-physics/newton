@@ -3,7 +3,9 @@
 
 """Tests for programmatic MuJoCo-specific model authoring helpers."""
 
+import array
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -858,6 +860,85 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                     with self.assertRaises(error):
                         helper(builder, *operands, custom_attributes=extras)
                     self.assertEqual(builder._custom_frequency_counts.get("mujoco:equality_constraint", 0), 0)
+
+    @requires(*MUJOCO_MODULES)
+    def test_copy_world_equality_frames(self):
+        """Place world-side equality frames through ordinary and bulk builder copies."""
+        blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        pose = wp.transform((1.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3))
+        body = blueprint.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
+        anchor = wp.vec3(0.2, -0.1, 0.4)
+        mujoco.add_equality_connect(blueprint, -1, body, anchor=anchor)
+        mujoco.add_equality_connect(blueprint, body, anchor=anchor)
+        mujoco.add_equality_weld(blueprint, body, relpose=wp.transform_inverse(pose))
+        mujoco.add_equality_weld(blueprint, -1, body, relpose=pose)
+        mujoco.add_equality_weld(blueprint, body)
+        mujoco.add_equality_weld(blueprint, -1, body)
+        placement = wp.transform((2.0, 3.0, 4.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
+        placements = (placement, wp.transform_identity(), wp.transform_inverse(placement))
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_world(blueprint, xform=placements[0])
+        builder.replicate(blueprint, 2, xforms=placements[1:])
+        model = builder.finalize()
+        anchors = model.mujoco.equality_constraint_anchor.numpy().reshape(3, 6, 3)
+        relposes = model.mujoco.equality_constraint_relpose.numpy().reshape(3, 6, 7)
+        for world, xform in enumerate(placements):
+            with self.subTest(world=world):
+                np.testing.assert_allclose(anchors[world, 0], wp.transform_point(xform, anchor), atol=1e-6)
+                np.testing.assert_allclose(anchors[world, 1], anchor, atol=1e-6)
+                np.testing.assert_allclose(anchors[world, [2, 4]], np.tile(xform.p, (2, 1)), atol=1e-6)
+                held_pose = xform * pose * wp.transform(*relposes[world, 2])
+                np.testing.assert_allclose(held_pose, wp.transform(anchors[world, 2], wp.quat_identity()), atol=1e-6)
+                np.testing.assert_allclose(relposes[world, 3], xform * pose, atol=1e-6)
+                np.testing.assert_array_equal(relposes[world, 4:, 3:], np.zeros((2, 4)))
+        solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
+        state, output = model.state(), model.state()
+        solver.step(state, output, model.control(), None, 0.01)
+        np.testing.assert_allclose(output.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
+
+    def test_copy_world_equality_defaults(self):
+        """Place sparse equality rows with omitted or partially authored frames."""
+        placement = wp.transform((2.0, 3.0, 4.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
+        for explicit_anchor in (False, True):
+            with self.subTest(explicit_anchor=explicit_anchor):
+                blueprint = newton.ModelBuilder()
+                body = blueprint.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                row = {"mujoco:equality_constraint_body2": body}
+                anchor = wp.vec3()
+                if explicit_anchor:
+                    # Any value finalize() accepts as a vector, not only Warp ones.
+                    row["mujoco:equality_constraint_anchor"] = array.array("f", (0.2, -0.1, 0.4))
+                    anchor = wp.vec3(*row["mujoco:equality_constraint_anchor"])
+                blueprint.add_custom_values(**row)
+                blueprint.add_custom_values(
+                    **{
+                        "mujoco:equality_constraint_type": newton.solvers.SolverMuJoCo.EqType.WELD,
+                        "mujoco:equality_constraint_body1": body,
+                        "mujoco:equality_constraint_body2": None,
+                    }
+                )
+                builder = newton.ModelBuilder()
+                builder.add_world(blueprint)
+                builder.replicate(blueprint, 3, xforms=[placement, placement, wp.transform_identity()])
+                anchors = builder.custom_attributes["mujoco:equality_constraint_anchor"].values
+                placed = np.tile((wp.transform_point(placement, anchor), placement.p), (2, 1))
+                np.testing.assert_allclose(anchors[2:6], placed, atol=1e-6)
+                relposes = builder.custom_attributes["mujoco:equality_constraint_relpose"].values
+                np.testing.assert_allclose(
+                    [pose.q for pose in relposes[3:6:2]], np.tile(wp.quat_inverse(placement.q), (2, 1)), atol=1e-6
+                )
+                # Later rows may leave frames the placed copies filled to their defaults, also in a copy of the builder.
+                builder.add_world(blueprint)
+                builder.add_custom_values(**row)
+                outer = newton.ModelBuilder()
+                outer.add_builder(builder)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    outer.finalize(device="cpu")
+                warned = " ".join(str(warning.message) for warning in caught)
+                self.assertNotIn("equality_constraint_relpose", warned)
+                if not explicit_anchor:
+                    self.assertNotIn("equality_constraint_anchor", warned)
 
     @requires(*MUJOCO_MODULES)
     def test_weld_preserves_each_world_initial_pose(self):
