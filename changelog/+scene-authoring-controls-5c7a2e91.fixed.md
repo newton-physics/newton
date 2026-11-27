@@ -1,0 +1,1 @@
+Preserve jointed-asset controls when adding or removing scene objects by skipping zero-length joint spans instead of copying the whole control buffer. Identify scene-editor windows with the source revision loaded at launch.

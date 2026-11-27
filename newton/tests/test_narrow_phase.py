@@ -494,6 +494,19 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
                     np.testing.assert_allclose(normals, signs[:, None] * np.array([0.0, 0.0, 1.0]), atol=1.0e-3)
                     np.testing.assert_allclose(depths, -0.25, atol=1.0e-3)
 
+                    first = self.narrow_phase
+                    self.narrow_phase = NarrowPhase(max_candidate_pairs=1, device=device, split_gjk_mpr=split)
+                    self.assertIs(self.narrow_phase.primitive_kernel, first.primitive_kernel)
+                    self.assertIs(self.narrow_phase.narrow_phase_kernel, first.narrow_phase_kernel)
+                    moved = [geoms[0], {**geoms[1], "transform": ([0.0, 0.0, 1.1], [0.0, 0.0, 0.0, 1.0])}]
+                    count, _pairs, _points, _normals, depths, _tangents = self._run_narrow_phase(moved, [(0, 1)])
+                    self.assertGreater(count, 0)
+                    np.testing.assert_allclose(depths, -0.4, atol=1.0e-3)
+                    self.narrow_phase = first
+                    count, _pairs, _points, _normals, depths, _tangents = self._run_narrow_phase(geoms, [(0, 1)])
+                    self.assertGreater(count, 0)
+                    np.testing.assert_allclose(depths, -0.25, atol=1.0e-3)
+
     def test_launch_forwards_convex_support_metadata(self):
         """Forward cooked convex support metadata through the standard launch path."""
         self.narrow_phase = NarrowPhase(

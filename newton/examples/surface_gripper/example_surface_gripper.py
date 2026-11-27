@@ -869,6 +869,9 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # One surface gripper per world, attached to the end effector body. Pads placed at the
         # transforms read from the arm USD. The seal's stiffness/damping are set once, from the first crate's
@@ -997,7 +1000,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             # Interpolate the arm drive targets (joint_target_q) and sample the engagement command
             # (gripper_command_engaged_curr_wp) at the current sim time (sim_step_count_wp*sim_dt)
             # Advance the search index (last_lo_wp) through the recording,
@@ -1125,7 +1128,14 @@ class Example:
             )
 
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
 
             self.state_0, self.state_1 = self.state_1, self.state_0
             self.gripper_state_input_prev, self.gripper_state_input_curr = (
@@ -1147,7 +1157,7 @@ class Example:
         sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
         self.viewer.begin_frame(sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def gui(self, ui):

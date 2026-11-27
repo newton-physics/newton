@@ -234,6 +234,9 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
         self._initial_body_q = self.state_0.body_q.numpy().copy()
         self._pulley_theta = np.zeros(3, dtype=np.float64)
         self._last_pulley_angles = None
@@ -255,12 +258,19 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             if self.viewer is not None:
                 self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -346,6 +356,7 @@ class Example:
         if self.viewer is not None:
             self.viewer.begin_frame(self.sim_time)
             self.viewer.log_state(self.state_0)
+            self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
             starts, ends = get_tendon_cable_lines(self.solver, self.model, self.state_0)
             self.viewer.log_lines("cable", starts, ends, colors=(0.9, 0.2, 0.2), width=0.008)
             self.viewer.end_frame()

@@ -2,6 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
+import os
+import subprocess
+import sys
+import textwrap
 import typing as _t
 import unittest
 
@@ -90,6 +94,51 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_null_viewer_does_not_load_unused_backends(self):
+        """Keep an unusable optional backend from affecting the null viewer."""
+        environment = os.environ.copy()
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "PYGLET_HEADLESS"):
+            environment.pop(name, None)
+        script = textwrap.dedent("""
+            import importlib.abc
+            import sys
+
+            class UnavailableBackend(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname.split(".")[0] in (
+                        "rerun", "mcp", "uvicorn", "httpx2", "huggingface_hub", "pyglet", "imgui_bundle"
+                    ):
+                        raise RuntimeError(f"The unused {fullname} dependency cannot initialize")
+
+            sys.meta_path.insert(0, UnavailableBackend())
+            from newton.viewer import ViewerNull
+            viewer = ViewerNull(num_frames=1)
+            assert viewer.is_running()
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
+            assert not viewer.is_running()
+            viewer.close()
+            assert not any(name in sys.modules for name in (
+                "newton._src.viewer.scene_authoring",
+                "newton._src.viewer.authoring_usd",
+                "newton._src.viewer.scene_editor_mcp",
+                "newton._src.viewer.viewer_assets",
+                "newton._src.viewer.gui.authoring",
+            ))
+            from newton.viewer import SceneEditor, SceneEditorMCP
+            assert SceneEditor.__name__ == "SceneEditor"
+            assert SceneEditorMCP.__name__ == "SceneEditorMCP"
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_narrow_phase_keeps_pipeline_controls_private(self):
         """Keep topology specializations and counter ownership out of the public API."""
         from newton.geometry import NarrowPhase  # noqa: PLC0415
@@ -244,6 +293,119 @@ class TestApi(unittest.TestCase):
                 opacity = parameters[color_index + 1]
                 self.assertEqual(opacity.name, "opacity")
                 self.assertEqual(opacity.kind, inspect.Parameter.KEYWORD_ONLY)
+
+    def test_viewer_workspace_covers_attribute_frequencies(self):
+        """Require every Model.AttributeFrequency to be mapped or explicitly handled in the viewer workspace."""
+        import newton  # noqa: PLC0415
+        from newton._src.viewer.gui.properties import PropertyInspector  # noqa: PLC0415
+
+        Frequency = newton.Model.AttributeFrequency
+        # Frequencies resolved through composite domains (scene/world, joint spans, deformable objects, contacts)
+        # rather than a direct 1:1 PropertyInspector.kinds leaf key.
+        handled_indirectly = {
+            Frequency.ONCE,
+            Frequency.WORLD,
+            Frequency.JOINT_COORD,
+            Frequency.JOINT_DOF,
+            Frequency.JOINT_CONSTRAINT,
+            Frequency.SURFACE,
+            Frequency.VOLUME,
+            Frequency.CONTACT,
+            Frequency.CONTACT_RIGID,
+            Frequency.CONTACT_SOFT,
+        }
+        mapped = set(PropertyInspector.kinds.values()) | handled_indirectly
+        missing = [freq.name for freq in Frequency if freq not in mapped]
+        self.assertEqual(
+            missing,
+            [],
+            f"Unmapped Model.AttributeFrequency member(s) in viewer workspace: {missing}. "
+            "Wire them into PropertyInspector / ModelTree (or document indirect handling here).",
+        )
+
+    def test_viewer_workspace_covers_geometry_and_joint_icons(self):
+        """Ensure every GeoType and JointType resolves to a real icon in the viewer atlas."""
+        import newton  # noqa: PLC0415
+        from newton._src.viewer.gui.icons import ICON_NAMES  # noqa: PLC0415
+        from newton._src.viewer.gui.workspace import ViewerWorkspace  # noqa: PLC0415
+
+        valid_icons = set(ICON_NAMES)
+        for geo in newton.GeoType:
+            with self.subTest(geo=geo.name):
+                self.assertIn(int(geo), ViewerWorkspace.SHAPE_ICONS, f"GeoType.{geo.name} missing from SHAPE_ICONS")
+                icon = ViewerWorkspace.SHAPE_ICONS[int(geo)]
+                self.assertIn(icon, valid_icons, f"GeoType.{geo.name} maps to unknown icon {icon!r}")
+        for joint in newton.JointType:
+            with self.subTest(joint=joint.name):
+                icon = ViewerWorkspace.joint_icon(joint)
+                self.assertIn(icon, valid_icons, f"JointType.{joint.name} maps to unknown icon {icon!r}")
+
+    def test_viewer_workspace_covers_viewer_display_options(self):
+        """Ensure every ViewerBase show_* display option is exposed in ViewportControls."""
+        import newton.viewer  # noqa: PLC0415
+        from newton._src.viewer.gui.viewport import ViewportControls  # noqa: PLC0415
+
+        viewer = newton.viewer.ViewerNull()
+        discovered = {
+            name
+            for owner in (viewer.layer, viewer)
+            for name, value in vars(owner).items()
+            if name.startswith("show_") and isinstance(value, bool)
+        }
+        covered = (
+            {name for name, _ in ViewportControls.body_guide_options}
+            | {name for name, _, _ in ViewportControls.scene_guide_options}
+            | set(ViewportControls.contact_display_options)
+            | set(ViewportControls.mode_display_options)
+        )
+        missing = sorted(discovered - covered)
+        self.assertEqual(
+            missing,
+            [],
+            f"ViewerBase display option(s) not exposed in ViewportControls: {missing}. "
+            "Add them to ViewportControls so the workspace GUI stays in sync.",
+        )
+
+    def test_viewer_collision_inspector_contact_fields_classification(self):
+        """Ensure non-per-contact arrays on Contacts cannot leak into per-contact inspector rows."""
+        import warp as wp  # noqa: PLC0415
+
+        import newton  # noqa: PLC0415
+        from newton._src.viewer.gui.collision import CollisionInspector  # noqa: PLC0415
+
+        contacts = newton.Contacts(
+            rigid_contact_max=4,
+            soft_contact_max=3,
+            device="cpu",
+            per_contact_shape_properties=True,
+            contact_matching=True,
+            contact_report=True,
+            rigid_contact_surface_velocity=True,
+        )
+        for prefix, capacity in (("rigid_contact_", 4), ("soft_contact_", 3)):
+            for name, value in vars(contacts).items():
+                if not name.startswith(prefix) or not isinstance(value, wp.array):
+                    continue
+                suffix = name[len(prefix) :]
+                if suffix in CollisionInspector.NON_PER_CONTACT_SUFFIXES or suffix.startswith("diff_"):
+                    continue
+                self.assertEqual(
+                    len(value),
+                    capacity,
+                    f"Contacts.{name} has length {len(value)} != {capacity} but is not excluded in "
+                    "CollisionInspector.NON_PER_CONTACT_SUFFIXES.",
+                )
+
+    def test_viewer_attribute_summary_covers_all_core_specs(self):
+        """Ensure attribute_summary formats every core Model AttributeSpec including update_flags cleanly."""
+        import newton  # noqa: PLC0415
+        from newton._src.viewer.viewer_attributes import Assignment, attribute_summary  # noqa: PLC0415
+
+        for name, spec in newton.Model._CORE_ATTRIBUTE_SPECS.items():
+            summary = attribute_summary(name, spec, None, Assignment.MODEL)
+            self.assertIn(f"Model.{name}", summary)
+            if spec.update_flags is not None:
+                self.assertIn("Update flags:", summary)
 
 
 if __name__ == "__main__":

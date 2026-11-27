@@ -1,0 +1,1 @@
+Apply notified shape and joint-frame property changes to native CPU MuJoCo as well as its Warp model mirror, including collision BVH updates after moving static geometry, so live friction and pose edits affect CPU simulation without recreating the solver.

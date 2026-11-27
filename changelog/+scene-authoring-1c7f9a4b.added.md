@@ -1,0 +1,1 @@
+Add the experimental `newton.viewer.SceneEditor` and `scene_editor` example for live rigid scene authoring, with primitive and USD placement, transform handles, undo/redo, USD interchange, and a SimReady asset browser. Retain compiled storage for pose and appearance edits, and batch structural edits into transactional XPBD runtime replacements.

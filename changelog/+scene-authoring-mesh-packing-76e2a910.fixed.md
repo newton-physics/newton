@@ -1,0 +1,1 @@
+Reuse unchanged mesh bounds and collision edge geometry across model builds to reduce scene-editor delays when adding or deleting objects. Geometry and collision edge changes invalidate the cached data.

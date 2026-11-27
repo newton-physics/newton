@@ -1,0 +1,1 @@
+Synchronize joint coordinates once per batch of live pose edits and apply consistent object validation to editor operations, MCP edits, and USD interchange; reject unequal sphere diameters before changing the document.

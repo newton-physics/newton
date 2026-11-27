@@ -364,7 +364,7 @@ current viewer session, or a persistent artifact:
       - Dependencies
     * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and live debugging
-      - Real-time display; frame capture
+      - Docked inspection workspace; opt-in frame history; frame capture
       - pyglet, imgui_bundle
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
@@ -408,7 +408,8 @@ depends on the viewer backend.
 
 Use a live viewer such as :class:`~newton.viewer.ViewerGL` to inspect the
 current scene and add :ref:`custom overlays <viewer-custom-visualization>` for
-contacts or other diagnostic data. For historical inspection, enable
+contacts or other diagnostic data. Its inspection workspace can also record
+bounded local history of logged frames; see :ref:`viewer-inspection`. For persistent or external historical inspection, enable
 ``keep_historical_data`` in :class:`~newton.viewer.ViewerRerun` to retain a
 timeline for the current viewer session, or use
 :ref:`ViewerFile <viewer-file-recording>` to create a persistent state-snapshot
@@ -428,12 +429,15 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 **Core loop methods** — every viewer uses the same simulation loop pattern:
 
 - :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
+- :meth:`~newton.viewer.ViewerBase.set_control` — optionally expose Control inputs to the inspector
+- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose :class:`~newton.solvers.SolverBase` capabilities, resources, and solver-synchronized runtime edits
+- :meth:`~newton.viewer.ViewerBase.set_collision_pipeline` — optionally expose broadphase and narrowphase diagnostics
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
-- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise, including while :class:`~newton.viewer.ViewerGL` replays recorded history; prefer this over composing ``is_paused()`` manually
 - :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
 
@@ -502,6 +506,7 @@ outstanding async render.
 - :meth:`~newton.viewer.ViewerBase.log_lines` — draw line segments (e.g. rays, normals, force vectors)
 - :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
+- :meth:`~newton.viewer.ViewerBase.log_observables` — expose :ref:`solver observables <solver_observables>` to the inspection workspace without requiring :meth:`~newton.viewer.ViewerBase.log_contacts`
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
 - :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in a
@@ -560,6 +565,205 @@ mode; plots are displayed when the viewer window and its UI are active.
 scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
 ``smoothing``, and passing ``None`` to ``log_array`` is a no-op.
 
+.. _viewer-inspection:
+
+Interactive inspection in ViewerGL
+----------------------------------
+
+By default, :class:`~newton.viewer.ViewerGL` opens a docked inspection workspace
+organized around a **Scene** explorer on the left, a central 3D **Viewport**,
+an inspector dock (**Properties**, **Environment**, **Solver**, and optional
+**Controls**) on the right, and a playback **Timeline** and status bar along the
+bottom. When launched through ``python -m newton.examples``, an **Examples** tab
+is also docked alongside **Scene** for switching scenes in place.
+
+.. figure:: ../images/viewergl_workspace.jpg
+   :alt: ViewerGL docked inspection workspace showing the Scene explorer, 3D viewport with a selected joint arc on ANYmal D, Properties inspector, and recorded timeline
+   :width: 100%
+   :align: center
+
+   The default :class:`~newton.viewer.ViewerGL` workspace inspecting an articulated robot: **Scene** explorer on the left, **Viewport** with joint and contact overlays in the center, **Properties** inspector on the right, and the recorded frame **Timeline** and status bar along the bottom.
+
+The **Scene** explorer includes worlds, articulations, joints, bodies, shapes,
+deformable objects (surfaces, volumes, curves, and skinned visual meshes),
+tendons, particle-body attachments, model cameras, actuators and batteries,
+custom attribute frequencies, collision pipelines and contacts, and shared
+geometry and BVH resources, with search filtering and per-object visibility and
+flag controls. Empty property categories are hidden. Custom attributes use
+their registered frequency, dtype, namespace, and reference metadata rather
+than solver-specific field-name rules. :ref:`Solver observables <solver_observables>`
+logged via :meth:`~newton.viewer.ViewerBase.log_observables` or
+:meth:`~newton.viewer.ViewerBase.log_contacts` appear read-only in the
+**Solver** tab (alongside unrequested supported kinds when a solver is bound)
+as well as on matching selections in **State** and **Contacts**.
+
+Select items in the explorer or click them directly in the viewport (``Alt`` +
+click selects an individual shape instead of its body; ``Ctrl`` + click adds or
+removes selections, and ``Shift`` + click extends a range in the explorer or
+toggles in the viewport). Press **F** to frame the selection, hold **F** to
+follow it across simulation steps, or pin following with the Properties follow
+button. The viewport toolbar and interactive orientation gizmo switch camera
+projections, overlays (joint frames, centers of mass, inertia boxes, contacts,
+SDF margins, and BVH bounds), and display modes (**Visual**, **Collision**,
+**X-ray**, and **Wireframe**). **X-ray** is an inspection representation: its
+transparency and adaptive detail reveal internal collision shapes and contacts
+without changing simulation geometry.
+
+The **Contacts** tab on a shape or body, together with the **Collision** tree
+entry in the explorer, lists active contact pairs. While paused, the workspace
+numbers contact points in the viewport and inspects witness geometry,
+separation, broadphase candidate pairs, and colliding shapes for the selected
+contact. Contact mode colors and force vectors require solver force
+observables; unavailable force data is distinguished from an unloaded contact.
+BVH overlays are bounded debug views of available current bounds, not an export
+of every backend's BVH nodes.
+
+.. figure:: ../images/viewergl_xray_contacts.jpg
+   :alt: ViewerGL X-ray mode and paused contact inspector showing a translucent visual mesh revealing internal collision spheres, contact vectors, numbered contact labels, and witness point details
+   :width: 100%
+   :align: center
+
+   Paused contact inspection in **X-ray** mode: translucent visual meshes reveal internal collision geometry and numbered contact points in the viewport while **Properties** inspects witness coordinates, separation, broadphase candidate pairs, and colliding shape links.
+
+Images and scalar plots logged by the application appear as dockable tabs
+alongside the viewport. With ``ViewerGL(capture_logs=True)``, which the example
+runner passes, the **Console** panel receives Newton Python logging records and
+Newton warnings with level filtering; warnings and errors open it automatically
+(or press ``Ctrl`` + backtick to toggle it). Console capture preserves terminal
+output and application-configured logging handlers. Without the opt-in, the
+viewer leaves logging configuration untouched. Explicit display choices survive
+example switches, while a new scene keeps its authored camera pose.
+
+Construct the viewer with ``ViewerGL(legacy_gui=True)`` to use the minimal
+sidebar, statistics overlay, and floating image/plot windows instead of the
+docked inspection workspace. The keyword-only flag defaults to ``False`` and
+has no effect when ``headless=True``. The workspace panels add roughly 1–2 ms
+of CPU time per interactive frame compared with the sidebar layout; pass
+``legacy_gui=True`` when frame rate matters more than inspection.
+
+The workspace compiles its interaction kernels during construction and when
+binding a model on a different device, avoiding stalls on first selection or
+display-mode changes. Headless rendering and ``legacy_gui=True`` compile
+optional features on demand instead.
+
+Inspecting a custom simulation loop
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Calling ``set_model`` and logging ``State`` (and optionally ``Contacts``) each
+frame populates the **Scene** tree, **Model**, **State**, and **Contacts**
+views. To also expose control inputs, solver capabilities, and collision
+pipeline metadata in the inspector, call
+:meth:`~newton.viewer.ViewerBase.set_control`,
+:meth:`~newton.viewer.ViewerBase.set_solver`, and
+:meth:`~newton.viewer.ViewerBase.set_collision_pipeline` after ``set_model``.
+Each setter is optional and updates only its component. State, Contacts, and
+solver observable inspection read the objects supplied through ``log_state``,
+``log_contacts``, and :meth:`~newton.viewer.ViewerBase.log_observables`:
+
+.. experimental::
+   ``ViewerBase.set_control``, ``ViewerBase.set_solver``,
+   ``ViewerBase.set_collision_pipeline``, and ``ViewerBase.log_observables``
+   are experimental inspection methods and may change without the normal
+   deprecation period. ``ViewerGL`` uses them to populate its inspection
+   panels; other backends store the references without exposing an inspection
+   UI.
+
+.. code-block:: python
+
+    import newton
+    import warp as wp
+    from newton.solvers import SolverXPBD
+    from newton.viewer import ViewerGL
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_ground_plane()
+    model = builder.finalize()
+    state_0, state_1 = model.state(), model.state()
+    contact_state = model.state()  # collision input poses for log_contacts()
+    control = model.control()
+    solver = SolverXPBD(model)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    viewer = ViewerGL()
+    viewer.set_model(model)
+    viewer.set_control(control)
+    viewer.set_solver(solver)
+    viewer.set_collision_pipeline(pipeline)
+    time, dt = 0.0, 1.0 / 60.0
+    while viewer.is_running():
+        if viewer.should_step():
+            state_0.clear_forces()
+            viewer.apply_forces(state_0)
+            pipeline.collide(state_0, contacts)
+            contact_state.assign(state_0)
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+            time += dt
+        viewer.begin_frame(time)
+        viewer.log_state(state_0)
+        viewer.log_contacts(contacts, contact_state)
+        viewer.end_frame()
+    viewer.close()
+
+The setters retain references in the active viewer layer without copying
+arrays or stepping the simulation. Repeating a setter replaces only that
+component; passing ``None`` clears it. The solver and pipeline must belong to
+the active Model. Log the current State after each buffer swap; no State
+callback or separate registration is needed. The application owns all objects
+and stepping. Clearing or replacing a Model discards its inspected components
+and logged buffers.
+
+These calls are the inspector's only inputs: the viewer never reads attributes
+of an application or example object. ``newton.examples.run`` follows the same
+contract, passing an example's ``control``, ``solver``, and collision pipeline
+to the setters after constructing it and then running the loop above. Without
+``set_collision_pipeline``, collision pipelines held directly by the solver
+passed to ``set_solver`` are inspected.
+
+Editing, history, and rebuilding
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Control inputs can be changed while running or paused at the live frame.
+  Edits modify arrays in place so captured simulation graphs retain their
+  buffer bindings. Reset Control restores the values first seen by the
+  inspector.
+* Joint State coordinates and velocities and authored body shape variants can
+  be edited only while paused at the latest frame; body motion flags and body
+  shape variants also require a compatible solver bound via ``set_solver``. A
+  joint mask limits forward kinematics to the edited branch, bound solver
+  state caches are invalidated on joint edits, and rejected variant switches
+  roll back cleanly while keeping live edits intact. Unsupported or
+  read-only properties are shown locked.
+* Recorded historical frames are display snapshots. They are read-only;
+  playback reaches the latest frame before live simulation resumes. They
+  are not solver checkpoints and cannot restart simulation from an arbitrary
+  earlier time.
+* Recording is opt-in: enable **Record history** in the timeline to retain
+  display snapshots. Between ``begin_frame`` and ``end_frame``, the viewer
+  copies the arrays the application passes to ``log_state``, ``log_contacts``
+  (including solver observables), ``log_observables``, ``log_points``, and
+  ``log_lines`` to the host,
+  together with the Control from ``set_control``. Frames are keyed by the time
+  passed to ``begin_frame``, so a paused loop that renders the same time again
+  records nothing new. Recording is bounded to 128 MiB and 60,000 display
+  frames; a frame above 64 MiB stops recording before its arrays are
+  transferred. With recording off, no snapshots are taken and the timeline
+  collapses to a compact transport bar with live frame and time readouts.
+* While the timeline shows a recorded frame, the same logging calls display
+  that frame's data instead of their arguments, matched by call order within
+  the frame and by name for points and lines; the application's arrays are not
+  modified. Other logged data, such as shapes, scalars, and images, stays live.
+  ``should_step`` advances playback instead of returning ``True`` until the
+  newest frame is reached, so call it to keep the simulation from running ahead
+  during replay.
+* To change model topology, rebuild the Model, State, Control, Solver, and
+  CollisionPipeline in the application, then call ``set_model`` and the
+  relevant component setters again. Rebinding clears scene-owned selection,
+  caches, and history while keeping display preferences. Runtime inspector
+  edits are in-memory only and are not written back to USD.
+
 Real-time Viewers
 -----------------
 
@@ -602,7 +806,12 @@ Use an image library to save the captured pixels, for example:
 
 UI overlays are excluded by default. ``ViewerGL`` supports
 ``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
-that option. RTX also does not support capturing fullscreen images displayed
+that option. In a visible ``ViewerGL`` window with the default inspection
+workspace, the scene is rendered into the docked viewport, so ``get_frame()``
+keeps the window size but the scene covers only the viewport rectangle and the
+rest is panel background. To record the full window, set
+``viewer.show_ui = False`` or create the viewer with ``legacy_gui=True``.
+Headless rendering is unaffected. RTX also does not support capturing fullscreen images displayed
 with ``log_image(..., fullscreen=True)``: ``get_frame()`` raises
 ``NotImplementedError`` for those frames. Capture resumes after the next scene
 render. RTX capture uses the fixed render resolution and reads through CPU
@@ -638,7 +847,9 @@ completes.
 OpenGL Viewer
 ~~~~~~~~~~~~~
 
-Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
+Newton provides :class:`~newton.viewer.ViewerGL`, an OpenGL viewer with a docked
+inspection workspace (see :ref:`viewer-inspection`) for interactive real-time
+visualization and debugging of simulations.
 The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed, and a graphics driver that supports OpenGL 3.3 or newer.
 
 .. code-block:: python
@@ -686,7 +897,9 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
-The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``:
+The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``.
+In the docked workspace, ``"panel"`` and ``"side"`` callbacks share the inspector's Controls tab;
+``"stats"`` callbacks draw in the viewport overlay:
 
 .. code-block:: python
 
@@ -707,6 +920,8 @@ Viewer controls:
       - Move the camera in the ground plane
     * - ``Q`` / ``E``
       - Move the camera down or up
+    * - Left click
+      - Select an object or paused contact in the viewport (``Alt`` + click selects a shape; ``Ctrl`` / ``Shift`` + click toggles selection)
     * - Left drag
       - Look around
     * - Middle drag
@@ -720,19 +935,21 @@ Viewer controls:
     * - ``Ctrl`` + mouse wheel
       - Adjust field of view
     * - ``F``
-      - Frame the visible model and set the orbit pivot
+      - Frame the active selection (or visible model) and set the orbit pivot; hold ``F`` to follow a selected object
     * - ``H``
-      - Toggle the sidebar
+      - Toggle the workspace UI (or the sidebar when ``legacy_gui=True``)
+    * - ``Ctrl`` + backtick
+      - Toggle the workspace log console
     * - ``SPACE``
       - Pause or continue the simulation
     * - ``.``
       - Step the simulation by one frame while paused
     * - ``ESC``
-      - Close the viewer
-    * - Right click
-      - Pick objects
+      - Dismiss an open popup or close the viewer
+    * - Right click / drag
+      - Pick and drag objects
 
-Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the model, ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
+Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the active selection (or visible model), ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
 
 RTX Viewer
 ~~~~~~~~~~
@@ -1326,7 +1543,7 @@ Use :meth:`~newton.viewer.ViewerBase.log_points` to draw a point cloud:
 **Visualizing contacts:**
 
 Use :meth:`~newton.viewer.ViewerBase.log_contacts` to draw contact normals from a :class:`~newton.Contacts` object.
-The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.ViewerGL` sidebar) controls visibility:
+The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.ViewerGL` viewport toolbar or sidebar) controls visibility:
 
 .. code-block:: python
 
@@ -1345,10 +1562,17 @@ observables to the viewer:
 
 See :ref:`solver_observables` for allocation, contact-buffer identity, and backend
 support. Without force output, mode disks are amber (unknown) and force arrows
-are hidden. With force output, disks are black for open contacts, light gray for
+are hidden. With force output, disks are gray for open contacts, green for
 sticking contacts, and blue for slipping contacts. A measured force magnitude
 at or below ``contact_mode_eps_force`` is open, including zero force when the
 threshold is zero.
+
+ViewerGL shows the opposing contact point and its connecting line by default,
+in both regular and X-ray views. Use **Viewer settings > Contacts**, or set
+``viewer.show_contact_pairs = False`` and ``viewer.show_contact_lines = False``,
+to retain only the normal and mode disk on the first witness. Contact numbers
+are enabled by default but only drawn while paused with a **Contacts** inspector
+tab open. Disable them with ``viewer.show_contact_labels = False``.
 
 Default force-arrow calibration uses the average dynamic mass of populated local
 worlds plus shared global dynamic mass, so replicating identical worlds does not
@@ -1457,3 +1681,9 @@ When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world
 .. code-block:: python
 
     viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
+
+ViewerGL applies these offsets and world visibility to loose particles and
+deformable surfaces as well as rigid shapes (including in headless mode and with
+``legacy_gui=True``); other backends apply world offsets to rigid shapes only.
+Explorer visibility toggles keep world positions fixed, whereas explicit
+``set_visible_worlds()`` calls compact the visible grid unless ``reflow=False``.

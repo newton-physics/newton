@@ -854,6 +854,7 @@ class Example:
         self.caps_j_arr = wp.array([TAUF, TAUH], dtype=wp.float32)
         self.prof_knots_arr = wp.array(np.array(PROF_KNOTS_MS, dtype=np.float32), dtype=wp.float32)
         self.ctrl = self.model.control()
+        self.control = self.ctrl
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
         self.viewer.set_model(self.model)
@@ -876,6 +877,10 @@ class Example:
         s0 = self._settle_segment(s0, s1, 100, mode=1, amp=-0.12)
         self.snap = self._snapshot(s0)
         self.z_stand = float(self.snap[2][0][2])
+        self.sim_time = 0.0
+        self.render_state = self._fresh(self.snap)
+        self.render_contacts = self.pipe.contacts()
+        self.pipe.collide(self.render_state, self.render_contacts)
         print(f"settle done: z_stand={self.z_stand:.4f}", flush=True)
 
     # ---------------- execution helpers ----------------
@@ -1482,6 +1487,19 @@ class Example:
 
     # ---------------- runner interface ----------------
 
+    def _advance_playback(self):
+        """Load the current playback snapshot and refresh its contacts for display."""
+        self.sim_time = self.frame * SIM_DT * FRAME_EVERY
+        if self.playback:
+            _ph, snap = self.playback[min(self.frame, len(self.playback) - 1)]
+        else:
+            snap = self.snap
+        _load_snapshot(self.render_state, snap)
+        self.pipe.collide(self.render_state, self.render_contacts)
+        self.frame += 1
+        if self.playback and self.frame >= len(self.playback):
+            self.frame = 0  # loop the achieved behavior
+
     def step(self):
         """Framework hook: advance the optimization (skipped when done or in --test mode).
 
@@ -1489,16 +1507,16 @@ class Example:
         so an interactive viewer keeps rendering (the current playback, or
         the settled stance) and can pause the optimization. Viewers that stop
         after a fixed number of frames finish it in a single frame."""
-        if self.chain_done or self.args.test:
+        if not self.chain_done and not self.args.test:
             # --test runs ONLY the gradient check (test_final); the full
             # optimization is the interactive run's purpose
-            return
-        if self._chain is None:
-            self._chain = self.run_chain()
-        start = time.perf_counter()
-        for _ in self._chain:
-            if not self._finish_in_one_frame and time.perf_counter() - start >= STEP_BUDGET_S:
-                return
+            if self._chain is None:
+                self._chain = self.run_chain()
+            start = time.perf_counter()
+            for _ in self._chain:
+                if not self._finish_in_one_frame and time.perf_counter() - start >= STEP_BUDGET_S:
+                    break
+        self._advance_playback()
 
     def _rec_close(self):
         """Write one full playback pass to the recording and close it; safe to call repeatedly.
@@ -1512,33 +1530,23 @@ class Example:
             return
         if not self.playback:
             print("recording: no optimized playback was produced; nothing saved", flush=True)
+        rec_contacts = self.pipe.contacts()
         for k, (_phase, snap) in enumerate(self.playback):
             st = self._fresh(snap)
+            self.pipe.collide(st, rec_contacts)
             self.recorder.begin_frame(k * SIM_DT * FRAME_EVERY)
             self.recorder.log_state(st)
+            self.recorder.log_contacts(rec_contacts, st)
             self.recorder.end_frame()
         self.recorder.close()
         self.rec_done = True
 
     def render(self):
         """Framework hook: draw the settled stance or the optimized playback, looping it."""
-        t = self.frame * SIM_DT * FRAME_EVERY
-        if not self.playback:
-            # nothing optimized yet (or --test): render the settled stance
-            st = self._fresh(self.snap)
-            self.viewer.begin_frame(t)
-            self.viewer.log_state(st)
-            self.viewer.end_frame()
-            self.frame += 1
-            return
-        _ph, snap = self.playback[min(self.frame, len(self.playback) - 1)]
-        st = self._fresh(snap)
-        self.viewer.begin_frame(t)
-        self.viewer.log_state(st)
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.render_state)
+        self.viewer.log_contacts(self.render_contacts, self.render_state)
         self.viewer.end_frame()
-        self.frame += 1
-        if self.frame >= len(self.playback):
-            self.frame = 0  # loop the achieved behavior
 
     @staticmethod
     def create_parser():

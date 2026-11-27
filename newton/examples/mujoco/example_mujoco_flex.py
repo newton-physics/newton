@@ -130,6 +130,10 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0, device=self.model.device)
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # The viewer draws the cloth and block triangles; draw the cable as overlapping spheres.
         per_world = self.model.particle_count // self.world_count
@@ -151,10 +155,17 @@ class Example:
 
     def simulate(self):
         """Run the substeps of one rendered frame."""
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -169,6 +180,7 @@ class Example:
         """Render the box and the deformables."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         wp.launch(
             cable_render_points,
             self.cable_points.shape,

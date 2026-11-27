@@ -501,11 +501,16 @@ container, and pass it through the step:
    imu.update(state_out, observables=observables)
    contact_sensor.update(state_in, contacts, observables=observables)
 
-The viewer follows the same pattern:
+The viewer follows the same pattern—pass ``observables`` to
+:meth:`~newton.viewer.ViewerBase.log_contacts` for contact rendering and
+inspection, or to :meth:`~newton.viewer.ViewerBase.log_observables` to expose
+requested observables in the inspection workspace without logging contacts:
 
 .. code-block:: python
 
    viewer.log_contacts(contacts, state_in, observables=observables)
+   # Or, when not logging contacts:
+   viewer.log_observables(observables)
 
 Substep scheduling
 ------------------

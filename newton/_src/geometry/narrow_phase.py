@@ -228,6 +228,9 @@ _MIDPHASE_NARROW_TILE_SIZE = wp.constant(32)
 _REFINE_BLOCK_DIM = 32
 
 
+# These factories capture static flags and functions, never scene storage.
+# Reuse their kernels without retaining an unbounded set of custom callbacks.
+@lru_cache(maxsize=32)
 def create_prepare_convex_pair(external_aabb: bool, speculative: bool = False):
     """Create pair preparation shared by the split convex-contact kernels."""
 

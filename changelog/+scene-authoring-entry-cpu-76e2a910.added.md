@@ -1,0 +1,1 @@
+Add a native viewer **New scene** action with explicit CPU and GPU physics choices. Support native CPU MuJoCo in the scene editor with lazy initialization, native contacts, and no CUDA graph capture; GPU MuJoCo Warp retains Newton mesh contacts.

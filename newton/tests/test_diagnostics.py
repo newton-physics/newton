@@ -111,6 +111,68 @@ class TestLoggingDefaults(unittest.TestCase):
         self.assertEqual((stdout, stderr), ("", ""))
         self.assertEqual([record.getMessage() for record in handler.records], ["loaded asset"])
 
+    def test_viewer_capture_preserves_terminal_and_application_logging(self) -> None:
+        """GUI observers mirror logs/warnings without suppressing or duplicating output."""
+        from newton._src.viewer.gui.console import ConsoleCapture  # noqa: PLC0415
+
+        # Without an explicit application opt-in, a capture changes no logging state.
+        newton_logger = logging.getLogger("newton")
+        handlers, showwarning = list(newton_logger.handlers), warnings.showwarning
+        detached = ConsoleCapture(attach=False)
+        detached.request_level(logging.DEBUG)
+        self.assertEqual(newton_logger.handlers, handlers)
+        self.assertIs(warnings.showwarning, showwarning)
+        self.assertNotEqual(newton_logger.level, logging.DEBUG)
+        self.assertEqual(self._capture((logging.INFO, "not captured")), ("not captured\n", ""))
+        self.assertEqual(detached.buffer.snapshot()[1], ())
+        detached.close()
+
+        first, second = ConsoleCapture(attach=True), ConsoleCapture(attach=True)
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), warnings.catch_warnings():
+            warnings.simplefilter("always", NewtonWarning)
+            self.logger.info("loaded asset")
+            self.logger.warning("ignored option")
+            warnings.warn("invalid asset", NewtonWarning, stacklevel=1)
+            try:
+                raise ValueError("broken asset")
+            except ValueError:
+                self.logger.exception("load failed")
+        self.assertEqual(stdout.getvalue(), "loaded asset\n")
+        for message in ("ignored option", "NewtonWarning: invalid asset", "ValueError: broken asset"):
+            self.assertEqual(stderr.getvalue().count(message), 1)
+        self.assertIn("Traceback", stderr.getvalue())
+        for capture in (first, second):
+            entries = capture.buffer.snapshot()[1]
+            self.assertEqual(len(entries), 4)
+            self.assertIn("ValueError: broken asset", entries[-1].message)
+
+        handler = _RecordingHandler()
+        logging.getLogger().addHandler(handler)
+        stdout, stderr = self._capture((logging.INFO, "application owns output"))
+        self.assertEqual((stdout, stderr), ("", ""))
+        self.assertEqual([record.getMessage() for record in handler.records], ["application owns output"])
+        self.assertEqual(first.buffer.snapshot()[1][-1].message, "application owns output")
+
+        first.close()
+        logging.getLogger().removeHandler(handler)
+        self.assertEqual(self._capture((logging.INFO, "second viewer remains")), ("second viewer remains\n", ""))
+        self.assertEqual(second.buffer.snapshot()[1][-1].message, "second viewer remains")
+        saved_level = newton_logger.level
+        try:
+            newton_logger.setLevel(logging.ERROR)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), warnings.catch_warnings():
+                warnings.simplefilter("always", NewtonWarning)
+                warnings.warn("warning despite logging threshold", NewtonWarning, stacklevel=1)
+            self.assertIn("NewtonWarning: warning despite logging threshold", stderr.getvalue())
+        finally:
+            newton_logger.setLevel(saved_level)
+        second.close()
+        self.assertEqual(self._capture((logging.INFO, "viewers closed")), ("viewers closed\n", ""))
+
     def test_handler_on_child_logger_replaces_console_fallback(self):
         """Treat a handler on any logger between the record's logger and the root as configuration."""
         handler = _RecordingHandler()
