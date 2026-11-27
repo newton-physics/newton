@@ -30,7 +30,6 @@ def joint_force(
     damping: float,
     stiffness: float = 0.0,
     rest_q: float = 0.0,
-    angular: bool = False,
 ) -> float:
     """Joint force evaluation for a single degree of freedom."""
 
@@ -50,13 +49,10 @@ def joint_force(
         damping_f = -limit_kd * qd
         target_f = 0.0
 
-    # Body poses do not retain angular winding. Choose the same principal
-    # coordinate for equivalent quaternion signs, but keep the rest offset
-    # unwrapped so scalar spring preload is preserved.
-    spring_q = q
-    if angular:
-        spring_q = q - 2.0 * wp.pi * wp.floor((q + wp.pi) / (2.0 * wp.pi))
-    passive_f = stiffness * (rest_q - spring_q) - damping * qd
+    # Scalar angular springs use the continuous hinge coordinate carried in
+    # State.joint_q, so no principal-angle wrap is applied here. The rest offset
+    # is kept unwrapped so scalar spring preload is preserved.
+    passive_f = stiffness * (rest_q - q) - damping * qd
 
     return limit_f + damping_f + target_f + passive_f
 
@@ -182,6 +178,7 @@ def update_revolute_coordinates(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     joint_type: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_X_p: wp.array[wp.transform],
@@ -200,7 +197,13 @@ def update_revolute_coordinates(
     angle derivative; it coincides with that derivative for an aligned hinge.
     """
     joint = wp.tid()
-    if joint_type[joint] != JointType.REVOLUTE:
+    joint_type_value = joint_type[joint]
+    qd_offset = 0
+    if joint_type_value == JointType.D6:
+        if joint_dof_dim[joint, 1] != 1:
+            return
+        qd_offset = joint_dof_dim[joint, 0]
+    elif joint_type_value != JointType.REVOLUTE:
         return
     parent = joint_parent[joint]
     child = joint_child[joint]
@@ -211,12 +214,54 @@ def update_revolute_coordinates(
         w_parent = wp.spatial_bottom(body_qd[parent])
     X_wc = body_q[child] * joint_X_c[joint]
     rotation = wp.quat_inverse(wp.transform_get_rotation(X_wp)) * wp.transform_get_rotation(X_wc)
-    q_index = joint_q_start[joint]
-    qd_index = joint_qd_start[joint]
+    q_index = joint_q_start[joint] + qd_offset
+    qd_index = joint_qd_start[joint] + qd_offset
     w_err = wp.spatial_bottom(body_qd[child]) - w_parent
     angle, velocity = reconstruct_angular_q_qd(rotation, w_err, X_wp, joint_axis[qd_index])
     joint_q[q_index] = unwrap_revolute_angle(angle, reference_q[q_index])
     joint_qd[qd_index] = velocity
+
+
+@wp.kernel
+def reset_hinge_coordinates(
+    body_q: wp.array[wp.transform],
+    joint_type: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_world: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    rest_q: wp.array[float],
+    world_mask: wp.array[wp.bool],
+    joint_q: wp.array[float],
+):
+    """Re-anchor hinge winding from body poses for the selected worlds."""
+    joint = wp.tid()
+    world = joint_world[joint]
+    if world >= 0 and not world_mask[world]:
+        return
+    joint_type_value = joint_type[joint]
+    qd_offset = 0
+    if joint_type_value == JointType.D6:
+        if joint_dof_dim[joint, 1] != 1:
+            return
+        qd_offset = joint_dof_dim[joint, 0]
+    elif joint_type_value != JointType.REVOLUTE:
+        return
+    parent = joint_parent[joint]
+    X_wp = joint_X_p[joint]
+    if parent >= 0:
+        X_wp = body_q[parent] * X_wp
+    X_wc = body_q[joint_child[joint]] * joint_X_c[joint]
+    rotation = wp.quat_inverse(wp.transform_get_rotation(X_wp)) * wp.transform_get_rotation(X_wc)
+    q_index = joint_q_start[joint] + qd_offset
+    axis = joint_axis[joint_qd_start[joint] + qd_offset]
+    angle = wp.quat_twist_angle_signed(axis, rotation)
+    joint_q[q_index] = unwrap_revolute_angle(angle, rest_q[q_index])
 
 
 @wp.kernel
@@ -401,7 +446,6 @@ def eval_body_joints(
                 joint_damping[qd_start],
                 joint_stiffness[qd_start],
                 joint_rest_q[q_start],
-                True,
             )
         )
 
@@ -526,7 +570,9 @@ def eval_body_joints(
             axis_p = wp.transform_vector(X_wp, axis)
             axis_c = wp.transform_vector(X_wc, axis)
 
-            q = wp.quat_twist_angle_signed(axis, r_err)
+            q = unwrap_revolute_angle(
+                wp.quat_twist_angle_signed(axis, r_err), joint_q[joint_q_start[tid] + lin_axis_count]
+            )
             qd = wp.dot(w_err, axis_p)
 
             t_total = axis_p * (
@@ -545,7 +591,6 @@ def eval_body_joints(
                     joint_damping[i_0],
                     joint_stiffness[i_0],
                     joint_rest_q[q_start + lin_axis_count],
-                    True,
                 )
             )
 
@@ -577,7 +622,6 @@ def eval_body_joints(
                             joint_damping[i],
                             joint_stiffness[i],
                             joint_rest_q[q_start + lin_axis_count + k],
-                            True,
                         )
                     )
                 else:

@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -108,6 +110,80 @@ def test_semi_implicit_revolute_winding(test, device):
     test.assertAlmostEqual(float(state.joint_qd.numpy()[0]), 0.0, delta=1.0e-5)
 
 
+def _build_hinge_model(device, *, revolute: bool, **dof_kwargs):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    if revolute:
+        joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z, **dof_kwargs)
+    else:
+        config = newton.ModelBuilder.JointDofConfig
+        joint = builder.add_joint_d6(
+            -1,
+            body,
+            linear_axes=[config.create_unlimited(newton.Axis.X)],
+            angular_axes=[config(axis=newton.Axis.Z, **dof_kwargs)],
+        )
+    builder.add_articulation([joint])
+    return builder.finalize(device=device)
+
+
+def test_semi_implicit_passive_spring_winding(test, device):
+    """An unwrapped passive-spring sweep must not run away past the pi boundary."""
+    model = _build_hinge_model(device, revolute=True, stiffness=1.0, rest_q=3.0)
+    finals = {}
+    for solver in (
+        newton.solvers.SolverSemiImplicit(model),
+        newton.solvers.SolverFeatherstone(model),
+    ):
+        state_in, state_out = model.state(), model.state()
+        state_in.joint_q.fill_(3.0)
+        state_in.joint_qd.fill_(3.0)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        control = model.control()
+        for _ in range(120):
+            state_in.clear_forces()
+            solver.step(state_in, state_out, control, None, 0.01)
+            state_in, state_out = state_out, state_in
+        finals[type(solver)] = float(state_in.joint_q.numpy()[0])
+
+    semi = finals[newton.solvers.SolverSemiImplicit]
+    featherstone = finals[newton.solvers.SolverFeatherstone]
+    test.assertGreater(semi, math.pi)
+    test.assertLess(semi, 6.5)
+    test.assertAlmostEqual(semi, featherstone, delta=0.2)
+
+
+def test_semi_implicit_d6_hinge_winding(test, device):
+    """One-axis D6 hinges keep winding in joint_q like REVOLUTE joints."""
+    model = _build_hinge_model(device, revolute=False, target_ke=100.0, target_kd=20.0)
+    solver = newton.solvers.SolverSemiImplicit(model)
+    state_in, state_out = model.state(), model.state()
+    control = model.control()
+    target_index = int(model.joint_target_q_start.numpy()[0]) + 1
+    targets = control.joint_target_q.numpy().copy()
+    angles = [0.0, 2.0 * math.pi]
+    for frame in range(80):
+        targets[target_index] = angles[1] * min((frame + 1) / 40.0, 1.0)
+        control.joint_target_q.assign(targets)
+        state_in.clear_forces()
+        solver.step(state_in, state_out, control, None, 0.01)
+        state_in, state_out = state_out, state_in
+    test.assertGreater(float(state_in.joint_q.numpy()[1]), 2.0 * math.pi - 0.3)
+
+
+def test_semi_implicit_reset_reanchors_hinge(test, device):
+    """SolverBase.reset re-anchors winding from body poses for selected worlds."""
+    model = _build_hinge_model(device, revolute=True, target_ke=0.0, target_kd=0.0)
+    solver = newton.solvers.SolverSemiImplicit(model)
+    state, output = model.state(), model.state()
+    state.joint_q.fill_(7.0)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    solver.reset(state)
+    # A pose alone cannot restore the independently intended 7 rad coordinate;
+    # reset re-anchors to the equivalent angle nearest the authored rest (0).
+    test.assertAlmostEqual(float(state.joint_q.numpy()[0]), 7.0 - 2.0 * math.pi, delta=1.0e-5)
+
+
 class TestSemiImplicitJointDrive(unittest.TestCase):
     """Test SemiImplicit joint drives independently of optional backends."""
 
@@ -116,6 +192,30 @@ add_function_test(
     TestSemiImplicitJointDrive,
     "test_semi_implicit_revolute_winding",
     test_semi_implicit_revolute_winding,
+    devices=get_test_devices(),
+)
+
+
+add_function_test(
+    TestSemiImplicitJointDrive,
+    "test_semi_implicit_passive_spring_winding",
+    test_semi_implicit_passive_spring_winding,
+    devices=get_test_devices(),
+)
+
+
+add_function_test(
+    TestSemiImplicitJointDrive,
+    "test_semi_implicit_d6_hinge_winding",
+    test_semi_implicit_d6_hinge_winding,
+    devices=get_test_devices(),
+)
+
+
+add_function_test(
+    TestSemiImplicitJointDrive,
+    "test_semi_implicit_reset_reanchors_hinge",
+    test_semi_implicit_reset_reanchors_hinge,
     devices=get_test_devices(),
 )
 

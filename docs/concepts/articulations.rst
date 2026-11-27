@@ -1499,16 +1499,13 @@ Other solvers do not consume these properties yet. As with other model
 features, unsupported springs do not produce automatic warnings; consult the
 :doc:`solver feature matrix </solvers/index>` when choosing a solver.
 
-SemiImplicit derives angular coordinates from body orientations and does not
-track multi-turn winding. Its scalar angular springs use a principal angle in
-[-pi, pi), independent of quaternion sign. The displacement ``rest_q - q`` is
-not wrapped, so rest coordinates outside that interval still produce preload.
-However, crossing the -pi/pi boundary makes the coordinate jump by 2*pi and
-the spring force jump by ``2*pi*stiffness``. This can destabilize motion even
-near an equilibrium close to that boundary. Use Featherstone or MuJoCo, which
-store unwrapped scalar joint coordinates, for boundary-crossing or multi-turn
-motion. SemiImplicit winding support is tracked in
-`issue #4547 <https://github.com/newton-physics/newton/issues/4547>`_.
+SemiImplicit retains multi-turn winding for REVOLUTE joints and D6 joints with
+exactly one angular DOF in ``State.joint_q``. Scalar angular springs use that
+continuous coordinate, so the ``rest_q - q`` displacement does not jump at the
+-pi/pi boundary. Tracking requires less than pi radians of relative rotation
+per step. After a body-only reset or an ``eval_ik`` write that discards winding,
+call ``solver.reset(state, world_mask)`` to re-anchor those hinge coordinates
+from the body poses.
 
 MJCF ``stiffness`` and ``springref`` import into the core fields without explicit
 solver custom-attribute registration.

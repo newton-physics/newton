@@ -3,10 +3,11 @@
 
 import math
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, JointType, Model, State
+from ...sim import Contacts, Control, JointType, Model, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase, warn_unsupported_friction_modes
@@ -137,7 +138,17 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in deterministic_modules:
             self._set_module_options(options, module=module)
-        self._has_revolute_joints = bool(model.joint_count and JointType.REVOLUTE in model.joint_type.numpy())
+        if model.joint_count == 0:
+            self._has_winding_joints = False
+        else:
+            joint_types = model.joint_type.numpy()
+            joint_dof_dim = model.joint_dof_dim.numpy()
+            self._has_winding_joints = bool(
+                np.any(joint_types == JointType.REVOLUTE)
+                or np.any((joint_types == JointType.D6) & (joint_dof_dim[:, 1] == 1))
+            )
+        if self._has_winding_joints:
+            self._reset_world_mask = wp.ones(model.world_count + 1, dtype=bool, device=model.device)
         # Gather contact wrenches per body instead of recording them as deterministic atomics.
         self._gather_contact_wrenches = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
         self.angular_damping = angular_damping
@@ -159,6 +170,46 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         # State.body_f and State.particle_f are read-only step inputs; internal forces accumulate in
         # these solver-owned work buffers instead. Differentiable steps allocate their own buffers.
         self._body_f_work, self._particle_f_work = self._allocate_force_work(requires_grad=False)
+
+    @override
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array[wp.bool] | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Re-anchor REVOLUTE and one-axis D6 winding from body poses.
+
+        A body-only reset (or ``eval_ik`` write) cannot carry an independently
+        intended multi-turn coordinate, so selected worlds snap each hinge back
+        to the pose-equivalent angle nearest its authored rest coordinate.
+        """
+        super().reset(state, world_mask, flags)
+        if not self._has_winding_joints:
+            return
+        model = self.model
+        mask = self._reset_world_mask if world_mask is None else world_mask
+        wp.launch(
+            kernels_body.reset_hinge_coordinates,
+            dim=model.joint_count,
+            inputs=[
+                state.body_q,
+                model.joint_type,
+                model.joint_dof_dim,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
+                model.joint_axis,
+                model.joint_world,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_q,
+                mask,
+            ],
+            outputs=[state.joint_q],
+            device=model.device,
+        )
 
     def _allocate_force_work(self, requires_grad: bool) -> tuple[wp.array | None, wp.array | None]:
         model = self.model
@@ -284,7 +335,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             self.integrate_particles(model, state_in, state_out, dt, control=control, particle_f=particle_f)
             self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, body_f=body_f)
 
-            if self._has_revolute_joints:
+            if self._has_winding_joints:
                 wp.launch(
                     kernels_body.update_revolute_coordinates,
                     dim=model.joint_count,
@@ -292,6 +343,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                         state_out.body_q,
                         state_out.body_qd,
                         model.joint_type,
+                        model.joint_dof_dim,
                         model.joint_parent,
                         model.joint_child,
                         model.joint_X_p,
