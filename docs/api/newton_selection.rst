@@ -4,7 +4,7 @@
 newton.selection
 ================
 
-Select articulations and deformable objects by label to read or update state.
+Select actuators, articulations, and deformable objects to read or update arrays.
 
 See :ref:`selection-api` for an example and the supported array and mask shapes.
 
@@ -17,6 +17,7 @@ See :ref:`selection-api` for an example and the supported array and mask shapes.
    :toctree: _generated
    :nosignatures:
 
+   ActuatorView
    ArticulationView
 
 .. autosummary::
