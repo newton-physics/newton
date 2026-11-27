@@ -433,10 +433,11 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
 
-SemiImplicit angular springs use principal coordinates in [-pi, pi). Crossing
-that boundary produces a force jump of ``2*pi*stiffness`` and can destabilize
-motion near it. Use Featherstone or MuJoCo for boundary-crossing or multi-turn
-motion; see :ref:`passive-joint-springs` for details.
+SemiImplicit angular springs use the continuous hinge coordinate carried in
+``State.joint_q`` for REVOLUTE and one-axis D6 joints, so crossing the -pi/pi
+boundary no longer produces a force jump. After a body-only reset, call
+``solver.reset(state, world_mask)`` to re-anchor winding from the body poses.
+See :ref:`passive-joint-springs` for details.
 
 **Actuation and control**
 

@@ -43,6 +43,28 @@ For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.S
 use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
 use maximal coordinates.
+For :class:`~newton.solvers.SolverSemiImplicit`, REVOLUTE joints additionally use
+:attr:`~newton.State.joint_q` as persistent winding state. ``step`` reads those
+entries to select the continuous angle and updates only the REVOLUTE entries
+of ``state_out.joint_q`` and ``state_out.joint_qd``. Entries for other joint types
+are not refreshed; these arrays are not a complete generalized-state output.
+
+When migrating code that initializes, resets, or copies only ``body_q``, also
+initialize, reset, or copy the corresponding REVOLUTE ``joint_q`` entries.
+Otherwise the old winding remains and can introduce whole turns into drive
+and limit errors. For joints included in articulation metadata, reset from
+generalized coordinates by assigning the intended ``joint_q`` and ``joint_qd``
+to the state, then call
+``newton.eval_fk(model, state.joint_q, state.joint_qd, state)``.
+For a reset from body poses that intentionally discards winding, call
+``newton.eval_ik(model, state, state.joint_q, state.joint_qd)`` afterward.
+Neither helper updates standalone or loop-closing joints outside articulation
+metadata. Reset their body poses and assign the corresponding REVOLUTE
+``joint_q`` entries directly.
+During normal multi-turn stepping, do not write ``eval_ik`` output back into
+state coordinates: it replaces the continuous REVOLUTE angle with a wrapped angle. Relative rotation must remain
+below half a turn per step for winding reconstruction to be unambiguous.
+
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
 .. _Rod joints:
@@ -286,7 +308,16 @@ including followers. To read joint coordinates from the updated body state, use
 
 .. code-block:: python
 
-  newton.eval_ik(model, state_out, state_out.joint_q, state_out.joint_qd)
+  joint_q_readout = wp.clone(state_out.joint_q)
+  joint_qd_readout = wp.clone(state_out.joint_qd)
+  newton.eval_ik(model, state_out, joint_q_readout, joint_qd_readout)
+
+Keep these read-out arrays separate from the simulation state, and reuse them
+across steps. In particular, writing wrapped angles back to
+``SolverSemiImplicit`` state would discard its REVOLUTE winding and change
+subsequent drive and limit errors by whole turns. Only joints included in
+articulation metadata are refreshed; standalone and loop-closing entries in
+the read-out arrays retain their copied values.
 
 This reads the solved body configuration; it does not project the exact mimic
 formula onto it. Calling :func:`newton.eval_mimic` on the untouched joint
@@ -1468,16 +1499,13 @@ Other solvers do not consume these properties yet. As with other model
 features, unsupported springs do not produce automatic warnings; consult the
 :doc:`solver feature matrix </solvers/index>` when choosing a solver.
 
-SemiImplicit derives angular coordinates from body orientations and does not
-track multi-turn winding. Its scalar angular springs use a principal angle in
-[-pi, pi), independent of quaternion sign. The displacement ``rest_q - q`` is
-not wrapped, so rest coordinates outside that interval still produce preload.
-However, crossing the -pi/pi boundary makes the coordinate jump by 2*pi and
-the spring force jump by ``2*pi*stiffness``. This can destabilize motion even
-near an equilibrium close to that boundary. Use Featherstone or MuJoCo, which
-store unwrapped scalar joint coordinates, for boundary-crossing or multi-turn
-motion. SemiImplicit winding support is tracked in
-`issue #4547 <https://github.com/newton-physics/newton/issues/4547>`_.
+SemiImplicit retains multi-turn winding for REVOLUTE joints and D6 joints with
+exactly one angular DOF in ``State.joint_q``. Scalar angular springs use that
+continuous coordinate, so the ``rest_q - q`` displacement does not jump at the
+-pi/pi boundary. Tracking requires less than pi radians of relative rotation
+per step. After a body-only reset or an ``eval_ik`` write that discards winding,
+call ``solver.reset(state, world_mask)`` to re-anchor those hinge coordinates
+from the body poses.
 
 MJCF ``stiffness`` and ``springref`` import into the core fields without explicit
 solver custom-attribute registration.
