@@ -136,6 +136,9 @@ class _ConvexSupportData(NamedTuple):
     lut: np.ndarray
     vertex_offsets: np.ndarray
     neighbors: np.ndarray
+    # Vertex count of the collision layout the tables index. Deduplication can
+    # shrink it, unless surface velocities keep the source mesh's vertices.
+    vertex_count: int = -1
 
 
 class Mesh:

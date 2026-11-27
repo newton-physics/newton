@@ -520,13 +520,13 @@ def _build_convex_support_data(source: Mesh) -> _ConvexSupportData | None:
         if topology is None:
             return None
         empty = np.empty(0, dtype=np.int32)
-        return _ConvexSupportData(flags, empty, empty, edge_block)
+        return _ConvexSupportData(flags, empty, empty, edge_block, len(source.vertices))
 
     lut, offsets, neighbors = acceleration
     if topology is not None:
         offsets += len(edge_block)
         neighbors = np.concatenate((edge_block, neighbors))
-    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors)
+    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors, len(source.vertices))
 
 
 def _build_joint_ancestor(
@@ -16585,7 +16585,8 @@ class ModelBuilder:
                         # its tables on the original mesh that owns the geometry.
                         owner = self.shape_source[shape_idx]
                         tables = owner._convex_support_data
-                        if tables is None:
+                        # Toggling surface velocities changes the deduplicated layout.
+                        if tables is None or tables.vertex_count != len(source.vertices):
                             tables = _build_convex_support_data(source)
                             owner._convex_support_data = tables
 
