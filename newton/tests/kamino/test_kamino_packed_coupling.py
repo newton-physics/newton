@@ -70,6 +70,13 @@ class TestKaminoPackedCoupling(NewtonTestCase):
 
     def test_mixed_coupling_rhs_and_response(self):
         """Refresh mixed row mappings and match dense coupling, RHS, and response Grams."""
+        self._check_mixed_coupling(decoupled=False)
+
+    def test_mixed_coupling_with_decoupled_joint_rows(self):
+        """Match the dense coupling with the body share and joint-space couplings of decoupled joint rows."""
+        self._check_mixed_coupling(decoupled=True)
+
+    def _check_mixed_coupling(self, decoupled: bool):
         if not wp.get_cuda_device_count():
             self.skipTest("Packed response requires CUDA tile kernels")
         device = wp.get_cuda_devices()[0]
@@ -97,6 +104,21 @@ class TestKaminoPackedCoupling(NewtonTestCase):
         p = rng.uniform(0.5, 1.5, 55).astype(np.float32)
         free = rng.normal(0, 0.1, 55).astype(np.float32)
         impulses = rng.normal(0, 0.1, 55).astype(np.float32)
+        # With decoupling, the bounded joint rows n and n + 1 of each world have a body share, and
+        # they couple to the joint dynamics row 3 and to each other (see `update_decoupled_coupled_rows`).
+        share = np.ones(55, dtype=np.float32)
+        coupled_row = np.full((55, 2), -1, dtype=np.int32)
+        coupled_coef = np.zeros((55, 2), dtype=np.float32)
+        if decoupled:
+            for w in range(2):
+                share[pvio[w] + n : pvio[w] + n + 2] = (0.3, 0.6)
+                coupled_row[pvio[w] + 3] = (n, n + 1)
+                coupled_row[pvio[w] + n] = (3, n + 1)
+                coupled_row[pvio[w] + n + 1] = (3, n)
+                for row in (3, n, n + 1):
+                    coupled_coef[pvio[w] + row] = rng.normal(0, 0.5, 2)
+            problem.joint_decoupling = object()
+        row_scale = wp.zeros(55, dtype=wp.float32, device=device)
         jacobian = SimpleNamespace(
             nzb_coords=ints(coords),
             nzb_start=ints([0, count]),
@@ -107,7 +129,14 @@ class TestKaminoPackedCoupling(NewtonTestCase):
         bsm = SimpleNamespace(
             nzb_coords=jacobian.nzb_coords, nzb_start=jacobian.nzb_start, num_nzb=jacobian.num_nzb, nzb_values=weighted
         )
-        problem.delassus = SimpleNamespace(_needs_update=False, bsm=bsm, constraint_jacobian=jacobian)
+        problem.delassus = SimpleNamespace(
+            _needs_update=False,
+            bsm=bsm,
+            constraint_jacobian=jacobian,
+            _decoupled_coupled_row=wp.array(coupled_row, dtype=wp.int32, device=device),
+            _decoupled_coupled_coef=wp.array(coupled_coef, dtype=wp.float32, device=device),
+            _jacobian_row_scale=row_scale,
+        )
         problem.data = SimpleNamespace(
             dim=ints([n + nu] * 2),
             njc=ints([n] * 2),
@@ -149,10 +178,13 @@ class TestKaminoPackedCoupling(NewtonTestCase):
             p *= np.float32(1.01)
             jacobian.nzb_values.assign(raw)
             problem.data.P.assign(p)
+            # The row scale of the Jacobian includes the body share of decoupled joint rows
+            scaled = p * share
+            row_scale.assign(scaled)
             weighted.assign(
                 np.asarray(
                     [
-                        p[pvio[i // count] + row] * raw[i] @ mass[body : body + 6, body : body + 6]
+                        scaled[pvio[i // count] + row] * raw[i] @ mass[body : body + 6, body : body + 6]
                         for i, (row, body) in enumerate(coords)
                     ],
                     dtype=np.float32,
@@ -176,8 +208,14 @@ class TestKaminoPackedCoupling(NewtonTestCase):
                     selected += list(range(len(joint) + 1 + 3 * contact, len(joint) + 7))
                 for index in selected:
                     row, body = local[index]
-                    dense[row, body : body + 6] += p[pvio[world] + row] * raw[world * count + index]
+                    dense[row, body : body + 6] += scaled[pvio[world] + row] * raw[world * count + index]
                 expected = (dense @ mass @ dense.T)[:n, n:]
+                # Joint-space couplings of the bilateral rows to the bounded rows (columns 0 and 1)
+                for row in range(n):
+                    for k in range(2):
+                        col = coupled_row[pvio[world] + row, k] - n
+                        if 0 <= col < 2:
+                            expected[row, col] += coupled_coef[pvio[world] + row, k] * scaled[pvio[world] + n + col]
                 expected_c.append(expected)
                 decoded = np.zeros((n, nu))
                 for col in range(nu):
