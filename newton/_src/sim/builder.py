@@ -2848,7 +2848,7 @@ class ModelBuilder:
         self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
         """Row counts covered by the latest custom-frequency owner resolution."""
         self._placement_filled_attribute_keys: set[str] = set()
-        """Custom attributes whose defaults a placed copy replaced; later rows may omit them without a warning."""
+        """Custom attributes a placed copy extended past their authored rows; :meth:`finalize` accepts them short."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
@@ -4864,14 +4864,14 @@ class ModelBuilder:
         def source(name: str) -> list:
             return builder._eq_list(f"equality_constraint_{name}")
 
-        def destination(name: str) -> list:
+        def destination(name: str, targets: np.ndarray) -> list:
             attr = self._eq_attr(f"equality_constraint_{name}")
             if attr.values is None:
                 attr.values = []
-            # Defaults become values here, so a row added later that omits this frame is no missed row.
-            if len(builder._eq_values_raw(f"equality_constraint_{name}")) < builder._equality_constraint_count:
+            if targets.max() >= len(attr.values):
+                # Rows past the authored column get values, so one added later without this frame is no missed row.
+                attr.values.extend([None] * (self._equality_constraint_count - len(attr.values)))
                 self._placement_filled_attribute_keys.add(attr.key)
-            attr.values.extend([None] * (self._equality_constraint_count - len(attr.values)))
             return attr.values
 
         # Rows are selected once in the source; arrays below are shaped (moved copy, row, ...).
@@ -4886,9 +4886,9 @@ class ModelBuilder:
             anchors = source("anchor")
             points = pack_warp_values([anchors[row] for row in anchored.tolist()], wp.vec3)
             points = quat_rotate_rows(xforms[:, None, 3:], points[None]) + xforms[:, None, :3]
-            values = destination("anchor")
-            targets = (starts[:, None] + anchored[None]).ravel().tolist()
-            for target, point in zip(targets, points.reshape(-1, 3), strict=True):
+            targets = starts[:, None] + anchored[None]
+            values = destination("anchor", targets)
+            for target, point in zip(targets.ravel().tolist(), points.reshape(-1, 3), strict=True):
                 values[target] = wp.vec3.from_buffer_copy(point)
         welded = np.concatenate((world_first, world_second))
         if len(welded):
@@ -4900,7 +4900,7 @@ class ModelBuilder:
             second[..., 3:] = quat_multiply_rows(second[..., 3:], transform_inverse_rows(xforms)[:, None, 3:])
             targets = starts[:, None] + welded[None]
             placed = np.concatenate((first, second), axis=1)
-            store_transform_rows(destination("relpose"), targets.ravel(), placed.reshape(-1, 7))
+            store_transform_rows(destination("relpose", targets), targets.ravel(), placed.reshape(-1, 7))
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
         """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
@@ -17878,7 +17878,7 @@ class ModelBuilder:
             # Only MODEL attributes are checked here; non-MODEL ones are filled at runtime via
             # _add_custom_attributes. An empty values list opts into defaults and stays silent;
             # partial population (some values, but fewer than the frequency expects) usually
-            # signals a missed row, so it warns, unless a placed copy filled the column.
+            # signals a missed row, so it warns, unless a placed copy extended the column.
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
                 if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
