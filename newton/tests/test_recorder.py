@@ -353,9 +353,17 @@ def _compare_serialized_data(test, data1, data2):
 def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_extension: str):
     """Helper function to test model and state recorder with a specific file format."""
     builder = newton.ModelBuilder()
+    builder.add_material("unused")
+    surface = builder.add_material("surface")
+    builder.set_material_pair(surface, surface, mu=0.25, restitution=0.5)
     body = builder.add_body()
-    builder.add_shape_capsule(body)
-    model = builder.finalize(device=device)
+    builder.add_shape_capsule(body, cfg=builder.ShapeConfig(material_id=surface))
+    scene = newton.ModelBuilder()
+    scene.replicate(builder, 2)
+    model = scene.finalize(device=device, material_pairs_per_world=True)
+    values = model.material_pair_values.numpy().copy()
+    values["mu"][1, 0] = 0.0
+    model.material_pair_values.assign(values)
 
     states = []
     for i in range(3):
@@ -392,13 +400,26 @@ def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_
         test.assertIsNotNone(new_recorder.deserialized_model)
 
         # Test that we can create a new model and restore it
-        restored_model = newton.Model(device=device)
+        destination = newton.ModelBuilder()
+        default = destination.add_material("destination")
+        body = destination.add_body()
+        destination.add_shape_capsule(body, cfg=destination.ShapeConfig(material_id=default))
+        playback_scene = newton.ModelBuilder()
+        playback_scene.replicate(destination, 2)
+        restored_model = playback_scene.finalize(device=device)
         new_recorder.playback_model(restored_model)
+        test.assertEqual(restored_model.material_names, model.material_names)
 
         # Basic model validation - check that key properties match
         test.assertEqual(restored_model.body_count, model.body_count)
         test.assertEqual(restored_model.joint_count, model.joint_count)
         test.assertEqual(restored_model.shape_count, model.shape_count)
+
+        test.assertEqual(restored_model.get_material_pair_index(surface, surface), 0)
+        test.assertEqual(restored_model.get_material_pair_index(surface, surface + (1 << 32)), -1)
+        test.assertEqual(restored_model.material_pair_values.device, model.device)
+        np.testing.assert_array_equal(restored_model.material_pair_values.numpy(), values)
+        np.testing.assert_array_equal(restored_model.shape_material_id.numpy(), model.shape_material_id.numpy())
 
         # Test state history
         test.assertEqual(len(recorder.history), len(new_recorder.history))

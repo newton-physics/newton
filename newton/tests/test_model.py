@@ -4393,6 +4393,89 @@ class TestModelJoints(unittest.TestCase):
 
 
 class TestModelWorld(unittest.TestCase):
+    def test_material_ids_allocate_on_first_assignment(self):
+        """Keep shape material IDs implicit until a shape acquires a material."""
+        template = newton.ModelBuilder()
+        template.add_shape_sphere(-1, radius=0.1)
+        scene = newton.ModelBuilder()
+        scene.replicate(template, copy_count=3)
+        material = scene.add_material("surface")
+
+        self.assertIsNone(template._shape_material_id)
+        self.assertIsNone(scene._shape_material_id)
+        self.assertIsNone(scene.finalize(device="cpu").shape_material_id)
+        # Configured pairs allocate IDs so that solver pair lookups have an array to read.
+        paired = newton.ModelBuilder()
+        paired.add_builder(scene)
+        paired.set_material_pair("surface", "surface", mu=0.1)
+        np.testing.assert_array_equal(paired.finalize(device="cpu").shape_material_id.numpy(), [-1, -1, -1])
+
+        scene.add_shape_sphere(-1, radius=0.1, cfg=scene.ShapeConfig(material_id=material))
+        scene.add_shape_sphere(-1, radius=0.1)
+        model = scene.finalize(device="cpu")
+        np.testing.assert_array_equal(model.shape_material_id.numpy(), [-1, -1, -1, material, -1])
+        self.assertIsNone(model.material_pair_values)
+
+    def test_material_pair_registry_reused_across_builder_copies(self):
+        """Resolve same-source pairs consistently across batched, sequential, and multi-world copies."""
+        template = newton.ModelBuilder()
+        material = template.add_material("surface")
+        template.set_material_pair(material, material, mu=0.25)
+        template.add_shape_sphere(-1, radius=0.1, cfg=template.ShapeConfig(material_id=material))
+
+        for separate_worlds in (False, True):
+            with self.subTest(separate_worlds=separate_worlds):
+                sequential = newton.ModelBuilder()
+                sequential.add_material("surface")
+                for _ in range(4):
+                    if separate_worlds:
+                        fresh = newton.ModelBuilder()
+                        fresh_id = fresh.add_material("surface")
+                        fresh.set_material_pair(fresh_id, fresh_id, mu=0.25)
+                        fresh.add_shape_sphere(-1, radius=0.1, cfg=fresh.ShapeConfig(material_id=fresh_id))
+                        sequential.add_world(fresh)
+                    else:
+                        sequential.add_builder(template)
+                batched = newton.ModelBuilder()
+                batched.add_material("surface")
+                batched.replicate(template, copy_count=4, separate_worlds=separate_worlds)
+                actual = sequential.finalize(device="cpu", material_pairs_per_world=True)
+                expected = batched.finalize(device="cpu", material_pairs_per_world=True)
+                self.assertEqual(actual.material_names, ("surface",))
+                np.testing.assert_array_equal(actual.shape_material_id.numpy(), [0, 0, 0, 0])
+                first, second = actual.shape_material_id.numpy()[:2]
+                self.assertEqual(actual.get_material_pair_index(first, second), 0)
+                self.assertEqual(actual.get_material_pair_index(0, first), 0)
+                self.assertEqual(actual.material_pair_values.shape, (4 if separate_worlds else 1, 1))
+                np.testing.assert_array_equal(
+                    actual.material_pair_values.numpy(), expected.material_pair_values.numpy()
+                )
+
+        scene = newton.ModelBuilder()
+        scene.add_builder(template)
+        template.set_material_pair(material, material, mu=0.75)
+        # Different values for a merged named pair usually indicate a name clash.
+        with self.assertWarnsRegex(newton.NewtonWarning, r"\('surface', 'surface'\)"):
+            scene.add_builder(template)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.NewtonWarning)
+            scene.add_builder(template)
+        other = newton.ModelBuilder()
+        other.add_material("unused")
+        other_material = other.add_material("surface")
+        other.set_material_pair("surface", "surface", mu=0.75)
+        other.add_shape_sphere(-1, radius=0.1, cfg=other.ShapeConfig(material_id=other_material))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.NewtonWarning)
+            scene.add_builder(other)
+        model = scene.finalize(device="cpu")
+        np.testing.assert_array_equal(model.shape_material_id.numpy(), [0, 0, 0, 0])
+        np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"], [[0.75]])
+        self.assertEqual(model.get_material_pair_index("surface", "surface"), 0)
+        self.assertEqual(model.get_material_pair_index("surface", "unused"), -1)
+        self.assertEqual(model.get_material_pair_index("unknown", "surface"), -1)
+        self.assertEqual(scene.add_material("surface"), 0)
+
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 

@@ -2386,9 +2386,9 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
    * - ``mu_static``
-     - Coefficient of static (break-away) friction; ``None`` keeps a single
-       coefficient (``mu``), and a value below ``mu`` is rejected. Not used by
-       any built-in solver yet.
+     - Coefficient of static (break-away) friction. ``None`` uses ``mu``, and a
+       value below ``mu`` is rejected. Built-in solvers use ``mu`` for per-shape
+       friction. XPBD supports static friction through :ref:`Material pair friction`.
      - None
      - :attr:`~ModelBuilder.ShapeConfig.mu_static`
      - :attr:`~Model.shape_material_mu_static`
@@ -2485,6 +2485,83 @@ Example:
         kd=1000.0,        # Damping
         restitution=0.5,  # Bouncy where supported
     )
+
+.. _Material pair friction:
+
+Material pair friction
+^^^^^^^^^^^^^^^^^^^^^^
+
+.. experimental::
+
+   :meth:`~ModelBuilder.add_material`, :attr:`~ModelBuilder.ShapeConfig.material_id`,
+   :attr:`~Model.shape_material_id`, :attr:`~Model.material_names`, :meth:`~ModelBuilder.set_material_pair`,
+   :attr:`~Model.material_pair_values`, :meth:`~Model.get_material_pair_index`,
+   and the corresponding
+   ``NewtonMaterialPairAPI`` USD authoring schema are experimental.
+
+Assign a material ID to each participating shape and set one or more coefficients
+for the pair before finalizing the model. Omitted coefficients use the solver's
+usual contact behavior. :class:`~newton.solvers.SolverXPBD` uses pair overrides for
+Coulomb, static, torsional, and rolling friction, and for restitution when
+``enable_restitution=True``. A static friction override sets the threshold for
+sticking. Author the static coefficient at or above the Coulomb coefficient
+when setting both. XPBD uses the effective Coulomb coefficient as a lower
+bound on the static threshold, including when runtime updates or shape
+fallback determine the Coulomb coefficient. Beyond the static threshold XPBD
+applies its Coulomb friction limit.
+:class:`~newton.solvers.SolverKamino` uses the Coulomb friction and restitution
+overrides, and consumes torsional and rolling friction in its spatial friction mode.
+
+.. testcode:: material-config
+
+    rubber = builder.add_material("rubber")
+    steel = builder.add_material("steel")
+    builder.set_material_pair(rubber, steel, mu=0.9)
+
+    rubber_cfg = builder.ShapeConfig(material_id=rubber, mu=0.7)
+    steel_cfg = builder.ShapeConfig(material_id=steel, mu=0.4)
+
+Pairs are unordered and can refer to the same material twice. A coefficient
+of zero explicitly sets the pair coefficient. Pair coefficients take precedence
+over individual shape coefficients. Materials are identified by name across
+:meth:`~ModelBuilder.add_builder`, :meth:`~ModelBuilder.add_world`,
+:meth:`~ModelBuilder.replicate`, and :meth:`~ModelBuilder.add_body_variants`.
+Registering an existing name returns its existing ID. This also shares identities
+when each world is constructed from a fresh builder, keeping the pair count
+independent of the number of copies. Material names are global identities, so
+qualify names that could clash across assets; the USD importer uses material
+prim paths. Incoming configured pairs replace existing settings for the same
+named pair, with a :class:`~newton.NewtonWarning` when the coefficients differ;
+unmentioned pairs keep their settings. A shape whose material name matches a
+pair configured only by another asset also receives that pair's overrides.
+Configure scene-wide overrides after merging.
+
+Integer IDs are local to their builder or finalized model and may change on merge.
+Use names to configure pairs across builders or to look up a finalized pair:
+
+.. code-block:: python
+
+    builder.set_material_pair("rubber", "steel", mu=0.9)
+
+All worlds share one row of pair coefficients by default. To assign values
+independently across worlds, finalize with ``material_pairs_per_world=True``.
+This allocates five float32 coefficients for each configured pair in each
+world. Look up the pair's column with :meth:`~Model.get_material_pair_index`
+and update :attr:`~Model.material_pair_values` in place. Applications choose
+the sampling distribution and correlations between worlds and coefficients:
+
+.. code-block:: python
+
+    import numpy as np
+
+    model = builder.finalize(material_pairs_per_world=True)
+    column = model.get_material_pair_index("rubber", "steel")
+    rng = np.random.default_rng(123)
+    values = model.material_pair_values.numpy()
+    values["mu"][:, column] = rng.uniform(0.5, 1.0, model.world_count)
+    values["restitution"][:, column] = rng.uniform(0.0, 0.2, model.world_count)
+    model.material_pair_values.assign(values)
+
 
 .. _Contact friction gain and adhesion:
 
@@ -2624,6 +2701,28 @@ without one take ``mu`` and ``mu_static`` from the builder defaults.
         prepend apiSchemas = ["PhysicsCollisionAPI"]
     ) {
         rel material:binding:physics = </RubberMaterial>
+    }
+
+**NewtonMaterialPairAPI**
+
+Apply this API schema to a prim in the imported subtree for each overridden
+pair. Each relationship must target one ``Material`` prim with
+``PhysicsMaterialAPI``. Colliders get their material ID from the corresponding
+physics material binding. Author at least one finite nonnegative coefficient
+at default time under ``newton:materialPair:``: ``mu``, ``muStatic``, ``muTorsional``,
+``muRolling``, or ``restitution``. The same material can be the target of both
+relationships.
+Newton reads these authored properties directly from USD, including with
+schema packages that do not register ``NewtonMaterialPairAPI``.
+
+.. code-block:: usda
+
+    def Scope "RubberOnSteel" (
+        prepend apiSchemas = ["NewtonMaterialPairAPI"]
+    ) {
+        custom rel newton:materialPair:material0 = </RubberMaterial>
+        custom rel newton:materialPair:material1 = </SteelMaterial>
+        custom float newton:materialPair:mu = 0.9
     }
 
 **NewtonMeshCollisionAPI**

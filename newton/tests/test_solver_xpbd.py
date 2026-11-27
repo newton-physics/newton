@@ -2688,6 +2688,135 @@ def test_xpbd_body_pair_reduction_on_curved_support(test, device):
     test.assertLess(outcomes[1][1], max(2 * outcomes[0][1], 0.01))
 
 
+def test_xpbd_material_pair_friction(test, device):
+    """Match explicit pair friction to the equivalent per-shape friction in a sliding contact."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    floor = builder.add_material("floor")
+    surface = builder.add_material("surface")
+    frictionless = builder.add_material("frictionless")
+    missing = builder.add_material("missing")
+    builder.set_material_pair(surface, floor, mu=0.25)
+    builder.set_material_pair(floor, frictionless, mu=0.0)
+    floor_shape = builder.add_ground_plane(cfg=builder.ShapeConfig(material_id=floor, mu=0.5))
+
+    cases = ((surface, 0.5), (None, 0.0), (frictionless, 0.5), (missing, 0.5), (None, 0.5), (missing, 0.25))
+    for i, (material, mu) in enumerate(cases):
+        body = builder.add_body(xform=wp.transform((2.0 * i, 0.0, 0.24), wp.quat_identity()))
+        shape = builder.add_shape_sphere(body, radius=0.25, cfg=builder.ShapeConfig(material_id=material, mu=mu))
+
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    initial_velocity = np.zeros((model.body_count, 6), dtype=np.float32)
+    initial_velocity[:, 0] = 2.0
+    state_in.body_qd.assign(initial_velocity)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_in, contacts)
+    # An external contact can use -1 for a world endpoint without a shape.
+    shape0 = contacts.rigid_contact_shape0.numpy()
+    shape1 = contacts.rigid_contact_shape1.numpy()
+    shape0[(shape0 == floor_shape) & (shape1 == shape)] = -1
+    shape1[(shape1 == floor_shape) & (shape0 == shape)] = -1
+    contacts.rigid_contact_shape0.assign(shape0)
+    contacts.rigid_contact_shape1.assign(shape1)
+    for mode in (wp.DeterministicMode.NOT_GUARANTEED, wp.DeterministicMode.RUN_TO_RUN):
+        with test.subTest(deterministic=mode):
+            solver = newton.solvers.SolverXPBD(model, iterations=2, deterministic=mode)
+            solver.step(state_in, state_out, None, contacts, 0.01)
+
+            velocity = state_out.body_qd.numpy()
+            test.assertLess(float(velocity[3, 0]), float(velocity[0, 0]))
+            test.assertLess(float(velocity[0, 0]), float(velocity[2, 0]))
+            test.assertAlmostEqual(float(velocity[2, 0]), 2.0, delta=1.0e-4)
+            np.testing.assert_allclose(velocity[0], velocity[1], atol=2.0e-4, rtol=0.0)
+            np.testing.assert_allclose(velocity[3], velocity[4], atol=2.0e-4, rtol=0.0)
+            np.testing.assert_allclose(velocity[1], velocity[5], atol=2.0e-4, rtol=0.0)
+
+
+def test_xpbd_material_pairs_per_world(test, device):
+    """Apply independently assigned per-world restitution to a shared floor."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    floor = builder.add_material("floor")
+    sphere = builder.add_material("sphere")
+    with test.assertRaisesRegex(ValueError, "mu_static must be at least mu"):
+        builder.set_material_pair(floor, sphere, mu=1.0, mu_static=0.0)
+    builder.set_material_pair(floor, sphere, mu=0.0, restitution=0.0)
+    builder.set_material_pair(floor, floor, restitution=0.25)
+    builder.add_ground_plane(cfg=builder.ShapeConfig(material_id=floor))
+    radius = 0.05
+    for _ in range(2):
+        builder.begin_world()
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, radius), wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=radius, cfg=builder.ShapeConfig(material_id=sphere))
+        builder.end_world()
+
+    model = builder.finalize(device=device, material_pairs_per_world=True)
+    test.assertEqual(model.material_pair_values.shape, (2, 2))
+    test.assertEqual(model.get_material_pair_index(sphere, sphere + (1 << 32)), -1)
+    test.assertEqual(model.get_material_pair_index(sphere, floor + 0.25), -1)
+    column = model.get_material_pair_index(sphere, floor)
+    floor_column = model.get_material_pair_index(floor, floor)
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+    values = model.material_pair_values.numpy()
+    sampled_restitution = np.array([0.3, 0.7], dtype=np.float32)
+    values["restitution"][:, column] = sampled_restitution
+    model.material_pair_values.assign(values)
+    np.testing.assert_array_equal(model.material_pair_values.numpy()["restitution"][:, floor_column], 0.25)
+    np.testing.assert_array_equal(model.material_pair_values.numpy()["mu"][:, column], 0.0)
+
+    state_in, state_out = model.state(), model.state()
+    forces = np.zeros((2, 6), dtype=np.float32)
+    forces[:, 2] = -10.0 * model.body_mass.numpy()
+    state_in.body_f.assign(forces)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+
+    vz = state_out.body_qd.numpy()[:, 2]
+    np.testing.assert_allclose(vz, sampled_restitution / 6.0, atol=5.0e-4)
+
+
+def test_xpbd_material_pair_angular_and_static_friction(test, device):
+    """Apply each angular override to its own axis and let static friction hold a slowly sliding sphere."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    floor = builder.add_material("floor")
+    cfg = builder.ShapeConfig(
+        material_id=floor,
+        mu=0.0,
+        mu_torsional=0.0,
+        mu_rolling=0.0,
+        friction_mode=newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING,
+    )
+    builder.add_ground_plane(cfg=cfg)
+    cases = ({}, {"mu_torsional": 0.5}, {"mu_rolling": 0.5}, {"mu_static": 10.0})
+    for i, overrides in enumerate(cases):
+        surface = builder.add_material(f"sphere_{i}")
+        builder.set_material_pair(floor, surface, mu=0.0, **overrides)
+        cfg.material_id = surface
+        body = builder.add_body(xform=wp.transform((2.0 * i, 0.0, 0.24), wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.25, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    state_in, state_out = model.state(), model.state()
+    velocity = np.tile([0.2, 0.0, 0.0, 0.0, 2.0, 2.0], (len(cases), 1)).astype(np.float32)
+    velocity[3, 4:] = 0.0
+    state_in.body_qd.assign(velocity)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, None, contacts, 0.01)
+
+    result = state_out.body_qd.numpy()
+    np.testing.assert_allclose(result[0, 4:], [2.0, 2.0], atol=1.0e-5)
+    test.assertAlmostEqual(float(result[1, 4]), 2.0, delta=1.0e-5)
+    test.assertLess(abs(float(result[1, 5])), 0.2)
+    test.assertLess(abs(float(result[2, 4])), 0.2)
+    test.assertAlmostEqual(float(result[2, 5]), 2.0, delta=1.0e-5)
+    test.assertLess(float(result[3, 0]), float(result[0, 0]) - 0.05)
+
+
 class TestSolverXPBD(unittest.TestCase):
     def test_restitution_is_disabled_by_default(self):
         """Keep restitution disabled by default without a deprecation warning."""
@@ -2706,6 +2835,17 @@ class TestSolverXPBD(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
 
+
+add_function_test(TestSolverXPBD, "test_xpbd_material_pair_friction", test_xpbd_material_pair_friction, devices=devices)
+add_function_test(
+    TestSolverXPBD, "test_xpbd_material_pairs_per_world", test_xpbd_material_pairs_per_world, devices=devices
+)
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_material_pair_angular_and_static_friction",
+    test_xpbd_material_pair_angular_and_static_friction,
+    devices=devices,
+)
 
 add_function_test(
     TestSolverXPBD,

@@ -314,7 +314,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         materials: MaterialManagerConfig | None = None
         """
-        Configurations for the material manager and material property mixing.
+        Configurations for contact material property mixing.
         See :class:`MaterialManagerConfig` for more details.
         If `None`, default values will be used.
         """
@@ -949,13 +949,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             device=model.device,
         )
 
-        # Cache one representative shape per material.
-        self._material_first_shape = self._kamino.compute_material_first_shape(
-            self._model_kamino.geoms.material,
-            self._model_kamino.materials.num_materials,
-        )
-        # Scratch scalar for material update validation
-        self._material_update_conflict = wp.empty(1, dtype=wp.int32, device=model.device)
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino
         self._collision_detector_kamino = None
@@ -1434,11 +1427,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Geom offsets are derived from body_com and shape_transform.
             self._update_geom_offsets()
 
-        if flags & ModelFlags.SHAPE_PROPERTIES and self._collision_detector_kamino is not None:
-            # Kamino materials only need to be updated when using the Kamino collision detector.
-            # External Newton contacts read per-shape material values directly and don't use Kamino materials.
-            self._update_materials()
-
         if flags & (ModelFlags.CONSTRAINT_PROPERTIES | ModelFlags.TENDON_PROPERTIES):
             # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
             # When using a coupled solver environment, these flags are meant for one of the other solvers.
@@ -1483,9 +1471,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
             | ModelFlags.ACTUATOR_PROPERTIES
         )
-        if self._collision_detector_kamino is not None:
-            # Material updates check for conflicting shared materials on the host.
-            flags |= ModelFlags.SHAPE_PROPERTIES
         return int(flags)
 
     @override
@@ -1974,12 +1959,3 @@ class SolverKamino(SolverBase, CouplingInterface):
     def _update_joint_transforms(self):
         """Re-derive Kamino joint anchors and axes from Newton's joint transforms."""
         self._kamino.convert_model_joint_transforms(self.model, self._model_kamino.joints)
-
-    def _update_materials(self) -> None:
-        """Refresh Kamino contact-material tables using cached representative shapes."""
-        self._kamino.convert_model_materials(
-            self.model,
-            self._model_kamino,
-            self._material_first_shape,
-            self._material_update_conflict,
-        )

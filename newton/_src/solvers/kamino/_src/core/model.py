@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import warp as wp
 
 # Newton imports
+from .....geometry.materials import MaterialPairTable
 from .....sim import Model
 from ....coupled.model_view import ModelView
 
@@ -28,7 +29,6 @@ from .joints import (
     JointsData,
     JointsModel,
 )
-from .materials import MaterialManager, MaterialPairsModel, MaterialsModel
 from .size import SizeKamino
 from .state import StateKamino
 from .time import TimeData, TimeModel
@@ -539,17 +539,12 @@ class ModelKamino:
     geoms: GeometriesModel | None = None
     """The geometries model container holding all geometry entities in the model."""
 
-    materials: MaterialsModel | None = None
-    """
-    The materials model container holding all material entities in the model.
-    The materials data is currently defined globally to be shared by all worlds.
-    """
+    material_pair_table: MaterialPairTable = field(default_factory=MaterialPairTable)
 
-    material_pairs: MaterialPairsModel | None = None
-    """
-    The material pairs model container holding all material pairs in the model.
-    The material-pairs data is currently defined globally to be shared by all worlds.
-    """
+    @property
+    def shape_material_id(self) -> wp.array[wp.int32] | None:
+        """Return the current Newton material IDs for the converted geometries."""
+        return self._model.shape_material_id if self._model is not None else None
 
     ###
     # Properties
@@ -820,9 +815,6 @@ class ModelKamino:
                         wp.array(arr_start_np, dtype=wp.int32, device=model.device),
                     )
 
-        # Initialize materials manager
-        materials_manager = MaterialManager()
-
         ###
         # Model Attributes
         ###
@@ -859,13 +851,8 @@ class ModelKamino:
                 model=conversion_model,
                 model_size=model_size,
                 model_bodies=model_bodies,
-                materials_manager=materials_manager,
                 include_shape_contact_pairs=include_shape_contact_pairs,
             )
-
-            # Materials
-            model_materials = materials_manager.make_materials_model()
-            model_material_pairs = materials_manager.make_material_pairs_model()
 
         # Construct and return the new ModelKamino instance
         return ModelKamino(
@@ -879,6 +866,5 @@ class ModelKamino:
             bodies=model_bodies,
             joints=model_joints,
             geoms=model_geoms,
-            materials=model_materials,
-            material_pairs=model_material_pairs,
+            material_pair_table=model._material_pair_table,
         )

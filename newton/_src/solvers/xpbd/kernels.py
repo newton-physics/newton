@@ -4,6 +4,7 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
+from ...geometry.materials import MaterialPairProperties, material_pair_value
 from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
 from ...math import (
     vec_abs,
@@ -1968,6 +1969,21 @@ def compute_angular_correction(
 
 
 @wp.func
+def _contact_friction(
+    contact_pairs: wp.array[MaterialPairProperties], tid: int, mu: float, torsional: float, rolling: float
+):
+    static = -1.0
+    if contact_pairs:
+        pair = contact_pairs[tid]
+        mu = material_pair_value(pair.mu, mu)
+        if pair.mu_static >= 0.0:
+            static = wp.max(pair.mu_static, mu)
+        torsional = material_pair_value(pair.mu_torsional, torsional)
+        rolling = material_pair_value(pair.mu_rolling, rolling)
+    return mu, static, torsional, rolling
+
+
+@wp.func
 def _solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -1991,6 +2007,7 @@ def _solve_body_contact_positions(
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
     shape_material_friction_mode: wp.array[wp.int32],
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
@@ -2101,9 +2118,11 @@ def _solve_body_contact_positions(
         mu /= float(mat_nonzero)
         mu_torsional /= float(mat_nonzero)
         mu_rolling /= float(mat_nonzero)
+    mu, mu_static, mu_torsional, mu_rolling = _contact_friction(contact_pairs, tid, mu, mu_torsional, mu_rolling)
     friction_mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
     if (friction_mode & FRICTION_SLIDING_BIT) == 0:
         mu = 0.0
+        mu_static = 0.0
     if (friction_mode & FRICTION_TORSIONAL_BIT) == 0:
         mu_torsional = 0.0
     if (friction_mode & FRICTION_ROLLING_BIT) == 0:
@@ -2138,7 +2157,7 @@ def _solve_body_contact_positions(
     ang_delta_b = angular_b * lambda_n
 
     # linear friction
-    if mu > 0.0:
+    if mu > 0.0 or mu_static > 0.0:
         # add on displacement from surface offsets, this ensures we include any rotational effects due to thickness from feature
         # need to use the current rotation to account for friction due to angular effects (e.g.: slipping contact)
         bx_a = contact_surface_point(X_wb_a, contact_point0[tid], offset_a)
@@ -2190,7 +2209,8 @@ def _solve_body_contact_positions(
             )
 
             # limit friction based on incremental normal force, good approximation to limiting on total force
-            lambda_fr = wp.max(lambda_fr, -lambda_n * mu)
+            if mu_static < 0.0 or lambda_fr < -lambda_n * mu_static:
+                lambda_fr = wp.max(lambda_fr, -lambda_n * mu)
 
             lin_delta_a -= perp * lambda_fr
             lin_delta_b += perp * lambda_fr
@@ -2256,6 +2276,7 @@ def solve_body_contact_positions(
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
     shape_material_friction_mode: wp.array[wp.int32],
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
@@ -2292,6 +2313,7 @@ def solve_body_contact_positions(
         shape_material_mu_torsional,
         shape_material_mu_rolling,
         shape_material_friction_mode,
+        contact_pairs,
         relaxation,
         dt,
         recovery,
@@ -2341,6 +2363,7 @@ def solve_body_contact_positions_per_contact(
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
     shape_material_friction_mode: wp.array[wp.int32],
+    contact_pairs: wp.array[MaterialPairProperties],
     relaxation: float,
     dt: float,
     recovery: MeshRecoveryData,
@@ -2382,6 +2405,7 @@ def solve_body_contact_positions_per_contact(
         shape_material_mu_torsional,
         shape_material_mu_rolling,
         shape_material_friction_mode,
+        contact_pairs,
         relaxation,
         dt,
         recovery,

@@ -22,6 +22,11 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
+from ..geometry.materials import (
+    MaterialPairProperties,
+    MaterialPairTable,
+    material_pair_key,
+)
 from ..utils.deprecation import warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .control import Control
@@ -70,6 +75,7 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "shape_material_kd",
     "shape_material_kf",
     "shape_material_ka",
+    "shape_material_id",
     "shape_material_mu",
     "shape_material_mu_static",
     "shape_material_restitution",
@@ -181,6 +187,28 @@ def _copy_variant_shape_kernel(
     variant_shape = shape_variant_shape[shape]
     if variant_shape >= 0:
         values[shape] = variant_values[variant_shape]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_variant_material_kernel(
+    variants: wp.array[wp.int32],
+    bodies: wp.array[wp.int32],
+    body_variant_count: wp.array[wp.int32],
+    body_variant_rows: wp.array[wp.vec2i],
+    shape_variant_shape: wp.array[wp.int32],
+    variant_values: wp.array[wp.int32],
+    material_start: wp.array[wp.int32],
+    material_ids: wp.array[wp.int32],
+    values: wp.array[wp.int32],
+):
+    i, row = wp.tid()
+    body, _variant, shape = _variant_row(i, row, variants, bodies, body_variant_count, body_variant_rows)
+    if body < 0 or shape < 0:
+        return
+    variant_shape = shape_variant_shape[shape]
+    if variant_shape >= 0:
+        material = variant_values[variant_shape]
+        values[shape] = material_ids[material_start[body] + material] if material >= 0 else -1
 
 
 @wp.kernel(enable_backward=False)
@@ -590,6 +618,8 @@ class Model:
         "_body_variant_first": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_rows": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_inertia_start": AttributeSpec(AttributeFrequency.BODY),
+        "_body_variant_material_start": AttributeSpec(AttributeFrequency.BODY),
+        "_variant_material_ids": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_shape_variant_row": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
@@ -604,6 +634,7 @@ class Model:
         "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_id": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
@@ -1097,6 +1128,16 @@ class Model:
         """Shape contact friction gain [N·s/m], shape [shape_count], float."""
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
+        self.shape_material_id: wp.array[wp.int32] | None = None
+        """Indices into :attr:`material_names`, or -1 for unassigned shapes, shape [shape_count].
+
+        None when no material pair is configured, no shape or variant is assigned a material, and the
+        builder has no material ID data.
+        """
+        self.material_names: tuple[str, ...] = ()
+        """Builder-assigned contact material names, indexed by material ID."""
+        self._material_pair_table = MaterialPairTable()
+        self._material_pair_columns: dict[int, int] = {}
         self.shape_material_mu: wp.array[wp.float32] | None = None
         """Shape coefficient of friction [dimensionless], shape [shape_count], float. The dynamic (kinetic)
         coefficient for solvers that model stick-slip friction (see :attr:`shape_material_mu_static`)."""
@@ -1108,9 +1149,8 @@ class Model:
         :attr:`shape_material_mu` at finalize. The two arrays are independent afterwards: code that edits
         ``shape_material_mu`` at runtime and wants a single coefficient updates this array as well. Set via
         :attr:`ModelBuilder.ShapeConfig.mu_static` or a USD ``physics:staticFriction`` above
-        ``physics:dynamicFriction``. No built-in solver models stick-slip friction yet:
-        :class:`~newton.solvers.SolverKamino` carries the value into its material tables but its contact model
-        uses the dynamic coefficient, and the other solvers read only ``shape_material_mu``."""
+        ``physics:dynamicFriction``. Built-in solvers use :attr:`shape_material_mu` for per-shape friction.
+        XPBD supports a separate static coefficient through :ref:`Material pair friction`."""
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_mu_torsional: wp.array[wp.float32] | None = None
@@ -1557,6 +1597,10 @@ class Model:
         """First variant row and row count of each body, shape [body_count, 2], int."""
         self._body_variant_inertia_start: wp.array[wp.int32] | None = None
         """Start of each body's validated mass properties in ``_variant_mass/com/inertia``, shape [body_count], int."""
+        self._body_variant_material_start: wp.array[wp.int32] | None = None
+        """Start of each body's material remapping in ``_variant_material_ids``, shape [body_count], int."""
+        self._variant_material_ids: wp.array[wp.int32] | None = None
+        """Deduplicated mappings from shared variant materials to this model's material IDs."""
         self._variant_set_labels: list[list[str]] = []
         """Variant labels of each variant set."""
         self._variant_row_shape_start: wp.array[wp.int32] | None = None
@@ -2026,6 +2070,54 @@ class Model:
         """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
         self.batteries: list[BatteryBase] = []
         """List of battery instances for this model."""
+
+    @property
+    def material_pair_values(self) -> wp.array2d[MaterialPairProperties] | None:
+        """Experimental device array of mutable rigid contact material pair values.
+
+        The array has shape [row_count, pair_count], or is None if no pair
+        was configured. By default all worlds share row zero. Finalize with
+        ``material_pairs_per_world=True`` to allocate one row per world.
+        Contacts between two global shapes use row zero. Use
+        :meth:`get_material_pair_index` to find the column for a pair, then
+        update that column in place across any set of worlds. Each negative
+        field selects the solver's usual contact behavior. Supply finite
+        float32 coefficients when updating values in place.
+        """
+        if not self._material_pair_columns:
+            return None
+        return self._material_pair_table.values
+
+    def get_material_pair_index(self, material_a: int | str, material_b: int | str) -> int:
+        """Return the column of an unordered pair in :attr:`material_pair_values`.
+
+        Accept material names or model-local IDs. This experimental method returns
+        -1 for an invalid material or unregistered pair.
+        """
+        try:
+            material_a = self.material_names.index(material_a) if isinstance(material_a, str) else material_a
+            material_b = self.material_names.index(material_b) if isinstance(material_b, str) else material_b
+        except ValueError:
+            return -1
+        if not all(
+            isinstance(value, (int, np.integer)) or wp.types.type_is_int(type(value))
+            for value in (material_a, material_b)
+        ):
+            return -1
+        material_a = int(material_a)
+        material_b = int(material_b)
+        material_count = len(self.material_names)
+        if not (0 <= material_a < material_count and 0 <= material_b < material_count):
+            return -1
+        return self._material_pair_columns.get(material_pair_key(material_a, material_b), -1)
+
+    def _set_material_pair_table(self, keys: list[int] | np.ndarray, values: np.ndarray | None) -> None:
+        table = MaterialPairTable()
+        if values is not None:
+            table.keys = wp.array(keys, dtype=wp.uint64, device=self.device)
+            table.values = wp.array(values, dtype=MaterialPairProperties, device=self.device)
+        self._material_pair_columns = {int(key): column for column, key in enumerate(keys)}
+        self._material_pair_table = table
 
     @property
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
@@ -3118,15 +3210,23 @@ class Model:
     def _variant_copy_launches(self) -> list[wp.Launch]:
         """Recorded copies of every variant shape attribute into the variant rows, rebuilt when an
         array is replaced; :meth:`select_body_variants` sets the selection and dimension."""
-        copies = [(self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES]
+        copies = [
+            (self._variant_shape_geometry[name], getattr(self, name))
+            for name in _SHAPE_VARIANT_ATTRIBUTES
+            if name != "shape_material_id" or self.shape_material_id is not None
+        ]
         copies.extend(self._variant_shape_custom.values())
-        key = tuple(id(array) for pair in copies for array in pair)
+        key = (
+            id(self._body_variant_material_start),
+            id(self._variant_material_ids),
+            *(id(array) for pair in copies for array in pair),
+        )
         if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:
             return self._variant_copy_cache[1]
         empty = wp.empty(0, dtype=wp.int32, device=self.device)
         launches = [
             wp.launch(
-                _copy_variant_shape_kernel,
+                _copy_variant_material_kernel if values is self.shape_material_id else _copy_variant_shape_kernel,
                 dim=(1, 1),
                 inputs=[
                     empty,
@@ -3135,6 +3235,11 @@ class Model:
                     self._body_variant_rows,
                     self._shape_variant_shape,
                     variant_values,
+                    *(
+                        [self._body_variant_material_start, self._variant_material_ids]
+                        if values is self.shape_material_id
+                        else []
+                    ),
                 ],
                 outputs=[values],
                 device=self.device,

@@ -16,10 +16,8 @@ from .core.bodies import (
 from .core.control import ControlKamino
 from .core.conversions import (
     StructuralUpdateViolation,
-    compute_material_first_shape,
     convert_model_joint_actuation,
     convert_model_joint_transforms,
-    convert_model_materials,
     refresh_masked_body_inertia,
     validate_model_structural_updates,
 )
@@ -51,7 +49,6 @@ __all__ = [
     "StateKamino",
     "StructuralUpdateViolation",
     "compute_body_acceleration",
-    "compute_material_first_shape",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
@@ -60,7 +57,6 @@ __all__ = [
     "convert_geom_offset_origin_to_com",
     "convert_model_joint_actuation",
     "convert_model_joint_transforms",
-    "convert_model_materials",
     "refresh_masked_body_inertia",
     "reset_body_acceleration",
     "validate_model_structural_updates",

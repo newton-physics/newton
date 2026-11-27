@@ -33,6 +33,7 @@ from typing import Literal
 
 import warp as wp
 
+from .....geometry.materials import MaterialPairTable, material_pair_value, resolve_material_pair
 from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
@@ -990,6 +991,7 @@ def make_convert_contacts_newton_to_kamino(
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
     cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
+    use_material_pairs: bool = False,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -1001,6 +1003,7 @@ def make_convert_contacts_newton_to_kamino(
             whose margin-shifted distance exceeds the kernel's ``contact_dead_zone``.
         kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
             see :func:`is_immovable_for_kamino`.
+        use_material_pairs: Whether to use authored material pair overrides.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -1030,6 +1033,8 @@ def make_convert_contacts_newton_to_kamino(
         shape_body: wp.array[wp.int32],
         shape_world: wp.array[wp.int32],
         shape_mu: wp.array[wp.float32],
+        material_pair_table: MaterialPairTable,
+        shape_material_id: wp.array[wp.int32],
         shape_restitution: wp.array[wp.float32],
         shape_mu_torsional: wp.array[wp.float32],
         shape_mu_rolling: wp.array[wp.float32],
@@ -1183,7 +1188,6 @@ def make_convert_contacts_newton_to_kamino(
                 return
 
         # Retrieve the material properties for this contact
-        # TODO: Integrate use of material manager to retrieve material properties
         mu_0 = shape_mu[sid_0]
         mu_1 = shape_mu[sid_1]
         epsilon_0 = shape_restitution[sid_0]
@@ -1218,15 +1222,20 @@ def make_convert_contacts_newton_to_kamino(
         kamino_position_B[mcid] = pos_B
         kamino_gapfunc[mcid] = gapfunc
         kamino_frame[mcid] = q_frame
-        kamino_material[mcid] = wp.vec2f(mu, epsilon)
-        kamino_angular_friction[mcid] = wp.vec2f(
-            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
-                shape_mu_torsional[sid_0], shape_mu_torsional[sid_1]
-            ),
-            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
-                shape_mu_rolling[sid_0], shape_mu_rolling[sid_1]
-            ),
+        torsional = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+            shape_mu_torsional[sid_0], shape_mu_torsional[sid_1]
         )
+        rolling = wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+            shape_mu_rolling[sid_0], shape_mu_rolling[sid_1]
+        )
+        if wp.static(use_material_pairs):
+            pair = resolve_material_pair(material_pair_table, shape_material_id, sid_0, sid_1, wid)
+            mu = material_pair_value(pair.mu, mu)
+            epsilon = material_pair_value(pair.restitution, epsilon)
+            torsional = material_pair_value(pair.mu_torsional, torsional)
+            rolling = material_pair_value(pair.mu_rolling, rolling)
+        kamino_material[mcid] = wp.vec2f(mu, epsilon)
+        kamino_angular_friction[mcid] = wp.vec2f(torsional, rolling)
         kamino_stiffness[mcid] = 0.0
         kamino_damping[mcid] = 0.0
         if newton_stiffness:
@@ -1584,6 +1593,7 @@ def convert_contacts_newton_to_kamino(
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
         cull_speculative=cull_speculative_contacts,
         kinematic_only_immovable=kinematic_only_immovable,
+        use_material_pairs=model._material_pair_table.keys is not None and model.shape_material_id is not None,
     )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format.
@@ -1612,6 +1622,8 @@ def convert_contacts_newton_to_kamino(
             model.shape_body,
             model.shape_world,
             model.shape_material_mu,
+            model._material_pair_table,
+            model.shape_material_id,
             model.shape_material_restitution,
             model.shape_material_mu_torsional,
             model.shape_material_mu_rolling,

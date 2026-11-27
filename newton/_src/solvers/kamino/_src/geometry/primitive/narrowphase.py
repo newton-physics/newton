@@ -27,11 +27,15 @@ from ......geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
+from ......geometry.materials import MaterialPairTable, material_pair_value, resolve_material_pair
 from ......geometry.types import GeoType
 from ...core.data import DataKamino
-from ...core.materials import make_get_material_pair_properties
 from ...core.model import ModelKamino
-from ...geometry.contacts import ContactsKaminoData, make_contact_frame_znorm, reserve_contact_capacity
+from ...geometry.contacts import (
+    ContactsKaminoData,
+    make_contact_frame_znorm,
+    reserve_contact_capacity,
+)
 from ...geometry.keying import build_pair_key2
 from .broadphase import CollisionCandidatesData
 
@@ -243,6 +247,7 @@ def add_single_contact(
     normal: wp.vec3f,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -255,6 +260,7 @@ def add_single_contact(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -315,6 +321,7 @@ def add_single_contact(
     contact_gapfunc[mcid] = gapfunc
     contact_frame[mcid] = q_frame
     contact_material[mcid] = material
+    contact_angular_friction[mcid] = angular_friction
     contact_key[mcid] = key
 
 
@@ -334,6 +341,7 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
         margin: wp.float32,
         friction: wp.float32,
         restitution: wp.float32,
+        angular_friction: wp.vec2f,
         distances: wp.types.vector(MAX_CONTACTS, wp.float32),
         positions: wp.types.matrix((MAX_CONTACTS, 3), wp.float32),
         normals: Any,
@@ -349,6 +357,7 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
         contact_gapfunc: wp.array[wp.vec4f],
         contact_frame: wp.array[wp.quatf],
         contact_material: wp.array[wp.vec2f],
+        contact_angular_friction: wp.array[wp.vec2f],
         contact_key: wp.array[wp.uint64],
         contact_overflow_warning_emitted: wp.array[wp.int32],
     ):
@@ -441,6 +450,7 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
                 contact_gapfunc[mcid] = gapfunc
                 contact_frame[mcid] = q_frame
                 contact_material[mcid] = material
+                contact_angular_friction[mcid] = angular_friction
                 contact_key[mcid] = key
 
                 # Increment active contact index
@@ -467,6 +477,7 @@ def sphere_sphere(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -479,6 +490,7 @@ def sphere_sphere(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -501,6 +513,7 @@ def sphere_sphere(
         normal,
         friction,
         restitution,
+        angular_friction,
         contact_model_num,
         contact_world_num,
         contact_wid,
@@ -512,6 +525,7 @@ def sphere_sphere(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -529,6 +543,7 @@ def sphere_cylinder(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -541,6 +556,7 @@ def sphere_cylinder(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -570,6 +586,7 @@ def sphere_cylinder(
         normal,
         friction,
         restitution,
+        angular_friction,
         contact_model_num,
         contact_world_num,
         contact_wid,
@@ -581,6 +598,7 @@ def sphere_cylinder(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -603,6 +621,7 @@ def sphere_capsule(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -615,6 +634,7 @@ def sphere_capsule(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -644,6 +664,7 @@ def sphere_capsule(
         normal,
         friction,
         restitution,
+        angular_friction,
         contact_model_num,
         contact_world_num,
         contact_wid,
@@ -655,6 +676,7 @@ def sphere_capsule(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -672,6 +694,7 @@ def sphere_box(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -684,6 +707,7 @@ def sphere_box(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -706,6 +730,7 @@ def sphere_box(
         normal,
         friction,
         restitution,
+        angular_friction,
         contact_model_num,
         contact_world_num,
         contact_wid,
@@ -717,6 +742,7 @@ def sphere_box(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -784,6 +810,7 @@ def capsule_capsule(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -796,6 +823,7 @@ def capsule_capsule(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -829,6 +857,7 @@ def capsule_capsule(
                 normal,
                 friction,
                 restitution,
+                angular_friction,
                 contact_model_num,
                 contact_world_num,
                 contact_wid,
@@ -840,6 +869,7 @@ def capsule_capsule(
                 contact_gapfunc,
                 contact_frame,
                 contact_material,
+                contact_angular_friction,
                 contact_key,
                 contact_overflow_warning_emitted,
             )
@@ -857,6 +887,7 @@ def capsule_box(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -869,6 +900,7 @@ def capsule_box(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -896,6 +928,7 @@ def capsule_box(
         margin,
         friction,
         restitution,
+        angular_friction,
         distances,
         positions,
         normals,
@@ -910,6 +943,7 @@ def capsule_box(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -932,6 +966,7 @@ def box_box(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -944,6 +979,7 @@ def box_box(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -965,6 +1001,7 @@ def box_box(
         margin,
         friction,
         restitution,
+        angular_friction,
         distances,
         positions,
         normals,
@@ -979,6 +1016,7 @@ def box_box(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -1006,6 +1044,7 @@ def plane_sphere(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -1018,6 +1057,7 @@ def plane_sphere(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -1044,6 +1084,7 @@ def plane_sphere(
         normal,
         friction,
         restitution,
+        angular_friction,
         contact_model_num,
         contact_world_num,
         contact_wid,
@@ -1055,6 +1096,7 @@ def plane_sphere(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -1072,6 +1114,7 @@ def plane_box(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -1084,6 +1127,7 @@ def plane_box(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -1105,6 +1149,7 @@ def plane_box(
         margin,
         friction,
         restitution,
+        angular_friction,
         distances,
         positions,
         normal,
@@ -1119,6 +1164,7 @@ def plane_box(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -1136,6 +1182,7 @@ def plane_ellipsoid(
     margin: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -1148,6 +1195,7 @@ def plane_ellipsoid(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -1172,6 +1220,7 @@ def plane_ellipsoid(
         normal,
         friction,
         restitution,
+        angular_friction,
         contact_model_num,
         contact_world_num,
         contact_wid,
@@ -1183,6 +1232,7 @@ def plane_ellipsoid(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -1200,6 +1250,7 @@ def plane_capsule(
     rest_offset: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -1212,6 +1263,7 @@ def plane_capsule(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -1301,6 +1353,7 @@ def plane_capsule(
             contact_gapfunc[mcid] = gapfunc
             contact_frame[mcid] = q_frame
             contact_material[mcid] = material
+            contact_angular_friction[mcid] = angular_friction
             contact_key[mcid] = key
 
             # Increment active contact index
@@ -1319,6 +1372,7 @@ def plane_cylinder(
     rest_offset: wp.float32,
     friction: wp.float32,
     restitution: wp.float32,
+    angular_friction: wp.vec2f,
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -1331,6 +1385,7 @@ def plane_cylinder(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
@@ -1352,6 +1407,7 @@ def plane_cylinder(
         rest_offset,
         friction,
         restitution,
+        angular_friction,
         distances,
         positions,
         normal,
@@ -1366,6 +1422,7 @@ def plane_cylinder(
         contact_gapfunc,
         contact_frame,
         contact_material,
+        contact_angular_friction,
         contact_key,
         contact_overflow_warning_emitted,
     )
@@ -1400,7 +1457,6 @@ def _primitive_narrowphase(
     default_gap: wp.float32,
     geom_bid: wp.array[wp.int32],
     geom_sid: wp.array[wp.int32],
-    geom_mid: wp.array[wp.int32],
     geom_params: wp.array[wp.vec3f],
     geom_gap: wp.array[wp.float32],
     geom_margin: wp.array[wp.float32],
@@ -1412,11 +1468,9 @@ def _primitive_narrowphase(
     contact_model_max_num: wp.array[wp.int32],
     contact_world_max_num: wp.array[wp.int32],
     material_restitution: wp.array[wp.float32],
-    material_static_friction: wp.array[wp.float32],
     material_dynamic_friction: wp.array[wp.float32],
-    material_pair_restitution: wp.array[wp.float32],
-    material_pair_static_friction: wp.array[wp.float32],
-    material_pair_dynamic_friction: wp.array[wp.float32],
+    material_pair_table: MaterialPairTable,
+    shape_material_id: wp.array[wp.int32],
     contact_overflow_warning_emitted: wp.array[wp.int32],
     # Outputs:
     contact_model_num: wp.array[wp.int32],
@@ -1430,6 +1484,7 @@ def _primitive_narrowphase(
     contact_gapfunc: wp.array[wp.vec4f],
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
+    contact_angular_friction: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
 ):
     # Retrieve the geom-pair index (gpid) from the thread grid
@@ -1453,7 +1508,6 @@ def _primitive_narrowphase(
 
     bid1 = geom_bid[gid1]
     sid1 = geom_sid[gid1]
-    mid1 = geom_mid[gid1]
     params1 = geom_params[gid1]
     gap1 = geom_gap[gid1]
     margin1 = geom_margin[gid1]
@@ -1461,7 +1515,6 @@ def _primitive_narrowphase(
 
     bid2 = geom_bid[gid2]
     sid2 = geom_sid[gid2]
-    mid2 = geom_mid[gid2]
     params2 = geom_params[gid2]
     gap2 = geom_gap[gid2]
     margin2 = geom_margin[gid2]
@@ -1481,16 +1534,13 @@ def _primitive_narrowphase(
     threshold_12 = margin_12 + contact_gap_12
 
     # Retrieve the material properties for the geom pair
-    restitution_12, _, mu_12 = wp.static(make_get_material_pair_properties())(
-        mid1,
-        mid2,
-        material_restitution,
-        material_static_friction,
-        material_dynamic_friction,
-        material_pair_restitution,
-        material_pair_static_friction,
-        material_pair_dynamic_friction,
+    pair = resolve_material_pair(material_pair_table, shape_material_id, gid1, gid2, wid)
+    restitution_12 = material_pair_value(
+        pair.restitution, 0.5 * (material_restitution[gid1] + material_restitution[gid2])
     )
+    mu_12 = material_pair_value(pair.mu, 0.5 * (material_dynamic_friction[gid1] + material_dynamic_friction[gid2]))
+
+    angular_12 = wp.vec2f(material_pair_value(pair.mu_torsional, 0.0), material_pair_value(pair.mu_rolling, 0.0))
 
     # TODO(team): static loop unrolling to remove unnecessary branching
     if sid1 == GeoType.SPHERE and sid2 == GeoType.SPHERE:
@@ -1504,6 +1554,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1515,6 +1566,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1530,6 +1582,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1541,6 +1594,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1559,6 +1613,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1570,6 +1625,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1585,6 +1641,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1596,6 +1653,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1641,6 +1699,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1652,6 +1711,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1667,6 +1727,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1678,6 +1739,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1696,6 +1758,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1707,6 +1770,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1729,6 +1793,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1740,6 +1805,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1755,6 +1821,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1766,6 +1833,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1781,6 +1849,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1792,6 +1861,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1807,6 +1877,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1818,6 +1889,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1833,6 +1905,7 @@ def _primitive_narrowphase(
             margin_12,
             mu_12,
             restitution_12,
+            angular_12,
             contact_model_num,
             contact_world_num,
             contact_wid,
@@ -1844,6 +1917,7 @@ def _primitive_narrowphase(
             contact_gapfunc,
             contact_frame,
             contact_material,
+            contact_angular_friction,
             contact_key,
             contact_overflow_warning_emitted,
         )
@@ -1886,7 +1960,6 @@ def primitive_narrowphase(
             wp.float32(default_gap),
             model.geoms.bid,
             model.geoms.type,
-            model.geoms.material,
             model.geoms.params,
             model.geoms.gap,
             model.geoms.margin,
@@ -1897,12 +1970,10 @@ def primitive_narrowphase(
             candidates.geom_pair,
             contacts.model_max_contacts,
             contacts.world_max_contacts,
-            model.materials.restitution,
-            model.materials.static_friction,
-            model.materials.dynamic_friction,
-            model.material_pairs.restitution,
-            model.material_pairs.static_friction,
-            model.material_pairs.dynamic_friction,
+            model._model.shape_material_restitution,
+            model._model.shape_material_mu,
+            model.material_pair_table,
+            model.shape_material_id,
             contact_overflow_warning_emitted,
         ],
         outputs=[
@@ -1917,6 +1988,7 @@ def primitive_narrowphase(
             contacts.gapfunc,
             contacts.frame,
             contacts.material,
+            contacts.angular_friction,
             contacts.key,
         ],
         device=model.device,

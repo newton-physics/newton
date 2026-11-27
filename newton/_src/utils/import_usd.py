@@ -708,6 +708,7 @@ def parse_usd(
         _owns_descendants,
         _UsdMassProperties,
     )
+    from ..usd._material_pairs import _parse_material_pair  # noqa: PLC0415
     from ..usd._visuals import _UsdVisuals  # noqa: PLC0415
 
     # Capture material defaults at the start of this import.
@@ -2033,11 +2034,17 @@ def parse_usd(
             return
         _deformable_import_cable(_deformable_ctx, set(), roots, cable_prims=cable_prims)
 
-    authored_articulation_root_paths = [
-        str(prim.GetPath())
-        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies())
-        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
-    ]
+    authored_articulation_root_paths = []
+    material_ids: dict[str, int] = {}
+    for prim in Usd.PrimRange(root_prim, traverse_instance_proxies):
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+            authored_articulation_root_paths.append(str(prim.GetPath()))
+        if (
+            prim.HasAuthoredMetadata("apiSchemas")
+            and usd.has_applied_api_schema(prim, "NewtonMaterialPairAPI")
+            and not any(re.match(pattern, str(prim.GetPath())) for pattern in ignore_paths)
+        ):
+            _parse_material_pair(builder, prim, material_ids)
     authored_articulation_root_paths.sort(key=len, reverse=True)
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
@@ -2227,6 +2234,7 @@ def parse_usd(
         visuals=visuals,
         mass_properties=mass_properties,
         material_specs=material_specs,
+        material_ids=material_ids,
         default_shape_density=default_shape_density,
         path_body_map=path_body_map,
         path_shape_map=path_shape_map,

@@ -37,13 +37,12 @@ from .joints import (
     has_friction_cts_wp,
     has_rod_dynamic_cts_wp,
 )
-from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
 from .size import SizeKamino
 from .types import mat63f, to_warp_int32_array, vec6f
 
 if TYPE_CHECKING:
-    from ..core.model import ModelKamino, ModelKaminoInfo
+    from ..core.model import ModelKaminoInfo
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +56,6 @@ __all__ = [
     "convert_joints",
     "convert_model_joint_actuation",
     "convert_model_joint_transforms",
-    "convert_model_materials",
     "convert_rigid_bodies",
     "refresh_masked_body_inertia",
     "validate_model_structural_updates",
@@ -203,77 +201,6 @@ def world_max_contacts_kernel(
     if max_contacts_per_pair >= 0:
         num_contacts = min(num_contacts, max_contacts_per_pair)
     wp.atomic_add(world_max_contacts, world_id, wp.int64(num_contacts))
-
-
-@wp.kernel
-def material_first_shape_kernel(
-    # Inputs:
-    geom_material: wp.array[wp.int32],
-    # Outputs:
-    first_shape: wp.array[wp.int32],
-):
-    """Record the first shape index associated with each material."""
-    shape = wp.tid()
-    material = geom_material[shape]
-    if material >= 0:
-        wp.atomic_min(first_shape, material, shape)
-
-
-@wp.kernel
-def validate_material_update_kernel(
-    shape_friction: wp.array[wp.float32],
-    shape_static_friction: wp.array[wp.float32],
-    shape_restitution: wp.array[wp.float32],
-    geom_material: wp.array[wp.int32],
-    first_shape: wp.array[wp.int32],
-    conflict_material: wp.array[wp.int32],
-):
-    """Find the first material whose shapes have conflicting properties."""
-    shape = wp.tid()
-    material = geom_material[shape]
-    if material < 0:
-        return
-    representative = first_shape[material]
-    if (
-        shape_friction[shape] != shape_friction[representative]
-        or shape_static_friction[shape] != shape_static_friction[representative]
-        or shape_restitution[shape] != shape_restitution[representative]
-    ):
-        wp.atomic_min(conflict_material, 0, material)
-
-
-@wp.kernel
-def update_materials_kernel(
-    # Inputs:
-    shape_friction: wp.array[wp.float32],
-    shape_static_friction: wp.array[wp.float32],
-    shape_restitution: wp.array[wp.float32],
-    first_shape: wp.array[wp.int32],
-    shape_count: int,
-    # Outputs:
-    restitution: wp.array[wp.float32],
-    static_friction: wp.array[wp.float32],
-    dynamic_friction: wp.array[wp.float32],
-    pair_restitution: wp.array[wp.float32],
-    pair_static_friction: wp.array[wp.float32],
-    pair_dynamic_friction: wp.array[wp.float32],
-):
-    """Update Kamino material properties from cached representative shapes.
-
-    The material-zero properties are also copied to the default material pair.
-    """
-    material = wp.tid()
-    shape = first_shape[material]
-    if shape < shape_count:
-        friction = shape_friction[shape]
-        friction_static = shape_static_friction[shape]
-        restitution[material] = shape_restitution[shape]
-        static_friction[material] = friction_static
-        dynamic_friction[material] = friction
-        if material == 0:
-            pair_restitution[0] = shape_restitution[shape]
-            pair_static_friction[0] = friction_static
-            pair_dynamic_friction[0] = friction
 
 
 @wp.kernel
@@ -980,7 +907,6 @@ def geometry_conversion_kernel(
     model_shape_world_start: wp.array[wp.int32],
     model_shape_flags: wp.array[wp.int32],
     model_shape_collision_groups: wp.array[wp.int32],
-    geom_material: wp.array[wp.int32],
     # Outputs:
     geom_gid: wp.array[wp.int32],
     model_num_collidable_geoms: wp.array[wp.int32],
@@ -1002,12 +928,10 @@ def geometry_conversion_kernel(
             geom_gid[shape_id] = shape_id - model_shape_world_start[-2]
 
     # Determine if this shape is collidable and update collidable geom count
-    # for the world. If not collidable, also ensure no material is assigned.
+    # for the world.
     shape_flags = model_shape_flags[shape_id]
     if (shape_flags & ShapeFlags.COLLIDE_SHAPES) != 0 and model_shape_collision_groups[shape_id] > 0:
         wp.atomic_add(model_num_collidable_geoms, 0, 1)
-    else:
-        geom_material[shape_id] = -1
 
 
 @wp.kernel
@@ -1353,110 +1277,6 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
             joints.F_r_Fj,
             joints.X_Bj,
             joints.X_Fj,
-        ],
-        device=model.device,
-    )
-
-
-def compute_material_first_shape(
-    geom_material: wp.array[wp.int32],
-    num_materials: int,
-) -> wp.array[wp.int32]:
-    """Compute the first shape associated with each fixed material ID.
-
-    Args:
-        geom_material: Material ID for each shape.
-        num_materials: Number of registered materials.
-
-    Returns:
-        Per-material shape indices. Materials without an associated shape use
-        the shape count as a sentinel.
-    """
-    shape_count = geom_material.shape[0]
-    first_shape = wp.full(num_materials, shape_count, dtype=wp.int32, device=geom_material.device)
-    if shape_count > 0:
-        wp.launch(
-            kernel=material_first_shape_kernel,
-            dim=shape_count,
-            inputs=[
-                # Inputs:
-                geom_material,
-                # Outputs:
-                first_shape,
-            ],
-            device=geom_material.device,
-        )
-    return first_shape
-
-
-def convert_model_materials(
-    model: Model,
-    model_kamino: ModelKamino,
-    first_shape: wp.array[wp.int32],
-    conflict: wp.array[wp.int32],
-) -> None:
-    """Update Kamino's material properties in place from Newton shape materials.
-
-    Recomputes per-material friction and restitution from
-    ``model.shape_material_mu``, ``model.shape_material_mu_static`` and
-    ``model.shape_material_restitution`` while
-    preserving the material arrays referenced by Kamino's collision detector.
-
-    Args:
-        model: Newton model containing the updated shape materials.
-        model_kamino: Kamino model whose material tables are updated.
-        first_shape: Cached first shape associated with each fixed material ID.
-        conflict: Scratch scalar for reporting conflicting material updates.
-
-    Raises:
-        RuntimeError: If shapes assigned to the same material ID have different
-            material properties and would require splitting that material.
-    """
-    materials = model_kamino.materials
-    conflict.fill_(materials.num_materials)
-
-    # Check each shape against the cached representative for its material.
-    wp.launch(
-        kernel=validate_material_update_kernel,
-        dim=model.shape_count,
-        inputs=[
-            # Inputs:
-            model.shape_material_mu,
-            model.shape_material_mu_static,
-            model.shape_material_restitution,
-            model_kamino.geoms.material,
-            first_shape,
-            # Outputs:
-            conflict,
-        ],
-        device=model.device,
-    )
-
-    conflict_material = int(conflict.numpy()[0])
-    if conflict_material < materials.num_materials:
-        raise RuntimeError(
-            f"Multiple shapes assigned to contact material {conflict_material} attempted to update it with "
-            "different friction or restitution values; recreate SolverKamino to split the material."
-        )
-
-    # Once conflicts have been ruled out, update the material properties in place.
-    wp.launch(
-        kernel=update_materials_kernel,
-        dim=materials.num_materials,
-        inputs=[
-            # Inputs:
-            model.shape_material_mu,
-            model.shape_material_mu_static,
-            model.shape_material_restitution,
-            first_shape,
-            model.shape_count,
-            # Outputs:
-            materials.restitution,
-            materials.static_friction,
-            materials.dynamic_friction,
-            model_kamino.material_pairs.restitution,
-            model_kamino.material_pairs.static_friction,
-            model_kamino.material_pairs.dynamic_friction,
         ],
         device=model.device,
     )
@@ -2158,57 +1978,6 @@ def convert_joints(
     return model_joints
 
 
-def register_materials(model: Model, materials_manager: MaterialManager) -> np.ndarray:
-    """
-    Registers all materials from the given model in the materials manager.
-
-    Args:
-        model: Newton model.
-        materials_manager: Materials manager to register the materials to.
-
-    Returns:
-        NumPy array of material indices for each geom.
-    """
-    # Set up material parameter dictionary
-    material_param_indices: dict[tuple[float, float, float], int] = {}
-    for i, material in enumerate(materials_manager.materials):
-        # Adding already existing (default) materials from material manager, making sure the values
-        # undergo the same transformation as any material parameters in the Newton model (conversion
-        # to np.float32)
-        mu = float(np.float32(material.dynamic_friction))
-        mu_static = float(np.float32(material.static_friction))
-        restitution = float(np.float32(material.restitution))
-        material_param_indices[(mu, mu_static, restitution)] = i
-
-    # Newton material parameters
-    shape_friction = model.shape_material_mu.numpy().tolist()
-    shape_static_friction = model.shape_material_mu_static.numpy().tolist()
-    shape_restitution = model.shape_material_restitution.numpy().tolist()
-    # Mapping from geom to material index
-    geom_material = np.zeros((model.shape_count,), dtype=int)
-    # TODO: Integrate world index for shape material
-    # shape_world_np = model.shape_world.numpy()
-
-    for s in range(model.shape_count):
-        # Check if material with these parameters already exists
-        material_desc = (shape_friction[s], shape_static_friction[s], shape_restitution[s])
-        if material_desc in material_param_indices:
-            material_id = material_param_indices[material_desc]
-        else:
-            material = MaterialDescriptor(
-                name=f"{model.shape_label[s]}_material",
-                restitution=shape_restitution[s],
-                static_friction=shape_static_friction[s],
-                dynamic_friction=shape_friction[s],
-                # wid=shape_world_np[s],
-            )
-            material_id = materials_manager.register(material)
-            material_param_indices[material_desc] = material_id
-        geom_material[s] = material_id
-
-    return geom_material
-
-
 def _restricting_friction_modes(model: Model | ModelView) -> wp.array | None:
     """Copy the shape friction modes when any differs from sliding friction, else return ``None``."""
     modes = model.shape_material_friction_mode
@@ -2223,23 +1992,12 @@ def convert_geometries(
     model: Model | ModelView,
     model_size: SizeKamino,
     model_bodies: RigidBodiesModel,
-    materials_manager: MaterialManager,
     *,
     include_shape_contact_pairs: bool = True,
 ) -> GeometriesModel:
-    # Set up materials
-    geom_material_np = register_materials(model, materials_manager)
-
-    # Update size object
-    model_size.sum_of_num_materials = materials_manager.num_materials
-    model_size.max_of_num_materials = materials_manager.num_materials
-    model_size.sum_of_num_material_pairs = materials_manager.num_material_pairs
-    model_size.max_of_num_material_pairs = materials_manager.num_material_pairs
-
     # Convert shapes to the Kamino data structure
     with wp.ScopedDevice(model.device):
         geom_gid = wp.zeros((model.shape_count,), dtype=wp.int32)
-        geom_material = to_warp_int32_array(geom_material_np)
         model_num_collidable_geoms = wp.zeros((1,), dtype=wp.int32)
 
     wp.launch(
@@ -2250,7 +2008,6 @@ def convert_geometries(
             model.shape_world_start,
             model.shape_flags,
             model.shape_collision_group,
-            geom_material,
         ],
         outputs=[
             geom_gid,
@@ -2298,7 +2055,6 @@ def convert_geometries(
         ptr=model.shape_source_ptr,
         params=model.shape_scale,
         offset=offset,
-        material=geom_material,
         stiffness=model.shape_material_ke,
         damping=model.shape_material_kd,
         torsional_friction=model.shape_material_mu_torsional,

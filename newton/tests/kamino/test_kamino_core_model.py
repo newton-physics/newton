@@ -16,10 +16,6 @@ import newton.tests.kamino.utils.checks as test_util_checks
 from newton import Control, Model, ModelBuilder, State
 from newton._src.solvers.kamino._src.core import ControlKamino, ModelKamino, StateKamino
 from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_origin, convert_body_origin_to_com
-from newton._src.solvers.kamino._src.core.conversions import (
-    compute_material_first_shape,
-    convert_model_materials,
-)
 from newton._src.solvers.kamino._src.core.joints import (
     JOINT_TAUMAX,
     DofActuationPath,
@@ -194,7 +190,7 @@ class TestModelConversions(NewtonTestCase):
         """
         Test that the Newton to Kamino model conversion of a fourbar model with
         distinct per-shape friction/restitution overrides is consistent,
-        exercising the materials dedup path.
+        exercising per-shape contact properties.
         """
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
@@ -260,7 +256,7 @@ class TestModelConversions(NewtonTestCase):
         """
         Test that the Newton to Kamino model conversion of a box-on-plane model
         with distinct per-shape materials loaded from USD is consistent,
-        exercising both multi-world duplication and the materials dedup path.
+        exercising both multi-world duplication and per-shape contact properties.
         """
         asset_file = get_kamino_basics_asset("box_on_plane.usda")
 
@@ -940,119 +936,6 @@ class TestModelConversions(NewtonTestCase):
                 else:
                     np.testing.assert_array_equal(kamino.joints.friction_cts_axis.numpy(), [])
 
-    def test_40_model_conversions_materials_dedup_from_shared_and_distinct_shape_properties(self):
-        """
-        Test that Newton->Kamino conversion deduplicates materials by
-        (static_friction, restitution): shapes sharing identical values collapse
-        onto the same Kamino material, while shapes with distinct values register
-        separate materials.
-        """
-        builder_newton: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_newton)
-
-        builder_newton.begin_world()
-        bid = builder_newton.add_link(
-            label="body0",
-            mass=1.0,
-            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            lock_inertia=True,
-        )
-        # Two shapes sharing the same material properties
-        builder_newton.add_shape_box(
-            label="shapeA0",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.3, restitution=0.1),
-        )
-        builder_newton.add_shape_box(
-            label="shapeA1",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            xform=wp.transformf(wp.vec3f(0.2, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.3, restitution=0.1),
-        )
-        # A third shape with distinct material properties
-        builder_newton.add_shape_box(
-            label="shapeB",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            xform=wp.transformf(wp.vec3f(0.4, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.6, restitution=0.25),
-        )
-        builder_newton.add_joint_fixed(parent=-1, child=bid)
-        builder_newton.end_world()
-
-        model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
-        model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
-
-        # Default material (index 0) plus 2 distinct registered materials
-        self.assertEqual(model_kamino.size.sum_of_num_materials, 3)
-
-        geom_material = model_kamino.geoms.material.numpy()
-        # The two shapes sharing properties must resolve to the same material id
-        self.assertEqual(geom_material[0], geom_material[1])
-        # The shape with distinct properties must resolve to a different material id
-        self.assertNotEqual(geom_material[0], geom_material[2])
-        # Neither matches Kamino's own default material properties
-        self.assertNotEqual(geom_material[0], 0)
-        self.assertNotEqual(geom_material[2], 0)
-
-        static_friction = model_kamino.materials.static_friction.numpy()
-        restitution = model_kamino.materials.restitution.numpy()
-        np.testing.assert_allclose(static_friction[geom_material[0]], 0.3, atol=1e-6)
-        np.testing.assert_allclose(restitution[geom_material[0]], 0.1, atol=1e-6)
-        np.testing.assert_allclose(static_friction[geom_material[2]], 0.6, atol=1e-6)
-        np.testing.assert_allclose(restitution[geom_material[2]], 0.25, atol=1e-6)
-
-    def test_41_model_conversions_noncollidable_shape_has_no_material(self):
-        """
-        Test that a shape without shape collision enabled converts to a Kamino
-        geom with no material assigned (material index -1), even when it shares
-        material properties with a collidable shape.
-        """
-        builder_newton: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_newton)
-
-        builder_newton.begin_world()
-        bid = builder_newton.add_link(
-            label="body0",
-            mass=1.0,
-            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            lock_inertia=True,
-        )
-        builder_newton.add_shape_box(
-            label="collidable",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, restitution=0.2, has_shape_collision=True),
-        )
-        builder_newton.add_shape_box(
-            label="visual_only",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            xform=wp.transformf(wp.vec3f(0.2, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, restitution=0.2, has_shape_collision=False),
-        )
-        builder_newton.add_joint_fixed(parent=-1, child=bid)
-        builder_newton.end_world()
-
-        model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
-        model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
-
-        geom_material = model_kamino.geoms.material.numpy()
-        self.assertNotEqual(geom_material[0], -1)
-        self.assertEqual(geom_material[1], -1)
-
 
 class TestStateControlConversions(NewtonTestCase):
     def setUp(self):
@@ -1204,108 +1087,6 @@ class TestStateControlConversions(NewtonTestCase):
             control_newton,
             attributes=["joint_f", "joint_target_q", "joint_target_qd"],
         )
-
-
-class TestConvertModelMaterials(NewtonTestCase):
-    def setUp(self):
-        if not test_context.setup_done:
-            setup_tests(clear_cache=False)
-        setup_test_output(self)
-        self.default_device = wp.get_device(test_context.device)
-
-    def _build_two_material_model(self) -> tuple[Model, ModelKamino]:
-        """Build a model with 2 shapes sharing a material and 1 shape with a distinct one."""
-        builder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder)
-
-        builder.begin_world()
-        bid = builder.add_link(
-            label="body0",
-            mass=1.0,
-            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            lock_inertia=True,
-        )
-        builder.add_shape_box(
-            label="shapeA0",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.3, restitution=0.1),
-        )
-        builder.add_shape_box(
-            label="shapeA1",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            xform=wp.transformf(wp.vec3f(0.2, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.3, restitution=0.1),
-        )
-        builder.add_shape_box(
-            label="shapeB",
-            body=bid,
-            hx=0.05,
-            hy=0.05,
-            hz=0.05,
-            xform=wp.transformf(wp.vec3f(0.4, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
-            cfg=newton.ModelBuilder.ShapeConfig(mu=0.6, restitution=0.25),
-        )
-        builder.add_joint_fixed(parent=-1, child=bid)
-        builder.end_world()
-
-        model = builder.finalize(skip_validation_joints=True, device=self.default_device)
-        model_kamino = ModelKamino.from_newton(model)
-        return model, model_kamino
-
-    def test_00_updates_material_properties_in_place_from_first_shape(self):
-        """Non-conflicting per-shape updates propagate to the material and pair tables."""
-        model, model_kamino = self._build_two_material_model()
-        geom_material = model_kamino.geoms.material.numpy()
-        mat_a, mat_b = int(geom_material[0]), int(geom_material[2])
-        self.assertEqual(int(geom_material[1]), mat_a)
-        self.assertNotEqual(mat_a, mat_b)
-
-        first_shape = compute_material_first_shape(model_kamino.geoms.material, model_kamino.materials.num_materials)
-        conflict = wp.empty(1, dtype=wp.int32, device=self.default_device)
-
-        # Consistently update both shapes sharing material A, and the shape with material B.
-        mu_np = model.shape_material_mu.numpy()
-        restitution_np = model.shape_material_restitution.numpy()
-        mu_np[0] = mu_np[1] = 0.55
-        restitution_np[0] = restitution_np[1] = 0.35
-        mu_np[2] = 0.8
-        restitution_np[2] = 0.9
-        model.shape_material_mu.assign(mu_np)
-        model.shape_material_mu_static.assign(mu_np)
-        model.shape_material_restitution.assign(restitution_np)
-
-        convert_model_materials(model, model_kamino, first_shape, conflict)
-
-        static_friction = model_kamino.materials.static_friction.numpy()
-        dynamic_friction = model_kamino.materials.dynamic_friction.numpy()
-        restitution = model_kamino.materials.restitution.numpy()
-        np.testing.assert_allclose(static_friction[mat_a], 0.55, atol=1e-6)
-        np.testing.assert_allclose(dynamic_friction[mat_a], 0.55, atol=1e-6)
-        np.testing.assert_allclose(restitution[mat_a], 0.35, atol=1e-6)
-        np.testing.assert_allclose(static_friction[mat_b], 0.8, atol=1e-6)
-        np.testing.assert_allclose(restitution[mat_b], 0.9, atol=1e-6)
-
-    def test_01_conflicting_shape_update_raises(self):
-        """Splitting a material across two shapes that no longer agree must raise."""
-        model, model_kamino = self._build_two_material_model()
-
-        first_shape = compute_material_first_shape(model_kamino.geoms.material, model_kamino.materials.num_materials)
-        conflict = wp.empty(1, dtype=wp.int32, device=self.default_device)
-
-        # Shapes 0 and 1 share a material; give them conflicting friction values.
-        mu_np = model.shape_material_mu.numpy()
-        mu_np[0] = 0.55
-        mu_np[1] = 0.65
-        model.shape_material_mu.assign(mu_np)
-
-        with self.assertRaises(RuntimeError):
-            convert_model_materials(model, model_kamino, first_shape, conflict)
 
 
 ###

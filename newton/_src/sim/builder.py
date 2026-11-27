@@ -80,6 +80,7 @@ from ..geometry.inertia import (
     validate_and_correct_inertia_kernel,
     verify_and_correct_inertia,
 )
+from ..geometry.materials import MaterialPairProperties, material_pair_key
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
@@ -1204,7 +1205,8 @@ class ModelBuilder:
         """The coefficient of static friction [dimensionless], the break-away threshold for sticking
         contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction); a set value must not be
         below :attr:`mu`, so code that overrides :attr:`mu` alone has to resolve this field as well.
-        No built-in solver models stick-slip friction yet; the value is stored for solvers that do."""
+        Built-in solvers use :attr:`mu` for per-shape friction. XPBD supports a separate
+        static coefficient through :ref:`Material pair friction`."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -1299,6 +1301,9 @@ class ModelBuilder:
         ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
         on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
         :meth:`~newton.Mesh.build_sdf` instead."""
+
+        material_id: int | None = field(default=None, kw_only=True)
+        """Optional ID returned by :meth:`ModelBuilder.add_material` for contact pair overrides."""
 
         def configure_sdf(
             self,
@@ -2331,6 +2336,10 @@ class ModelBuilder:
         """Contact friction gains [N·s/m] accumulated for :attr:`Model.shape_material_kf`."""
         self.shape_material_ka: list[float] = []
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
+        self._material_names: dict[int, str] = {}
+        self._material_ids: dict[str, int] = {}
+        self._material_pairs: dict[int, dict[str, float]] = {}
+        self._shape_material_id: list[int] | None = None
         self.shape_material_mu: list[float] = []
         """Friction coefficients accumulated for :attr:`Model.shape_material_mu`."""
         self.shape_material_restitution: list[float] = []
@@ -4561,6 +4570,21 @@ class ModelBuilder:
         shape_starts = starts("shape")
         body_starts = starts("body")
 
+        material_ids = self._merge_material_registry(builder) if copy_count else ()
+        if (
+            counts["shape"]
+            and copy_count
+            and (builder._shape_material_id is not None or self._shape_material_id is not None)
+        ):
+            shape_material_ids = builder._shape_material_id
+            if shape_material_ids is None:
+                shape_material_ids = [-1] * counts["shape"]
+            elif material_ids:
+                shape_material_ids = [
+                    material_ids[material] if material >= 0 else -1 for material in shape_material_ids
+                ]
+            self.shape_material_id.extend(shape_material_ids * copy_count)
+
         attribute_specs.pop("shape_transform")
         shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
         if "shape_transform" not in array_starts:
@@ -4617,7 +4641,10 @@ class ModelBuilder:
                     self.body_shapes[body + int(body_start)] = translated_shapes
             # Copies share the variant sets by identity.
             for body, body_variants in builder._body_variants.items():
-                self._body_variants[body + int(body_start)] = body_variants.shifted(int(shape_start))
+                shifted = body_variants.shifted(int(shape_start))
+                if material_ids:
+                    shifted = replace(shifted, material_ids=tuple(material_ids[i] for i in shifted.material_ids))
+                self._body_variants[body + int(body_start)] = shifted
 
         joint_starts = starts("joint")
         joint_coord_starts = starts("joint_coord")
@@ -6831,6 +6858,129 @@ class ModelBuilder:
                     offset_args.append(proc_args)
                 entry.input_processor_args.append(offset_args)
 
+    @property
+    def shape_material_id(self) -> list[int]:
+        """Contact material IDs per shape, with -1 for unassigned shapes."""
+        if self._shape_material_id is None:
+            self._shape_material_id = [-1] * self.shape_count
+        return self._shape_material_id
+
+    @shape_material_id.setter
+    def shape_material_id(self, values: list[int]) -> None:
+        self._shape_material_id = values
+
+    def _append_shape_material_id(self, shape: int, material_id: int) -> None:
+        if self._shape_material_id is None:
+            if material_id < 0:
+                return
+            self._shape_material_id = [-1] * shape
+        self._shape_material_id.append(material_id)
+
+    def add_material(self, name: str) -> int:
+        """Register a contact material identity for use in shape and pair configuration.
+
+        Args:
+            name: Material identity shared by name across builders and merges.
+
+        Returns:
+            Builder-local material ID, usable as :attr:`ShapeConfig.material_id`.
+
+        See Also:
+            :meth:`set_material_pair` for pair properties and solver support.
+        """
+        if name in self._material_ids:
+            return self._material_ids[name]
+        material_id = len(self._material_names)
+        if material_id > np.iinfo(np.int32).max:
+            raise ValueError("Contact material IDs must fit in a signed 32-bit integer.")
+        self._material_names[material_id] = name
+        self._material_ids[name] = material_id
+        return material_id
+
+    def _validate_material_id(self, material_id: int) -> None:
+        if not self._is_integer_scalar(material_id) or int(material_id) not in self._material_names:
+            raise ValueError(f"Invalid contact material ID {material_id!r}. Use an ID returned by add_material().")
+
+    def _merge_material_registry(self, source: ModelBuilder) -> tuple[int, ...]:
+        """Merge identities by name; the incoming builder replaces configured pairs.
+
+        Warn when a named pair arrives with different coefficients, which usually means
+        that unrelated materials share a name.
+        """
+        materials = tuple(self.add_material(name) for name in tuple(source._material_names.values()))
+        for key, properties in tuple(source._material_pairs.items()):
+            target_key = material_pair_key(materials[key >> 32], materials[key & 0xFFFFFFFF])
+            existing = self._material_pairs.get(target_key)
+            if existing is not None and existing != properties:
+                name_a = self._material_names[target_key >> 32]
+                name_b = self._material_names[target_key & 0xFFFFFFFF]
+                warnings.warn(
+                    f"Merged material pair ({name_a!r}, {name_b!r}) replaces {existing} with {properties}. "
+                    "Use distinct material names for unrelated materials.",
+                    NewtonWarning,
+                    stacklevel=_external_warning_stacklevel(),
+                )
+            self._material_pairs[target_key] = properties.copy()
+        return materials
+
+    def set_material_pair(
+        self,
+        material_a: int | str,
+        material_b: int | str,
+        *,
+        mu: float | None = None,
+        mu_static: float | None = None,
+        mu_torsional: float | None = None,
+        mu_rolling: float | None = None,
+        restitution: float | None = None,
+    ) -> None:
+        """Set overrides for an unordered pair of rigid contact materials.
+
+        This experimental API supplies defaults for all worlds. Each call replaces
+        the pair's properties. For any omitted property the solver uses its usual
+        contact behavior. See :attr:`Model.material_pair_values` for runtime updates.
+
+        Args:
+            material_a: Registered material name or ID returned by :meth:`add_material`
+                on this builder. Use names across builder merges.
+            material_b: Second material name or ID, which may equal the first.
+            mu: Coulomb friction coefficient [dimensionless].
+            mu_static: Static friction coefficient [dimensionless]. Used by XPBD.
+                If ``mu`` is supplied, this coefficient must be at least ``mu``.
+            mu_torsional: Torsional friction coefficient [m].
+            mu_rolling: Rolling friction coefficient [m].
+            restitution: Restitution coefficient [dimensionless].
+
+        Raises:
+            ValueError: If an ID is invalid, no coefficients are supplied, or a
+                coefficient is negative or cannot be stored as a finite float32,
+                or both friction coefficients are supplied and ``mu_static < mu``.
+        """
+        material_a = self._material_ids.get(material_a, -1) if isinstance(material_a, str) else material_a
+        material_b = self._material_ids.get(material_b, -1) if isinstance(material_b, str) else material_b
+        self._validate_material_id(material_a)
+        self._validate_material_id(material_b)
+        properties = {}
+        for name, value in (
+            ("mu", mu),
+            ("mu_static", mu_static),
+            ("mu_torsional", mu_torsional),
+            ("mu_rolling", mu_rolling),
+            ("restitution", restitution),
+        ):
+            if value is None:
+                continue
+            if not 0.0 <= value <= np.finfo(np.float32).max:
+                raise ValueError(
+                    f"Invalid contact material pair {name} {value!r}. Expected a finite nonnegative float32."
+                )
+            properties[name] = float(value)
+        if not properties:
+            raise ValueError("Supply at least one contact material pair coefficient.")
+        if mu is not None and mu_static is not None and mu_static < mu:
+            raise ValueError("Material pair mu_static must be at least mu.")
+        self._material_pairs[material_pair_key(int(material_a), int(material_b))] = properties
+
     def add_builder(
         self,
         builder: ModelBuilder,
@@ -6853,6 +7003,10 @@ class ModelBuilder:
         To add many copies of the same builder to the current world, call
         :meth:`replicate` with ``separate_worlds=False`` instead of calling this method in
         a loop; it merges all copies in one batched pass.
+
+        Material names identify the same material across builders. Incoming pair
+        settings replace existing settings for the same named pair and emit a
+        :class:`~newton.NewtonWarning` when the coefficients differ.
 
         The source builder acts as a template: merged entries may share objects
         with it (and across copies when replicating). Mutating such entries in
@@ -7177,11 +7331,26 @@ class ModelBuilder:
         for declaration in declarations.values():
             self.add_custom_attribute(declaration)
 
+        variant_materials = {}
+        for variant, snapshot in zip(variants, variant_set.variants, strict=True):
+            material_ids = self._merge_material_registry(variant)
+            for shape in snapshot.shapes:
+                material_id = shape.values.get("shape_material_id", -1)
+                if material_id >= 0:
+                    material_id = material_ids[material_id]
+                    shape.values["shape_material_id"] = variant_materials.setdefault(
+                        material_id, len(variant_materials)
+                    )
+
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.
+        material_ids = tuple(variant_materials)
         row_start = self.shape_count
         for row in rows:
             shape = self._append_shape_row(row.seed, body, world, row.label)
+            material_id = row.seed.values.get("shape_material_id", -1)
+            if material_id >= 0:
+                self.shape_material_id[shape] = material_ids[material_id]
             flags = 0
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
@@ -7190,7 +7359,7 @@ class ModelBuilder:
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)
-        self._body_variants[body] = _BodyVariants(variant_set, row_start, initial)
+        self._body_variants[body] = _BodyVariants(variant_set, row_start, initial, material_ids)
 
     def _shape_row_attributes(self) -> list[str]:
         """Builder SHAPE attributes copied verbatim between shapes."""
@@ -7203,8 +7372,10 @@ class ModelBuilder:
     def _append_shape_row(self, row: _VariantShape, body: int, world: int, label: str) -> int:
         """Append a shape with the attributes of ``row``, attached to ``body`` in ``world``."""
         shape = self.shape_count
+        self._append_shape_material_id(shape, row.values.get("shape_material_id", -1))
         for name, value in row.values.items():
-            getattr(self, name).append(value)
+            if name != "shape_material_id":
+                getattr(self, name).append(value)
         self.shape_body[shape] = body
         self.shape_world[shape] = world
         self.shape_label[shape] = label
@@ -10084,6 +10255,9 @@ class ModelBuilder:
         if cfg.is_site:
             cfg._validate_site(label or f"shape_{self.shape_count}")
 
+        if cfg.material_id is not None:
+            self._validate_material_id(cfg.material_id)
+
         resolved_opacity = opacity
         if resolved_opacity is None and src is not None:
             resolved_opacity = getattr(src, "opacity", None)
@@ -10127,6 +10301,8 @@ class ModelBuilder:
         self.shape_material_kd.append(cfg.kd)
         self.shape_material_kf.append(cfg.kf)
         self.shape_material_ka.append(cfg.ka)
+        if cfg.material_id is not None or self._shape_material_id is not None:
+            self._append_shape_material_id(shape, int(cfg.material_id) if cfg.material_id is not None else -1)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_mu_static.append(cfg.mu_static)
         self.shape_material_restitution.append(cfg.restitution)
@@ -11361,6 +11537,11 @@ class ModelBuilder:
                             kf=self.shape_material_kf[shape],
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
+                            material_id=(
+                                self._shape_material_id[shape]
+                                if self._shape_material_id is not None and self._shape_material_id[shape] >= 0
+                                else None
+                            ),
                             mu_static=self.shape_material_mu_static[shape],
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
@@ -16130,6 +16311,7 @@ class ModelBuilder:
         device: Devicelike | None = None,
         *,
         requires_grad: bool = False,
+        material_pairs_per_world: bool = False,
         skip_all_validations: bool = False,
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
@@ -16148,6 +16330,8 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            material_pairs_per_world: Experimental option to allocate independent material pair values per world.
+                The default stores one shared row. See :attr:`Model.material_pair_values`.
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
                 you are confident the model is valid. Also skips mass/inertia correction, including bounds
                 and balancing. Use individual skip flags to retain these corrections. Default is False.
@@ -16225,7 +16409,10 @@ class ModelBuilder:
 
                 with self._raw_array_access():
                     return self._finalize_impl(
-                        device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
+                        device=device,
+                        requires_grad=requires_grad,
+                        validate_inertia=validate_inertia,
+                        material_pairs_per_world=material_pairs_per_world,
                     )
             finally:
                 self._variant_shape_rows.remove(self)
@@ -16240,6 +16427,7 @@ class ModelBuilder:
         *,
         requires_grad: bool = False,
         validate_inertia: bool = True,
+        material_pairs_per_world: bool = False,
     ) -> Model:
         # construct world starts by ensuring they are cumulative and appending
         # tail-end global counts and sum total counts over the entire model.
@@ -16590,6 +16778,20 @@ class ModelBuilder:
             m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
+            m.material_names = tuple(self._material_names.values())
+            # Configured pairs always come with shape IDs, so pair lookups never read a missing array.
+            if self._material_names and (self._shape_material_id is not None or self._material_pairs):
+                shape_material_id = self._shape_material_id
+                if shape_material_id is None:
+                    shape_material_id = [-1] * self.shape_count
+                m.shape_material_id = wp.array(shape_material_id, dtype=wp.int32)
+            if self._material_pairs:
+                pair_keys = sorted(self._material_pairs)
+                row_count = m.world_count if material_pairs_per_world else 1
+                values = np.empty((row_count, len(pair_keys)), dtype=MaterialPairProperties.numpy_dtype())
+                for name in values.dtype.names:
+                    values[name][:] = [self._material_pairs[key].get(name, -1.0) for key in pair_keys]
+                m._set_material_pair_table(pair_keys, values)
             m.shape_material_mu = wp.array(self.shape_material_mu, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad

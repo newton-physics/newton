@@ -2069,7 +2069,7 @@ class ForwardKinematicsSolverConfig:
 @dataclass
 class MaterialManagerConfig(ConfigBase):
     """
-    A container to hold configurations for the internal material manager and material property mixing.
+    Configure contact material property mixing for Newton-generated contacts.
     """
 
     friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average"
@@ -2097,7 +2097,7 @@ class MaterialManagerConfig(ConfigBase):
         Args:
             builder: The model builder instance with which to register the custom attributes.
         """
-        pass  # TODO: Add custom attributes for the MaterialManager when supported by the Kamino USD scene API
+        pass
 
     @override
     @staticmethod

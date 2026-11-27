@@ -204,6 +204,17 @@ formulation.
   :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverKamino`,
   :class:`~newton.solvers.SolverStyle3D`, and
   :class:`~newton.solvers.SolverImplicitMPM`.
+- :ref:`Material pair friction`: :class:`~newton.solvers.SolverKamino` and
+  :class:`~newton.solvers.SolverXPBD`. :class:`~newton.solvers.SolverMuJoCo`
+  does not consume this table. It uses explicit geometry pairs keyed by shape
+  and world, including ``mujoco:pair_friction``, ``mujoco:pair_solref``, and
+  ``mujoco:pair_condim``. Consuming the shared material table in MuJoCo is
+  follow-up work alongside the friction-randomization use case in
+  `issue #5079 <https://github.com/newton-physics/newton/issues/5079>`_.
+  That integration needs to define precedence with explicit geometry pairs
+  and support both collision pipelines. Solver-specific parameters remain
+  on geometry pairs; custom attributes on material pairs require a separate
+  API design.
 - ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverMuJoCo`, and
@@ -233,10 +244,9 @@ formulation.
   :class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverVBD`,
   and the LOX backend of :class:`~newton.solvers.SolverKamino`, on contacts
   whose ``friction_mode`` enables them.
-- ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
-  carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
-  built-in solver distinguishes static from dynamic friction in its contact
-  model yet; all of them use ``mu``.
+- ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static`. Built-in
+  solvers use ``mu`` for per-shape friction. :class:`~newton.solvers.SolverXPBD`
+  supports a separate static coefficient through :ref:`Material pair friction`.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
   contacts used by :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`, and

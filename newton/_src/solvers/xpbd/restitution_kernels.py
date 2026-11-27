@@ -3,6 +3,7 @@
 
 import warp as wp
 
+from ...geometry.materials import MaterialPairProperties, material_pair_value
 from ...geometry.sdf_planar_recovery import MeshRecoveryData, find_recovery_contact
 from ...math import velocity_at_point
 from ...sim.contacts import contact_surface_point, contact_surface_separation
@@ -88,6 +89,7 @@ def build_restitution_manifolds(
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
     shape_material_restitution: wp.array[float],
+    contact_pairs: wp.array[MaterialPairProperties],
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
     contact_offset0: wp.array[wp.vec3],
@@ -160,6 +162,8 @@ def build_restitution_manifolds(
         body_b = shape_body[shape_b]
     if mat_nonzero > 0:
         restitution /= float(mat_nonzero)
+    if contact_pairs:
+        restitution = material_pair_value(contact_pairs[tid].restitution, restitution)
     if body_a == body_b or restitution < 0.0:
         return
 

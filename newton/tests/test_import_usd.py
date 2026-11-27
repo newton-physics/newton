@@ -52,6 +52,88 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 
 class TestImportUsdPhysics(unittest.TestCase):
+    @requires("pxr.Usd", "newton_usd_schemas")
+    def test_material_pair_friction_matches_builder(self):
+        """Import raw material-pair tokens from bound physics materials."""
+        self._check_material_pair_import(registered=False)
+
+    @requires("pxr.Usd", "newton_usd_schemas")
+    def test_material_pair_registered_schema_matches_builder(self):
+        """Import properties declared by the registered NewtonMaterialPairAPI schema."""
+        from pxr import Usd
+
+        if not Usd.SchemaRegistry().FindAppliedAPIPrimDefinition("NewtonMaterialPairAPI"):
+            self.skipTest("NewtonMaterialPairAPI is not registered by the installed newton-usd-schemas.")
+        self._check_material_pair_import(registered=True)
+
+    def _check_material_pair_import(self, *, registered: bool):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        expected = newton.ModelBuilder()
+        material_paths = []
+        expected_ids = []
+        for name in ("Rubber", "Steel"):
+            material = UsdShade.Material.Define(stage, f"/Materials/{name}")
+            physics = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+            physics.CreateDynamicFrictionAttr(0.5)
+            physics.CreateStaticFrictionAttr(0.5)
+            cube = UsdGeom.Cube.Define(stage, f"/World/{name}")
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+            UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(material, materialPurpose="physics")
+            material_paths.append(material.GetPath())
+            material_id = expected.add_material(name)
+            expected_ids.append(material_id)
+            expected.add_shape_box(body=-1, cfg=expected.ShapeConfig(material_id=material_id, mu=0.5))
+
+        pair = stage.DefinePrim("/World/Pair", "Scope")
+        schema = "NewtonMaterialPairAPI"
+        if registered:
+            self.assertTrue(pair.ApplyAPI(schema))
+        else:
+            pair.AddAppliedSchema(schema)
+        for index, path in enumerate(material_paths):
+            name = f"newton:materialPair:material{index}"
+            relationship = pair.GetRelationship(name) if registered else pair.CreateRelationship(name)
+            self.assertTrue(relationship)
+            relationship.SetTargets([path])
+        for field, value in (("mu", 0.25), ("restitution", 0.5)):
+            name = f"newton:materialPair:{field}"
+            attr = pair.GetAttribute(name) if registered else pair.CreateAttribute(name, Sdf.ValueTypeNames.Float)
+            self.assertTrue(attr)
+            attr.Set(value)
+        expected.set_material_pair(*expected_ids, mu=0.25, restitution=0.5)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World", load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+        expected_model = expected.finalize(device="cpu")
+        shape_ids = [result["path_shape_map"][f"/World/{name}"] for name in ("Rubber", "Steel")]
+        np.testing.assert_array_equal(
+            model.shape_material_id.numpy()[shape_ids], expected_model.shape_material_id.numpy()
+        )
+        np.testing.assert_array_equal(
+            model.shape_material_mu.numpy()[shape_ids], expected_model.shape_material_mu.numpy()
+        )
+        self.assertEqual(model.get_material_pair_index(*expected_ids), 0)
+        np.testing.assert_array_equal(model.material_pair_values.numpy(), expected_model.material_pair_values.numpy())
+
+        if registered:
+            return
+
+        mu = pair.GetAttribute("newton:materialPair:mu")
+        mu.Set(-0.25)
+        with self.assertRaisesRegex(ValueError, "Invalid contact material pair mu"):
+            newton.ModelBuilder().add_usd(stage, root_path="/World", load_visual_shapes=False)
+        mu.Set(0.25)
+        for target in ("/World/Steel", "/Missing"):
+            with self.subTest(target=target):
+                pair.GetRelationship("newton:materialPair:material1").SetTargets([target])
+                with self.assertRaisesRegex(ValueError, "must be a physics material"):
+                    newton.ModelBuilder().add_usd(stage, root_path="/World", load_visual_shapes=False)
+
     @requires("pxr.Usd")
     def test_nonfinite_contact_materials_rejected_at_finalize(self):
         """Reject imported non-finite contact materials while preserving finite values and shape labels."""
