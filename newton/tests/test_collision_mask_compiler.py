@@ -10,6 +10,7 @@ import newton
 from newton._src.solvers.mujoco.collision_masks import (
     compile_collision_masks,
     compile_newton_collision_graph,
+    compile_newton_collision_groups,
     verify_collision_mask_compilation,
     verify_newton_collision_graph_compilation,
 )
@@ -296,6 +297,20 @@ class TestNewtonCollisionGraphCompiler(unittest.TestCase):
         self.assertFalse(result.exact)
         self.assertEqual(result.bit_count, 33)
         self.assertGreater(result.uncovered_pair_count, 0)
+        self.assertIsNone(compile_newton_collision_groups(groups))
+
+    def test_groups_compile_beyond_graph_limits(self):
+        """Compile unfiltered signed groups exactly beyond the pair-graph limits."""
+        rng = np.random.default_rng(5530)
+        for shape_count in (0, 1, 9, 40, 300):
+            groups = rng.integers(-5, 9, shape_count, dtype=np.int32)
+            verify_newton_collision_graph_compilation(groups, compile_newton_collision_groups(groups))
+
+        # Negative groups reuse the bits of the positive groups.
+        groups = np.append(np.repeat(np.arange(1, 33, dtype=np.int32), 2), (-1, -2))
+        result = compile_newton_collision_groups(groups)
+        verify_newton_collision_graph_compilation(groups, result)
+        self.assertEqual(result.bit_count, 32)
 
     def test_large_graph_skips_reverse_compilation(self):
         """Skip reverse compilation before allocating a large pair matrix."""

@@ -272,7 +272,7 @@ class TestSensorCameraRays(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "cx, cy, and distortion coefficients must be finite"):
                         SensorCamera.compute_camera_rays_pinhole_opencv(**invalid_calibration)
 
-    def test_pinhole_rays_require_keyword_camera_fov(self):
+    def test_pinhole_rays_require_keyword_fov(self):
         with self.assertRaises(TypeError):
             SensorCamera.compute_camera_rays_pinhole(1, 1, math.radians(45.0))
 
@@ -289,7 +289,7 @@ class TestSensorCameraRays(unittest.TestCase):
             horizontal_aperture=horizontal_aperture,
             vertical_aperture=vertical_aperture,
         ).numpy()
-        expected = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov).numpy()
+        expected = SensorCamera.compute_camera_rays_pinhole(width, height, fov=fov).numpy()
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
 

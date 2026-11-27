@@ -28,14 +28,14 @@ and configuration details. Runnable workflows are available in the
 Body acceleration
 -----------------
 
-Kamino populates :attr:`~newton.State.body_qdd` when the extended state
-attribute is requested. Values are center-of-mass spatial accelerations in the
-world frame, with linear acceleration followed by angular acceleration. For a
-step of duration ``dt``, Kamino reports the discrete step average
-``(body_qd_out - body_qd_in) / dt``. Consequently, a contact impact reports its
-velocity impulse divided by ``dt`` rather than a continuous midpoint
-acceleration. Resetting a state clears the requested acceleration in each reset
-world.
+Kamino populates :attr:`~newton.solvers.SolverBase.Observables.body_qdd` when
+:attr:`~newton.solvers.SolverBase.ObservableKind.BODY_QDD` is requested
+through :meth:`~newton.solvers.SolverBase.observables`. Values are
+center-of-mass spatial accelerations in the world frame, with linear
+acceleration followed by angular acceleration. For a step of duration ``dt``,
+Kamino reports the discrete step average ``(body_qd_out - body_qd_in) / dt``.
+Consequently, a contact impact reports its velocity impulse divided by ``dt``
+rather than a continuous midpoint acceleration.
 
 Choosing a dynamics solver
 --------------------------
@@ -79,8 +79,8 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTBRCM"`` for its bilateral joint solve. Select ``"LDL"``
-explicitly to use the block-sparse backend, which factors the reordered matrix
+Python SCC configurations default to ``"LLTBRCM"`` for the bilateral joint
+solve. Select ``"LDL"`` explicitly to use the block-sparse factorization of the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
 blocks and symbolic fill, supports CPU and CUDA execution, and reuses its
@@ -210,6 +210,27 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
+Configuring Kamino from USD
+---------------------------
+
+SCC scene settings require ``newton-usd-schemas`` 0.8.0 or newer.
+
+Call :meth:`~newton.solvers.SolverKamino.register_custom_attributes` on the
+:class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
+the ``NewtonKaminoSceneAPI`` and ``NewtonKaminoSccSceneAPI`` settings from a USD
+``PhysicsScene``. ``SolverKamino(model)`` and ``SolverKamino.Config.from_model()``
+apply them: an authored value takes precedence over the keyword fallbacks passed
+to ``from_model()``, and a config passed to the solver is used unchanged. SCC
+tuning is read only when SCC is selected. SCC ignores the scene's
+preconditioning setting.
+
+Applying ``NewtonKaminoSccSceneAPI`` alone selects SCC and supplies the
+``"lltb"`` bilateral factorization fallback. An authored bilateral solver
+token takes precedence, followed by the factorization in any Python ``scc``
+configuration passed to ``from_model()``. Author
+``newton:kamino:scc:bilateral:numericalSolver = "lltbrcm"`` to select the
+same factorization as the Python default.
+
 Constraint recovery and material compliance
 -------------------------------------------
 
@@ -315,9 +336,6 @@ This conversion preserves rigid-row recovery. Enabling finite stiffness can
 introduce elastic deflection or bounce, so material gains must suit the intended
 motion rather than reproduce rigid-contact trajectories exactly.
 
-The new settings are configured through Python. USD schema and importer
-extensions for these settings are deferred to a separate change.
-
 The shared recovery/compliance settings currently support PADMM and SCC.
 LOX rejects non-default values for these new settings and retains its existing
 ``config.lox.contact_compliance`` option and recovery controls.
@@ -395,7 +413,8 @@ LOX contact extensions
 ----------------------
 
 Enable these features through ``config.lox`` after selecting
-``dynamics_solver="lox"``. They are disabled by default.
+``dynamics_solver="lox"``. They are disabled by default, except spatial
+friction, which follows the shapes' friction modes.
 
 * ``contact_compliance=True`` turns contacts with a positive per-contact
   stiffness ``k`` [N/m] (:attr:`newton.Contacts.rigid_contact_stiffness`) into
@@ -412,11 +431,15 @@ Enable these features through ``config.lox`` after selecting
   velocity, which better preserves energy in speculative impacts. Restitution
   applies either way: by default, the bounce target is fixed at the beginning of
   the step.
-* ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
-  ``mu_rolling`` coefficients, both in metres. Sliding, torsion, and rolling
-  share one elliptic friction budget. Contacts with zero angular coefficients
-  retain the classical 3D contact solve. Kamino's primitive collision pipeline
-  provides no angular coefficients.
+* Spatial friction applies the shape ``mu_torsional`` and ``mu_rolling``
+  coefficients, both in metres, on contacts whose
+  :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` enables torsional or
+  rolling friction. It is enabled automatically when any shape uses such a
+  mode. Sliding, torsion, and rolling share one elliptic friction budget.
+  Contacts with zero angular coefficients retain the classical 3D contact
+  solve. Kamino's primitive collision pipeline provides no angular
+  coefficients. The ``contact_spatial_friction`` option, which enabled spatial
+  friction on every contact, is deprecated.
 
 Heterogeneous worlds
 --------------------
