@@ -482,9 +482,7 @@ class Example:
         self.solver_observables = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
         if sensing_bodies is not None:
-            self.sensor_contact = SensorContact(
-                self.model, request_contact_attributes=False, sensing_bodies=sensing_bodies, counterpart_bodies="*"
-            )
+            self.sensor_contact = SensorContact(self.model, sensing_bodies=sensing_bodies, counterpart_bodies="*")
             self.collision_pipeline = newton.CollisionPipeline(
                 self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
             )

@@ -115,6 +115,10 @@ def add_flex(
     affects :class:`~newton.solvers.SolverMuJoCo`; elements without an authored
     flex are grouped into one flex per dimension.
 
+    Call it after adding the elements and before
+    :meth:`~newton.ModelBuilder.finalize`. It registers the MuJoCo custom
+    attributes on ``builder`` if they are missing.
+
     Args:
         builder: Model builder receiving the flex.
         tetrahedra: Newton tetrahedron indices; creates a 3D flex.

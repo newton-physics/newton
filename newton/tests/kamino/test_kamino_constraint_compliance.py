@@ -13,7 +13,7 @@ import newton
 from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from newton.solvers import SolverKamino
 from newton.tests.kamino import setup_test_output, setup_tests
-from newton.tests.unittest_utils import NewtonTestCase
+from newton.tests.unittest_utils import NewtonTestCase, requires
 
 
 class TestKaminoConstraintCompliance(NewtonTestCase):
@@ -446,6 +446,69 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
         state = self._step(model, solver)
         expected = 0.25 * 0.02 / 0.01
         self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
+
+    @requires("pxr.Usd", "newton_usd_schemas")
+    def test_usd_compliant_contact_response(self):
+        """Match an imported compliant contact response with the builder-created equivalent."""
+        from pxr import Sdf, Usd
+
+        layer = Sdf.Layer.CreateAnonymous(".usda")
+        self.assertTrue(
+            layer.ImportFromString("""
+#usda 1.0
+(
+    upAxis = "Z"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+)
+def PhysicsScene "Scene" (prepend apiSchemas = ["NewtonKaminoSceneAPI"])
+{
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 10
+    uniform token newton:kamino:dynamicsSolver = "scc"
+    uniform bool newton:kamino:constraints:contactCompliance = true
+}
+def Material "Contact" (prepend apiSchemas = ["PhysicsMaterialAPI", "NewtonMaterialAPI"])
+{
+    float physics:staticFriction = 0
+    float physics:dynamicFriction = 0
+    float newton:contactStiffness = 500
+    float newton:contactDamping = 20
+}
+def Sphere "Ball" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI", "MaterialBindingAPI"]
+)
+{
+    double radius = 0.1
+    float physics:mass = 1
+    double3 xformOp:translate = (0, 0, 0.1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding:physics = </Contact>
+}
+def Cube "Ground" (prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"])
+{
+    double size = 2
+    double3 xformOp:translate = (0, 0, -0.05)
+    double3 xformOp:scale = (1, 1, 0.05)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    rel material:binding:physics = </Contact>
+}
+""")
+        )
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.add_usd(Usd.Stage.Open(layer), load_visual_shapes=False)
+        imported = builder.finalize(device="cpu")
+        solver = SolverKamino(imported)
+        self.assertEqual(solver._config.dynamics_solver, "scc")
+
+        with wp.ScopedDevice("cpu"):
+            reference = self._sphere()
+        reference_solver = self._solver(reference, ConstraintStabilizationConfig(contact_compliance=True))
+        actual = self._step(imported, solver)
+        expected = self._step(reference, reference_solver)
+        self.assertAlmostEqual(float(expected.body_qd.numpy()[0, 2]), -0.08, delta=2.0e-5)
+        np.testing.assert_allclose(actual.body_qd.numpy(), expected.body_qd.numpy(), atol=2.0e-5)
 
     def test_heterogeneous_worlds(self):
         """Keep different material laws and an empty world isolated in packed constraint storage."""

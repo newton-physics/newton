@@ -315,6 +315,8 @@ def get_mesh(
     Use ``load_normals=False`` for geometry-only loading without normal-driven
     vertex splitting.
 
+    When the mesh has faces, points that no face references are dropped.
+
     Example:
 
         .. testcode::
@@ -400,9 +402,9 @@ def get_mesh(
             ``source_point_indices`` is an int32 array with one entry per output
             vertex, indexing the original USD ``points`` array. Split vertices
             repeat their source point index; an unchanged vertex layout returns
-            ``arange(point_count)``. This lets
-            callers map other per-point data, such as bind poses, to the loaded
-            mesh. Only supported for a single ``UsdGeom.Mesh`` prim with no
+            ``arange(point_count)`` without the points that no face references.
+            This lets callers map other per-point data, such as bind poses, to
+            the loaded mesh. Only supported for a single ``UsdGeom.Mesh`` prim with no
             ``root_path``.
 
             .. experimental::
@@ -728,6 +730,24 @@ def get_mesh(
         ):
             uvs = uvs[vertex_indices]
         faces = np.arange(len(vertex_indices), dtype=np.int32).reshape(-1, 3)
+
+    # Points no face references would enter hulls and bounds. Mesh rejects invalid indices below.
+    if faces.size and faces.min() >= 0 and faces.max() < len(points):
+        used = np.zeros(len(points), dtype=bool)
+        used[faces] = True
+        if not used.all():
+            if normals is not None and len(normals) == len(points):
+                normals = normals[used]
+            if (
+                uvs is not None
+                and len(uvs) == len(points)
+                and not (preserve_facevarying_uvs and uvs_interpolation == UsdGeom.Tokens.faceVarying)
+            ):
+                uvs = uvs[used]
+            if return_source_point_indices:
+                source_point_indices = source_point_indices[used]
+            points = points[used]
+            faces = (np.cumsum(used, dtype=np.int32) - 1)[faces]
 
     if return_uv_indices and uvs is not None and uv_indices is None:
         uv_indices = faces.reshape(-1)
