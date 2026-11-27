@@ -3,6 +3,7 @@
 
 """Tests for Newton actuators."""
 
+import bisect
 import dataclasses
 import json
 import math
@@ -5580,12 +5581,13 @@ class TestActuatorBuilder(unittest.TestCase):
             # Actuators are added in stage order, so each robot owns the next half of them.
             per_robot = len(actuator_dofs) // 2
             robot_dofs = []
-            for i, label in enumerate(builder.articulation_label):
-                self.assertEqual(label, f"/World/Robot{i}")
+            for i in range(2):
                 dofs = [actuator_dofs[actuator] for actuator in range(i * per_robot, (i + 1) * per_robot)]
-                for dof in dofs:
-                    self.assertIn(dof, range(dof_start[i], dof_start[i + 1]), label)
-                robot_dofs.append([dof - dof_start[i] for dof in dofs])
+                # Older USD keeps the kinematic base out of the articulation, so a robot can own several.
+                articulations = [bisect.bisect_right(dof_start, dof) - 1 for dof in dofs]
+                for articulation in articulations:
+                    self.assertEqual(builder.articulation_label[articulation], f"/World/Robot{i}")
+                robot_dofs.append([dof - dof_start[a] for dof, a in zip(dofs, articulations, strict=True)])
             self.assertEqual(robot_dofs[0], robot_dofs[1])
             model = builder.finalize()
             batteries = [
