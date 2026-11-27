@@ -67,6 +67,10 @@ available examples:
 See the :ref:`extra-dependencies` section of the installation guide for a
 description of all available extras.
 
+The ``optix`` extra installs only on Python 3.12, on x86-64 Linux or Windows. To use
+the OptiX camera backend from a source checkout there, pass that interpreter to every
+command, for example ``uv run --python 3.12 --extra optix my_script.py``.
+
 Method 2: Using pip in a Virtual Environment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
