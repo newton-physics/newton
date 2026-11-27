@@ -95,6 +95,21 @@ class TestMuJoCoFlex(unittest.TestCase):
         with self.assertWarnsRegex(newton.NewtonWarning, "without stiffness"):
             self.assertEqual(SolverMuJoCo(model).mj_model.neq, 1)
 
+    def test_flexes_keep_a_mask_bit_beside_many_collision_groups(self):
+        """Build flexes beside collision groups that fill all 32 mask bits on their own."""
+        builder = _builder()
+        for group in range(1, 33):
+            body = builder.add_body()
+            cfg = newton.ModelBuilder.ShapeConfig(collision_group=group)
+            for _ in range(9):
+                builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+        _add_rope(builder, 2.0)
+
+        mj_model = SolverMuJoCo(builder.finalize()).mj_model
+
+        self.assertNotEqual(mj_model.flex_contype[0], 0)
+        self.assertFalse(np.any(mj_model.geom_contype & mj_model.flex_contype[0]))
+
     def test_cloth_falls_onto_ground_in_each_world(self):
         """Replicated cloths rest on the ground while a massless particle stays pinned."""
         cloth = _builder()
