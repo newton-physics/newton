@@ -430,6 +430,37 @@ class TestShapeContactPairs(unittest.TestCase):
                 contacts = _estimate_rigid_contacts_per_pair_world(model, np.array(mask))
                 np.testing.assert_array_equal(contacts, [0, estimate])
 
+    def test_per_shape_sums_match_enumerated_pairs(self):
+        """Sum each shape's weighted pairs with masked, equal-key partners as the enumerated pairs do."""
+        rng = np.random.default_rng(5)
+        weights = np.array([[5, 40], [40, 40]])
+        for trial in range(40):
+            count, worlds = int(rng.integers(2, 30)), int(rng.integers(1, 4))
+            first, second = rng.integers(0, count, 4), rng.integers(0, count, 4)
+            low, high = np.minimum(first, second), np.maximum(first, second)
+            filters = np.unique((low[low != high].astype(np.int64) << 32) | high[low != high])
+            flags = np.where(rng.random(count) < 0.9, int(newton.ShapeFlags.COLLIDE_SHAPES), 0)
+            topology = _ShapeContactPairs(
+                rng.integers(-1, 6, count),
+                np.sort(rng.integers(-1, worlds, count)),
+                rng.choice([-2, -1, 0, 1, 2], count),
+                flags,
+                filters,
+                worlds,
+            )
+            categories, keys = rng.integers(0, 2, count), rng.integers(0, 3, count)
+            partners = rng.random(count) < 0.7
+            shapes = rng.integers(0, count, count)
+            expected = np.zeros(count, dtype=np.int64)
+            selected = partners & topology._active()
+            for a, b in topology.build_pairs():
+                if keys[a] == keys[b]:
+                    expected[a] += weights[categories[a], categories[b]] * selected[b]
+                    expected[b] += weights[categories[a], categories[b]] * selected[a]
+            with self.subTest(trial=trial):
+                sums = topology.sum_shape_pairs(shapes, partners, keys=keys, categories=categories, weights=weights)
+                np.testing.assert_array_equal(sums, expected[shapes])
+
     def test_empty_models_and_filtered_scenes(self):
         """Return empty arrays for empty and fully excluded scenes."""
         empty = newton.ModelBuilder().finalize(device="cpu")

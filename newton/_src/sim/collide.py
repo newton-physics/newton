@@ -64,6 +64,7 @@ from ..sim.shape_contact_pairs import (
     _shape_contact_pair_count_for_mask,
     _shape_contact_pair_counts,
     _shape_contact_pair_override,
+    _shape_contact_pair_sums_per_shape,
 )
 from ..sim.state import State
 
@@ -1078,6 +1079,23 @@ def _estimate_rigid_contacts_per_pair_world(
     return (
         primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
         + (counts - primitive_counts) * _RIGID_CONTACTS_PER_MESH_PAIR
+    )
+
+
+def _estimate_rigid_contacts_per_shape(
+    model: Model | ModelView, shapes: np.ndarray, partner_mask: np.ndarray | None = None, *, keys=None
+) -> np.ndarray:
+    """Estimate the contacts of each listed shape's pairs with the shapes ``partner_mask`` selects, of equal ``keys``."""
+    is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _variant_options(model))
+    weights = np.array(
+        [
+            [_RIGID_CONTACTS_PER_PRIMITIVE_PAIR, _RIGID_CONTACTS_PER_MESH_PAIR],
+            [_RIGID_CONTACTS_PER_MESH_PAIR, _RIGID_CONTACTS_PER_MESH_PAIR],
+        ],
+        dtype=np.int64,
+    )
+    return _shape_contact_pair_sums_per_shape(
+        model, shapes, partner_mask, keys=keys, categories=is_mesh.astype(np.int64), weights=weights
     )
 
 

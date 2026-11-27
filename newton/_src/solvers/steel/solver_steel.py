@@ -4209,6 +4209,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             from ...sim.collide import (  # noqa: PLC0415
                 _estimate_rigid_contact_max,
                 _estimate_rigid_contacts_per_pair_world,
+                _estimate_rigid_contacts_per_shape,
             )
 
             body_articulation = self._body_to_articulation.numpy()
@@ -4223,7 +4224,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 # A dense contact is solved in its articulation's world (world 0 for a global one), whatever the
                 # shapes' worlds; a pair of articulations of two worlds is dropped. An aligned shape is a local shape
                 # of an articulation solved in that world, so its pairs bin by shape world as the shared estimate does.
-                # Each other dense shape's pairs count toward its articulation's world.
+                # Each other (moved) dense shape's pairs count toward its articulation's world.
                 solve_world = np.where(dense_shape, plan.articulation_world[np.maximum(shape_articulation, 0)], -1)
                 aligned = dense_shape & (model.shape_world.numpy() == solve_world)
                 moved = dense_shape & ~aligned
@@ -4235,12 +4236,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                 else:
                     world_contacts = _estimate_rigid_contacts_per_pair_world(model, aligned)
                 world_contacts = np.append(world_contacts[1:], np.zeros(world_count, dtype=np.int64))[:world_count]
-                for world in np.unique(solve_world[moved]).tolist():
-                    group = moved & (solve_world == world)
-                    candidates = np.ones_like(group) if immediate else dense_shape & (solve_world == world)
-                    pairs = _estimate_rigid_contacts_per_pair_world(model, candidates)
-                    world_contacts[world] += int(
-                        pairs.sum() - _estimate_rigid_contacts_per_pair_world(model, candidates & ~group).sum()
+                moved_shapes = np.flatnonzero(moved)
+                if moved_shapes.size:
+                    # Each moved shape's pairs, less half of those with another moved shape of its world, which both
+                    # of its pair's shapes count.
+                    touching = _estimate_rigid_contacts_per_shape(
+                        model, moved_shapes, None if immediate else dense_shape, keys=None if immediate else solve_world
+                    )
+                    within = _estimate_rigid_contacts_per_shape(model, moved_shapes, moved, keys=solve_world)
+                    world_contacts += (
+                        np.bincount(solve_world[moved_shapes], weights=touching - within / 2, minlength=world_count)[
+                            :world_count
+                        ]
+                        .round()
+                        .astype(np.int64)
                     )
                 contacts = min(int(contact_max), int(np.max(world_contacts, initial=0)))
             contact_rows = contacts * (_DENSE_ROWS_PER_CONTACT + int(self._contact_torsion_enabled))
