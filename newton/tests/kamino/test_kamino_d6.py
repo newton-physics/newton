@@ -79,7 +79,7 @@ class TestKaminoD6(unittest.TestCase):
         np.testing.assert_allclose(analytic.numpy(), finite_difference.numpy(), atol=8.0e-5, rtol=0.0)
 
     def test_axis_validation_on_construction_and_notification(self):
-        """Reject invalid D6 axes at construction and on model updates."""
+        """Validate D6 axes and report whether axis updates support graph capture."""
         for angular, edited, error in (
             ((1, 0, 0), (0, 1, 0), "cylindrical joint"),
             ((0, 0, 1), (0.6, 0.0, 0.8), "same orthonormal frame"),
@@ -96,6 +96,7 @@ class TestKaminoD6(unittest.TestCase):
                 builder.add_articulation([joint])
                 model = builder.finalize(device=self.device)
                 solver = SolverKamino(model)
+                self.assertFalse(solver.is_notify_model_changed_graphable(newton.ModelFlags.JOINT_PROPERTIES))
                 model.joint_X_p.assign(np.array([[0.1, 0, 0, 0, 0, 0, 1]], dtype=np.float32))
                 solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
                 model.joint_axis.assign(np.array([(1, 0, 0), edited], dtype=np.float32))

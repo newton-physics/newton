@@ -1476,6 +1476,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
             | ModelFlags.ACTUATOR_PROPERTIES
         )
+        if self._has_d6_joints:
+            flags |= ModelFlags.JOINT_PROPERTIES
         if self._collision_detector_kamino is not None:
             # Material updates check for conflicting shared materials on the host.
             flags |= ModelFlags.SHAPE_PROPERTIES
