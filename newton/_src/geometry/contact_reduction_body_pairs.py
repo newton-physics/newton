@@ -467,22 +467,7 @@ class BodyPairReduction:
     def stats(self) -> dict:
         """Whole-run reduction telemetry (forces a device sync; read outside capture).
 
-        Returns:
-            ``probe_failures``: group-table insertions that ran out of probes; each one
-            makes its whole frame write its staged contacts unreduced (counted in ``fallback_frames``).
-            ``invariant_violations``: discarded contacts that out-rank a recorded
-            winner, counted only with :attr:`verify` on.
-            ``cell_clamp_events``: contacts whose spatial cell hit the packed +/-31 range.
-            ``max_contacts_in`` / ``max_contacts_kept``: peak admitted and kept contacts per
-            frame. ``max_contacts_in`` is bounded by the staging capacity, so it does not
-            estimate the capacity a scene needs after an overflow.
-            ``total_frames``, ``sum_contacts_in``, ``sum_contacts_kept``: whole-run totals;
-            ``sum_contacts_kept / sum_contacts_in`` is the achieved reduction ratio.
-            ``max_hashtable_entries`` / ``hashtable_capacity`` / ``hashtable_load``: peak
-            distinct (group pair, bin, cell) entries against the table.
-            ``input_overflow_frames``: frames whose contacts overflowed the staging buffer.
-            ``coverage_fallback_contacts``: automatic-grid contacts retained because
-            their cell contains materially different separations (includes slot winners).
+        Keys are documented on :meth:`newton.CollisionPipeline.body_pair_reduction_stats`.
         """
         self._raise_if_capturing("stats()")
         v = np.zeros(GROUP_STAT_COUNT, dtype=np.int64) if self.reducer is None else self.reducer.group_stats.numpy()

@@ -2848,10 +2848,34 @@ class CollisionPipeline:
     def body_pair_reduction_stats(self) -> dict | None:
         """Whole-run body-pair reduction telemetry, or ``None`` when body-pair reduction is disabled.
 
-        Forces a device sync; call it outside CUDA graph capture. ``fallback_frames`` counts passes that
-        skipped reduction because the group table saturated; such a pass writes its staged contacts unreduced,
-        still bounded by the staging and ``rigid_contact_max`` capacities. ``max_hashtable_entries`` against
-        ``hashtable_capacity`` shows how close the table runs to that limit.
+        Forces a device sync; call it outside CUDA graph capture. Counters accumulate over every collision
+        pass of this pipeline.
+
+        Returns:
+            A dict of ints, except ``hashtable_load`` (float), with these keys:
+
+            - ``total_frames``: collision passes that ran body-pair reduction.
+            - ``fallback_frames``: passes that skipped reduction because the group table saturated. Such a
+              pass writes its staged contacts unreduced, still bounded by the staging and
+              ``rigid_contact_max`` capacities.
+            - ``probe_failures``: group-table insertions that ran out of probes; any one makes its pass a
+              fallback frame.
+            - ``max_hashtable_entries``: peak distinct (group pair, normal bin, cell) entries in one pass.
+            - ``hashtable_capacity``: group-table capacity.
+            - ``hashtable_load``: ``max_hashtable_entries / hashtable_capacity``, the peak load, not the
+              current one.
+            - ``max_contacts_in``, ``max_contacts_kept``: peak contacts staged for and kept by one pass.
+              ``max_contacts_in`` is bounded by the staging capacity, so after a staging overflow it
+              does not measure the capacity the scene needs.
+            - ``sum_contacts_in``, ``sum_contacts_kept``: whole-run totals;
+              ``sum_contacts_kept / sum_contacts_in`` is the achieved reduction ratio.
+            - ``input_overflow_frames``: passes whose contacts overflowed the staging buffer; the excess
+              contacts are dropped.
+            - ``coverage_fallback_contacts``: automatic-coverage contacts kept because their cell holds
+              materially different separations (includes slot winners).
+            - ``cell_clamp_events``: contacts whose spatial cell hit the packed +/-31 range.
+            - ``invariant_violations``: discarded contacts that out-rank a kept one; counted only in
+              verify mode, used by tests.
 
         .. experimental::
         """
