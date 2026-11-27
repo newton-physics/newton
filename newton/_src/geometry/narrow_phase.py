@@ -3275,20 +3275,20 @@ class NarrowPhase:
             mesh_mesh_scan_size = self.max_mesh_mesh_pairs + 1
             self.mesh_mesh_block_offsets = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
             self.mesh_mesh_block_counts = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
-            self.mesh_mesh_scan_scratch = wp.zeros(
+            self._mesh_mesh_scan_scratch = wp.zeros(
                 _scan_scratch_size(self.max_mesh_mesh_pairs, device), dtype=wp.int64, device=device
             )
-            self.mesh_mesh_scan_total = wp.zeros(1, dtype=int, device=device)
+            self._mesh_mesh_scan_total = wp.zeros(1, dtype=int, device=device)
             # Mesh-plane
             self.num_mesh_plane_blocks = target_blocks
             self.mesh_plane_target_blocks = target_blocks
             mesh_plane_scan_size = self.max_mesh_plane_pairs + 1
             self.mesh_plane_block_offsets = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
             self.mesh_plane_block_counts = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
-            self.mesh_plane_scan_scratch = wp.zeros(
+            self._mesh_plane_scan_scratch = wp.zeros(
                 _scan_scratch_size(self.max_mesh_plane_pairs, device), dtype=wp.int64, device=device
             )
-            self.mesh_plane_scan_total = wp.zeros(1, dtype=int, device=device)
+            self._mesh_plane_scan_total = wp.zeros(1, dtype=int, device=device)
         else:
             self.num_mesh_mesh_blocks = self.num_tile_blocks
             self.mesh_mesh_target_blocks = self.num_tile_blocks
@@ -3899,8 +3899,8 @@ class NarrowPhase:
                         block_counts=self.mesh_plane_block_counts,
                         total_vert_count=self.mesh_plane_total_weight,
                         total_num_threads=self.total_num_threads,
-                        scan_scratch=self.mesh_plane_scan_scratch,
-                        scan_total=self.mesh_plane_scan_total,
+                        scan_scratch=self._mesh_plane_scan_scratch,
+                        scan_total=self._mesh_plane_scan_total,
                         device=device,
                         record_tape=False,
                     )
@@ -4093,8 +4093,8 @@ class NarrowPhase:
                         block_counts=self.mesh_mesh_block_counts,
                         total_edge_count=self.mesh_mesh_total_weight,
                         total_num_threads=self.total_num_threads,
-                        scan_scratch=self.mesh_mesh_scan_scratch,
-                        scan_total=self.mesh_mesh_scan_total,
+                        scan_scratch=self._mesh_mesh_scan_scratch,
+                        scan_total=self._mesh_mesh_scan_total,
                         device=device,
                         record_tape=False,
                     )
