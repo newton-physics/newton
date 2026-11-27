@@ -2079,8 +2079,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 the ``"immediate"`` response the pairs that touch an articulated body other than a free
                 body. With ``"propagation"`` only pairs of two links of one articulation stay dense,
                 and the estimate counts every pair of two such articulated bodies as an upper bound
-                (none when ``propagation_same_articulation_rows`` is set). A global articulation's
-                pairs count toward world 0, where it is solved. The result is
+                (none when ``propagation_same_articulation_rows`` is set). A pair counts toward the
+                world that solves it, its articulation's world (world 0 for a global articulation),
+                whatever the worlds of its shapes. The result is
                 at least 32 and at most 256 unless the joint rows alone need more; the attribute reads
                 the resolved capacity. An explicit value is used as given.
             free_body_constraint_max: Capacity of free-body rows per world: free-body contact rows
@@ -2112,7 +2113,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 eager step after the device finishes a sampled step at or after the loss; how many
                 steps later depends on how far the host runs ahead of the device. After a raise, each
                 eager step re-checks the live status, synchronizing, and raises until a
-                :meth:`reset` clears the flagged worlds. Captured steps do not check: call
+                :meth:`reset` clears the flagged worlds; a captured reset clears them when its graph
+                replays. Captured steps do not check: call
                 :meth:`check_constraint_capacity` after replays.
             row_watermark: Accumulate the high-water marks of the per-world row counts of
                 every row family and of the contact count on the device in every step,
@@ -3732,8 +3734,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-        if world_mask is None:
-            # A masked reset keeps both: the live status decides whether the unselected worlds still raise.
+        if world_mask is None and not self.model.device.is_capturing:
+            # A masked or captured reset keeps both: the live status decides whether a later step still raises.
             self._overflow_report_pending = False
             self._overflow_raised = False
         if self._friction_anchors_enabled:
@@ -4218,22 +4220,29 @@ class SolverSteel(SolverBase, CouplingInterface):
                 contact_max = _estimate_rigid_contact_max(model)
             contacts = 0
             if model.shape_contact_pair_count:
-                # Under propagation, pairs of two articulated shapes bound the same-articulation pairs.
-                both = not immediate
-                pair_contacts = _estimate_rigid_contacts_per_pair_world(model, dense_shape, both_selected=both)
-                # Pairs without a global articulated shape are solved in their own world; the others join world 0,
-                # where global articulations are solved.
-                local_dense = dense_shape & (model.shape_world.numpy() >= 0)
-                if both:
-                    local_contacts = _estimate_rigid_contacts_per_pair_world(model, local_dense, both_selected=True)
+                # A dense contact is solved in its articulation's world (world 0 for a global one), whatever the
+                # shapes' worlds; a pair of articulations of two worlds is dropped. An aligned shape is a local shape
+                # of an articulation solved in that world, so its pairs bin by shape world as the shared estimate does.
+                # Each other dense shape's pairs count toward its articulation's world.
+                solve_world = np.where(dense_shape, plan.articulation_world[np.maximum(shape_articulation, 0)], -1)
+                aligned = dense_shape & (model.shape_world.numpy() == solve_world)
+                moved = dense_shape & ~aligned
+                # Under propagation, pairs of two dense shapes bound the same-articulation pairs.
+                if immediate:
+                    world_contacts = _estimate_rigid_contacts_per_pair_world(
+                        model, ~moved
+                    ) - _estimate_rigid_contacts_per_pair_world(model, ~moved & ~aligned)
                 else:
-                    local_contacts = pair_contacts - _estimate_rigid_contacts_per_pair_world(
-                        model, dense_shape & ~local_dense
+                    world_contacts = _estimate_rigid_contacts_per_pair_world(model, aligned)
+                world_contacts = np.append(world_contacts[1:], np.zeros(world_count, dtype=np.int64))[:world_count]
+                for world in np.unique(solve_world[moved]).tolist():
+                    group = moved & (solve_world == world)
+                    candidates = np.ones_like(group) if immediate else dense_shape & (solve_world == world)
+                    pairs = _estimate_rigid_contacts_per_pair_world(model, candidates)
+                    world_contacts[world] += int(
+                        pairs.sum() - _estimate_rigid_contacts_per_pair_world(model, candidates & ~group).sum()
                     )
-                global_contacts = int(pair_contacts.sum() - local_contacts.sum())
-                world_contacts = local_contacts[1:]
-                world_contacts[:1] += global_contacts
-                contacts = min(int(contact_max), int(np.max(world_contacts, initial=global_contacts)))
+                contacts = min(int(contact_max), int(np.max(world_contacts, initial=0)))
             contact_rows = contacts * (_DENSE_ROWS_PER_CONTACT + int(self._contact_torsion_enabled))
         rows = min(joint_rows_max + contact_rows, max(_AUTO_ARTICULATION_CONSTRAINT_MAX, joint_rows_max))
         return min(max(rows, _AUTO_ARTICULATION_CONSTRAINT_MIN), self._dense_max_constraints_limit)

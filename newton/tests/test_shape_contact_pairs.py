@@ -409,8 +409,8 @@ class TestShapeContactPairs(unittest.TestCase):
                     self.assertEqual(compute_required_contact_capacity(model), (2, counts[1:]))
                     self.assertEqual(model.shape_contact_pair_count, 2)
 
-    def test_per_world_contact_estimate_counts_pairs_touching_mask(self):
-        """Count only the pairs with at least one masked shape, or with both, in each world's contact estimate."""
+    def test_per_world_contact_estimate_counts_masked_pairs(self):
+        """Count only the pairs whose two shapes are masked in each world's contact estimate."""
         builder = newton.ModelBuilder()
         builder.begin_world()
         for _ in range(3):
@@ -421,21 +421,14 @@ class TestShapeContactPairs(unittest.TestCase):
         # Three sphere pairs and three sphere-ground pairs, all in world 0; no global pairs.
         np.testing.assert_array_equal(_estimate_rigid_contacts_per_pair_world(model), [0, 30])
         for mask, estimate in (
-            ([True, False, False, False], 15),
-            ([False, False, False, True], 15),
-            ([False, False, False, False], 0),
             ([True, True, True, True], 30),
+            ([True, True, True, False], 15),
+            ([True, False, False, True], 5),
+            ([True, False, False, False], 0),
         ):
             with self.subTest(mask=mask):
                 contacts = _estimate_rigid_contacts_per_pair_world(model, np.array(mask))
                 np.testing.assert_array_equal(contacts, [0, estimate])
-        # Pairs whose two shapes are selected: the three sphere pairs, without the ground.
-        spheres = np.array([True, True, True, False])
-        np.testing.assert_array_equal(
-            _estimate_rigid_contacts_per_pair_world(model, spheres, both_selected=True), [0, 15]
-        )
-        one = np.array([True, False, False, False])
-        np.testing.assert_array_equal(_estimate_rigid_contacts_per_pair_world(model, one, both_selected=True), [0, 0])
 
     def test_empty_models_and_filtered_scenes(self):
         """Return empty arrays for empty and fully excluded scenes."""

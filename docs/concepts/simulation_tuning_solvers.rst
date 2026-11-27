@@ -326,7 +326,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``articulation_constraint_max`` is sized from the model: the joint rows of the
        busiest world plus three rows (four with contact torsion) per contact of the
        collision pipeline's per-world estimate for the contacts that stay dense
-       (a global articulation's contacts count toward world 0, where it is solved),
+       (each contact counts toward the world that solves it: its articulation's world,
+       world 0 for a global articulation, whatever the worlds of its shapes),
        between 32 and 256 rows unless the joint rows alone need more. With the
        ``"immediate"`` response these are the contacts of articulated bodies. With
        ``"propagation"`` only contacts between two links of the same articulation stay

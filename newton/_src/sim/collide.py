@@ -1065,25 +1065,16 @@ def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contac
 
 
 def _estimate_rigid_contacts_per_pair_world(
-    model: Model | ModelView, shape_mask: np.ndarray | None = None, *, both_selected: bool = False
+    model: Model | ModelView, shape_mask: np.ndarray | None = None
 ) -> np.ndarray:
     """Estimate the contacts of the shape pairs of each world, global pairs (slot zero) first.
 
-    A pair belongs to the world of its local shape. ``shape_mask`` keeps only the pairs with at
-    least one selected shape, or with both selected if ``both_selected``.
+    A pair belongs to the world of its local shape. ``shape_mask`` keeps only the pairs whose two shapes are selected.
     """
-    counts = _shape_contact_pair_counts(model)
     is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _variant_options(model))
-    primitive_counts = _shape_contact_pair_counts(model, shape_mask=~is_mesh) if is_mesh.any() else counts
-    if shape_mask is not None:
-        selected = np.asarray(shape_mask, dtype=bool)
-        if both_selected:
-            counts = _shape_contact_pair_counts(model, shape_mask=selected)
-            primitive_counts = _shape_contact_pair_counts(model, shape_mask=selected & ~is_mesh)
-        else:
-            # Pairs with at least one selected shape: all pairs minus those with neither shape selected.
-            counts = counts - _shape_contact_pair_counts(model, shape_mask=~selected)
-            primitive_counts = primitive_counts - _shape_contact_pair_counts(model, shape_mask=~selected & ~is_mesh)
+    counts = _shape_contact_pair_counts(model, shape_mask=shape_mask)
+    primitive = ~is_mesh if shape_mask is None else np.asarray(shape_mask, dtype=bool) & ~is_mesh
+    primitive_counts = _shape_contact_pair_counts(model, shape_mask=primitive) if is_mesh.any() else counts
     return (
         primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
         + (counts - primitive_counts) * _RIGID_CONTACTS_PER_MESH_PAIR
