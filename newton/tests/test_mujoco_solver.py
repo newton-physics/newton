@@ -3242,6 +3242,24 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
 
 class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
+    def test_body_excludes_ignore_bodies_without_collision_shapes(self):
+        class ModelStub:
+            def __init__(self):
+                self.body_shapes = {0: [0, 1], 1: [], 2: [2], 3: [3], 4: [4]}
+
+            def shape_collision_filter_mask(self, pairs):
+                return np.array([tuple(pair) in {(0, 2), (1, 2), (0, 3)} for pair in pairs], dtype=bool)
+
+        model = ModelStub()
+        colliding_shapes = np.array([0, 1, 2, 3])
+        expected = [(0, 2)]
+        for bodies in ([0, 2, 3], [0, 1, 2, 3, 4]):
+            with self.subTest(bodies=bodies):
+                self.assertEqual(
+                    SolverMuJoCo._find_body_collision_filter_pairs(model, np.array(bodies), colliding_shapes),
+                    expected,
+                )
+
     def test_large_graph_skips_before_pair_enumeration(self):
         """Skip large mask graphs before enumerating every shape pair."""
 

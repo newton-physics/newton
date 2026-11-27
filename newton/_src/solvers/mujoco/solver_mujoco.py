@@ -6961,7 +6961,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         for body in selected_bodies:
             shapes = model.body_shapes[body]
             shapes = [s for s in shapes if s in shape_set]
-            body_shapes[body] = shapes
+            if shapes:
+                body_shapes[body] = shapes
+
+        # Bodies without collision geoms cannot collide and need no excludes.
+        selected_bodies = [body for body in selected_bodies if body in body_shapes]
 
         # Batch all candidate shape pairs into one bulk filter query; per-pair
         # membership calls dominate this loop for large body selections.
@@ -6975,13 +6979,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             candidate_pairs.extend((shape_1, shape_2) for shape_1 in shapes_1 for shape_2 in shapes_2)
 
         filtered = model.shape_collision_filter_mask(np.asarray(candidate_pairs, dtype=np.int64).reshape((-1, 2)))
-        # A body pair is excluded when every one of its shape pairs is
-        # filtered. Pairs without colliding shapes cannot collide and need no exclude.
+        # A body pair is excluded when every one of its shape pairs is filtered.
         unfiltered_cumulative = np.concatenate(([0], np.cumsum(~filtered)))
         segment_ends = np.cumsum(pair_counts)
-        excluded = (pair_counts > 0) & (
-            unfiltered_cumulative[segment_ends] == unfiltered_cumulative[segment_ends - pair_counts]
-        )
+        excluded = unfiltered_cumulative[segment_ends] == unfiltered_cumulative[segment_ends - pair_counts]
         return [(selected_bodies[bodies_a[k]], selected_bodies[bodies_b[k]]) for k in np.flatnonzero(excluded)]
 
     @staticmethod
@@ -9470,7 +9471,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         spec.option.disableflags = spec.option.disableflags | int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
         for b1, b2 in body_filters:
             mb1, mb2 = body_mapping[b1], body_mapping[b2]
-            spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
+            spec.add_exclude(bodyname1=mj_bodies[mb1].name, bodyname2=mj_bodies[mb2].name)
 
         # add explicit contact pairs from custom attributes
         mjc_pair_entries = self._init_pairs(model, spec, shape_mapping, first_world)
