@@ -5468,6 +5468,23 @@ def mf_contact_row_dot(
     return out
 
 
+@wp.func
+def contact_max_depenetration_velocity(
+    body_a: int, body_b: int, rigid_body_max_depenetration_velocity: wp.array[float]
+) -> float:
+    """Return the smaller positive finite maximum depenetration velocity of a contact's bodies, else infinity."""
+    bound = float(wp.inf)
+    if body_a >= 0:
+        bound_a = rigid_body_max_depenetration_velocity[body_a]
+        if bound_a > 0.0 and bound_a < bound:
+            bound = bound_a
+    if body_b >= 0:
+        bound_b = rigid_body_max_depenetration_velocity[body_b]
+        if bound_b > 0.0 and bound_b < bound:
+            bound = bound_b
+    return bound
+
+
 @wp.kernel
 def prepare_world_contact_rows(
     contact_count: wp.array[int],
@@ -5499,6 +5516,7 @@ def prepare_world_contact_rows(
     contact_friction_shared_anchor: int,
     restitution_velocity_threshold: float,
     recovery_phi: wp.array[float],
+    rigid_body_max_depenetration_velocity: wp.array[float],
     # outputs
     world_row_type: wp.array2d[int],
     world_row_parent: wp.array2d[int],
@@ -5506,6 +5524,7 @@ def prepare_world_contact_rows(
     world_phi: wp.array2d[float],
     world_target_velocity: wp.array2d[float],
     world_row_rebound_velocity: wp.array2d[float],
+    world_row_max_depenetration_velocity: wp.array2d[float],
 ):
     """Write the metadata of every dense contact's normal row and, when allocated, its friction rows.
 
@@ -5549,6 +5568,9 @@ def prepare_world_contact_rows(
         world_row_parent[world, slot] = -1
         world_row_mu[world, slot] = mu
         world_phi[world, slot] = phi
+        world_row_max_depenetration_velocity[world, slot] = contact_max_depenetration_velocity(
+            body_a, body_b, rigid_body_max_depenetration_velocity
+        )
         point_a_normal, point_b_normal = contact_row_points(
             c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
         )
@@ -6123,6 +6145,34 @@ def compute_world_contact_bias(
         world_rhs[world, i] = rhs
         if contact_w < 1.0:
             world_row_w[world, i] = row_w
+
+
+@wp.kernel
+def bound_world_contact_depenetration_bias(
+    world_constraint_count: wp.array[int],
+    max_constraints: int,
+    world_phi: wp.array2d[float],
+    world_row_type: wp.array2d[int],
+    world_target_velocity: wp.array2d[float],
+    world_row_max_depenetration_velocity: wp.array2d[float],
+    pgs_beta: float,
+    dt: float,
+    # in/out
+    world_rhs: wp.array2d[float],
+):
+    """Bound the Baumgarte term of each penetrating dense contact by the row's maximum depenetration velocity.
+
+    Must run right after :func:`compute_world_contact_bias`.
+    """
+    tid = wp.tid()
+    world = tid // max_constraints
+    i = tid - world * max_constraints
+    if i >= world_constraint_count[world] or world_row_type[world, i] != PGS_CONSTRAINT_TYPE_CONTACT:
+        return
+    phi = world_phi[world, i]
+    bound = world_row_max_depenetration_velocity[world, i]
+    if phi <= 0.0 and pgs_beta * phi * (1.0 / dt) < -bound:
+        world_rhs[world, i] = -world_target_velocity[world, i] - bound
 
 
 @wp.kernel
@@ -6807,6 +6857,7 @@ def _build_mf_contact_row(
     contact_friction_shared_anchor: int,
     restitution_velocity_threshold: float,
     recovery_phi: wp.array[float],
+    rigid_body_max_depenetration_velocity: wp.array[float],
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -6818,6 +6869,7 @@ def _build_mf_contact_row(
     mf_phi: wp.array2d[float],
     mf_target_velocity: wp.array2d[float],
     mf_row_rebound_velocity: wp.array2d[float],
+    mf_row_max_depenetration_velocity: wp.array2d[float],
 ):
     """Build the normal row and, when allocated, the two friction rows of a free-body contact.
 
@@ -6921,6 +6973,9 @@ def _build_mf_contact_row(
             mf_row_parent[world, row_idx] = -1
             mf_phi[world, row_idx] = phi
             mf_row_rebound_velocity[world, row_idx] = rebound_velocity
+            mf_row_max_depenetration_velocity[world, row_idx] = contact_max_depenetration_velocity(
+                body_a, body_b, rigid_body_max_depenetration_velocity
+            )
         else:
             mf_row_type[world, row_idx] = PGS_CONSTRAINT_TYPE_FRICTION
             mf_row_parent[world, row_idx] = slot
@@ -6978,6 +7033,7 @@ def build_mf_contact_rows(
     contact_friction_shared_anchor: int,
     restitution_velocity_threshold: float,
     recovery_phi: wp.array[float],
+    rigid_body_max_depenetration_velocity: wp.array[float],
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -6989,6 +7045,7 @@ def build_mf_contact_rows(
     mf_phi: wp.array2d[float],
     mf_target_velocity: wp.array2d[float],
     mf_row_rebound_velocity: wp.array2d[float],
+    mf_row_max_depenetration_velocity: wp.array2d[float],
 ):
     """Build the free-body contact rows with a grid-stride loop."""
     total_contacts = wp.min(contact_count[0], contact_point0.shape[0])
@@ -7025,6 +7082,7 @@ def build_mf_contact_rows(
             contact_friction_shared_anchor,
             restitution_velocity_threshold,
             recovery_phi,
+            rigid_body_max_depenetration_velocity,
             mf_body_a,
             mf_body_b,
             mf_J_a,
@@ -7035,6 +7093,7 @@ def build_mf_contact_rows(
             mf_phi,
             mf_target_velocity,
             mf_row_rebound_velocity,
+            mf_row_max_depenetration_velocity,
         )
 
 
@@ -7419,7 +7478,7 @@ def compute_mf_effective_mass_and_rhs(
     body_to_articulation: wp.array[int],
     articulation_dof_start: wp.array[int],
     incident_velocity: wp.array[float],
-    rigid_body_max_depenetration_velocity: wp.array[float],
+    mf_row_max_depenetration_velocity: wp.array2d[float],
     pgs_cfm: float,
     pgs_beta: float,
     contact_w: float,
@@ -7499,16 +7558,9 @@ def compute_mf_effective_mass_and_rhs(
             row_w = contact_w
         if phi_val < 0.0:
             bias = pgs_beta * phi_val / dt
-            max_depen = 1.0e20
-            if ba >= 0:
-                max_depen = rigid_body_max_depenetration_velocity[ba]
-            if bb >= 0:
-                max_depen_b = rigid_body_max_depenetration_velocity[bb]
-                if max_depen_b > 0.0 and wp.isfinite(max_depen_b):
-                    if max_depen_b < max_depen:
-                        max_depen = max_depen_b
-            if max_depen > 0.0 and wp.isfinite(max_depen):
-                bias = wp.max(bias, -max_depen)
+            bound = mf_row_max_depenetration_velocity[world, i]
+            if wp.isfinite(bound):
+                bias = wp.max(bias, -bound)
         else:
             bias = contact_speculative_scale * phi_val / dt
         rebound_velocity = mf_row_rebound_velocity[world, i]
@@ -8245,6 +8297,7 @@ def build_propagation_contact_rows(
     friction_anchor_beta: float,
     restitution_velocity_threshold: float,
     recovery_phi: wp.array[float],
+    rigid_body_max_depenetration_velocity: wp.array[float],
     # outputs
     propagation_body_a: wp.array2d[int],
     propagation_body_b: wp.array2d[int],
@@ -8256,6 +8309,7 @@ def build_propagation_contact_rows(
     propagation_phi: wp.array2d[float],
     propagation_target_velocity: wp.array2d[float],
     propagation_row_rebound_velocity: wp.array2d[float],
+    propagation_row_max_depenetration_velocity: wp.array2d[float],
 ):
     """Build the body-space normal row and, when allocated, the two friction rows of every propagation contact.
 
@@ -8374,6 +8428,9 @@ def build_propagation_contact_rows(
                 propagation_row_parent[world, row] = -1
                 propagation_phi[world, row] = phi
                 propagation_row_rebound_velocity[world, row] = rebound_velocity
+                propagation_row_max_depenetration_velocity[world, row] = contact_max_depenetration_velocity(
+                    body_a, body_b, rigid_body_max_depenetration_velocity
+                )
             else:
                 propagation_row_type[world, row] = PGS_CONSTRAINT_TYPE_FRICTION
                 propagation_row_parent[world, row] = slot
@@ -8518,7 +8575,7 @@ def compute_propagation_effective_mass_and_rhs(
     propagation_target_velocity: wp.array2d[float],
     propagation_row_rebound_velocity: wp.array2d[float],
     propagation_body_qd: wp.array2d[float],
-    rigid_body_max_depenetration_velocity: wp.array[float],
+    propagation_row_max_depenetration_velocity: wp.array2d[float],
     pgs_cfm: float,
     pgs_beta: float,
     contact_w: float,
@@ -8596,16 +8653,9 @@ def compute_propagation_effective_mass_and_rhs(
             row_w = contact_w
         if phi < 0.0:
             bias = pgs_beta * phi / dt
-            max_depen = 1.0e20
-            if ba >= 0:
-                max_depen = rigid_body_max_depenetration_velocity[ba]
-            if bb >= 0:
-                max_depen_b = rigid_body_max_depenetration_velocity[bb]
-                if max_depen_b > 0.0 and wp.isfinite(max_depen_b):
-                    if max_depen_b < max_depen:
-                        max_depen = max_depen_b
-            if max_depen > 0.0 and wp.isfinite(max_depen):
-                bias = wp.max(bias, -max_depen)
+            bound = propagation_row_max_depenetration_velocity[world, i]
+            if wp.isfinite(bound):
+                bias = wp.max(bias, -bound)
         else:
             bias = contact_speculative_scale * phi / dt
         rebound_velocity = propagation_row_rebound_velocity[world, i]

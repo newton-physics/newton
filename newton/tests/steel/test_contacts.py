@@ -283,7 +283,7 @@ def _mf_speculative_rhs(device, scale: float) -> float:
             wp.array([-1], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.zeros((1,), dtype=wp.float32, device=device),
-            wp.array([float("inf")], dtype=wp.float32, device=device),
+            wp.full((1, 1), wp.inf, dtype=wp.float32, device=device),
             1.0,
             0.2,
             1.0,
@@ -472,6 +472,7 @@ def _launch_dense_contact_builders(
         "phi": wp.full((1, 8), -9.0, dtype=wp.float32, device=device),
         "target_velocity": wp.full((1, 8), -9.0, dtype=wp.float32, device=device),
         "row_rebound_velocity": wp.full((1, 8), -9.0, dtype=wp.float32, device=device),
+        "row_max_depenetration_velocity": wp.full((1, 8), -9.0, dtype=wp.float32, device=device),
     }
     wp.launch(
         prepare_world_contact_rows,
@@ -504,6 +505,7 @@ def _launch_dense_contact_builders(
             *anchors,
             0.5,  # restitution_velocity_threshold
             None,
+            wp.full((3,), wp.inf, dtype=wp.float32, device=device),
         ],
         outputs=list(metadata.values()),
         device=device,
@@ -870,11 +872,102 @@ def test_disabled_restitution_ignores_threshold_edits(test, device):
     test.assertEqual(solver._rebound_velocity_threshold, float(np.finfo(np.float32).max))
 
 
+def _peak_depenetration_speed(device, scene, bounds, response="immediate"):
+    """Return the peak separation speed of boxes started 50 mm deep with Baumgarte 0.8 and no gravity."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    SolverSteel.register_custom_attributes(builder)
+    if scene == "free":
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_ground_plane()
+    elif scene in ("slider", "kinematic"):
+        body = builder.add_link()
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([builder.add_joint_prismatic(-1, body, axis=newton.Axis.Z)])
+        if scene == "kinematic":
+            # A jointless kinematic box with its top face at z = 0.
+            floor = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()), is_kinematic=True)
+            builder.add_shape_box(floor, hx=0.1, hy=0.1, hz=0.1)
+        else:
+            builder.add_ground_plane()
+    elif scene == "fixed":
+        # A free box resting 50 mm deep on a zero-DOF link.
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([builder.add_joint_fixed(-1, link)])
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    else:
+        for z in (0.0, 0.15):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    model = builder.finalize(device=device)
+    model.steel.rigid_body_max_depenetration_velocity.assign(np.asarray(bounds, dtype=np.float32))
+    solver = SolverSteel(model, baumgarte=0.8, iterations=50, articulated_contact_response=response)
+    state_0, state_1 = model.state(), model.state()
+    if scene in ("slider", "kinematic"):
+        state_0.joint_q.assign(np.array([0.05], dtype=np.float32))
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    peak = 0.0
+    for _ in range(5):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
+        if scene in ("slider", "kinematic"):
+            speed = abs(float(state_1.joint_qd.numpy()[0]))
+        else:
+            body_qd = state_1.body_qd.numpy()
+            speed = abs(float(body_qd[-1][2] - (body_qd[0][2] if scene in ("pair", "fixed") else 0.0)))
+        peak = max(peak, speed)
+        state_0, state_1 = state_1, state_0
+    return peak
+
+
+def test_max_depenetration_velocity_bounds_every_contact_route(test, device):
+    """Bound the Baumgarte speed of free-body and articulated contacts by the smaller positive body bound."""
+    bound = 0.5
+    unbounded = 0.8 * 0.05 * 240.0
+    cases = (
+        ("free", [bound], "immediate"),
+        ("slider", [bound], "immediate"),
+        ("slider", [bound], "propagation"),
+        ("pair", [0.0, bound], "immediate"),
+        ("pair", [bound, 0.0], "immediate"),
+        ("pair", [bound, 2.0], "immediate"),
+        ("pair", [2.0, bound], "immediate"),
+        ("fixed", [bound, 2.0], "propagation"),
+        ("fixed", [2.0, bound], "propagation"),
+        # Bodies without response DOFs still contribute their bound.
+        ("kinematic", [0.0, bound], "immediate"),
+        ("kinematic", [0.0, bound], "propagation"),
+        ("fixed", [bound, 0.0], "immediate"),
+        ("fixed", [0.0, bound], "immediate"),
+        ("fixed", [bound, 0.0], "propagation"),
+    )
+    for scene, bounds, response in cases:
+        with test.subTest(scene=scene, bounds=bounds, response=response):
+            speed = _peak_depenetration_speed(device, scene, bounds, response)
+            test.assertGreater(speed, bound * 0.95)
+            test.assertLessEqual(speed, bound * 1.05)
+    for scene, bounds in (("free", [np.inf]), ("slider", [np.inf]), ("slider", [0.0])):
+        with test.subTest(scene=scene, bounds=bounds):
+            test.assertAlmostEqual(
+                _peak_depenetration_speed(device, scene, bounds), unbounded, delta=1.0e-3 * unbounded
+            )
+
+
 class TestSteelContactControls(unittest.TestCase):
     pass
 
 
 devices = get_cuda_test_devices()
+add_function_test(
+    TestSteelContactControls,
+    "test_max_depenetration_velocity_bounds_every_contact_route",
+    test_max_depenetration_velocity_bounds_every_contact_route,
+    devices=get_test_devices(),
+)
 
 
 for _fn in (
