@@ -462,6 +462,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
+        particle_contact_ke: np.ndarray | wp.array | None = None,
         # Rigid body - constraint formulation and stabilization
         rigid_compliant_alm: bool = _DEPRECATED_RIGID_COMPLIANT_ALM_UNSET,
         rigid_avbd_alpha: float | None = None,  # Shared alpha override; None uses zero
@@ -566,6 +567,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_external_edge_contact_filtering_map: Optional dictionary used to exclude additional edge-edge pairs during contact
                 generation. Keys must be edge primitive ids (integers), and each value must be a `list` or `set`
                 containing the edges to be filtered out. Only used when `particle_enable_self_contact` is `True`.
+            particle_contact_ke: Per-particle contact stiffness [N/m], one value per particle, in place of the
+                model-wide ``model.soft_contact_ke`` on the particle side. A self-contact pair (vertex-triangle or
+                edge-edge, within one body or between two) uses the harmonic mean of its two sides (each side the
+                smallest value of its vertices): two springs in series, scaled so a body touching itself keeps its own
+                stiffness, and a soft body touching a much stiffer one is governed by the soft side. A particle-shape
+                contact averages the particle's value with the shape's material stiffness, as it does with the
+                model-wide value. With one model-wide value, a scene holding a stiff and a soft body has to give the
+                soft body's own near-surface contacts the stiff body's spring, which can blow it up. ``None`` (the
+                default) keeps ``model.soft_contact_ke`` everywhere. Damping and friction stay model-wide, and the
+                coupling proxy-force harvest keeps the model-wide stiffness.
 
             rigid_compliant_alm: Deprecated; omit it. Compliant ALM is always used for
                 body-body contacts, structural joints, drives, and limits. Explicit
@@ -1034,6 +1045,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
             enable_fast_math,
+            particle_contact_ke,
         )
 
         # Routed tendon geometry and material state are shared with XPBD; VBD
@@ -1133,8 +1145,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
         enable_fast_math: bool,
+        particle_contact_ke: np.ndarray | wp.array | None = None,
     ):
         """Initialize particle-specific data structures and settings."""
+        self.particle_contact_ke = None
+        if particle_contact_ke is not None and model.particle_count > 0:
+            values = particle_contact_ke.numpy() if isinstance(particle_contact_ke, wp.array) else particle_contact_ke
+            values = np.asarray(values, dtype=np.float64)
+            if values.shape != (model.particle_count,):
+                raise ValueError(
+                    f"particle_contact_ke must hold one value per particle ({model.particle_count}), got shape {values.shape}"
+                )
+            if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+                raise ValueError("particle_contact_ke must contain finite, nonnegative values")
+            self.particle_contact_ke = wp.array(values, dtype=float, device=self.device)
         # Early exit if no particles
         if model.particle_count == 0:
             return
@@ -3773,6 +3797,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.soft_contact_ke,
                 model.soft_contact_kd,
                 model.soft_contact_mu,
+                contacts.soft_contact_particle,
+                self.particle_contact_ke,
                 model.shape_material_ke,
                 model.shape_material_kd,
                 model.shape_material_mu,
@@ -4286,6 +4312,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.trimesh_collision_info,
                         self.particle_self_contact_margin,
                         self.model.soft_contact_ke,
+                        self.particle_contact_ke,
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,

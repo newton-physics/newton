@@ -1552,6 +1552,7 @@ def test_edge_topology_reciprocity(test, device):
                         data,
                         0.1,
                         100.0,
+                        None,  # particle_contact_ke: the model-wide stiffness
                         0.1,
                         1.5,
                         0.001,

@@ -8331,6 +8331,8 @@ def _run_face_section2(device, shape_margin):
             model.soft_contact_ke,
             model.soft_contact_kd,
             model.soft_contact_mu,
+            contacts.soft_contact_particle,
+            None,  # particle_contact_ke: the model-wide stiffness
             model.shape_material_ke,
             model.shape_material_kd,
             model.shape_material_mu,
@@ -10619,6 +10621,62 @@ add_function_test(
     test_solver_residual_decreases_with_iterations,
     devices=devices,
 )
+
+def _slab_and_stiff_cube(device):
+    """A free 10 x 0.15 x 10 cm foam slab (thinner than the contact margin, so its own surfaces touch at rest) and,
+    50 cm away, a rubber-like cube, with gravity off. Returns the model and the slab's particle count."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+    builder.add_soft_grid(pos=wp.vec3(-0.05, 1.0, -0.05), rot=wp.quat_identity(), vel=wp.vec3(0.0, 0.0, 0.0), dim_x=10,
+                          dim_y=1, dim_z=10, cell_x=0.01, cell_y=0.0015, cell_z=0.01, density=50.0, k_mu=3.85e3,
+                          k_lambda=5.77e3, k_damp=25.0, particle_radius=0.001)
+    slab = len(builder.particle_q)
+    builder.add_soft_grid(pos=wp.vec3(0.5, 1.0, 0.0), rot=wp.quat_identity(), vel=wp.vec3(0.0, 0.0, 0.0), dim_x=3,
+                          dim_y=3, dim_z=3, cell_x=0.02, cell_y=0.02, cell_z=0.02, density=1100.0, k_mu=4.0e5,
+                          k_lambda=2.0e7, k_damp=25.0, particle_radius=0.001)
+    builder.color()
+    return builder.finalize(device=device), slab
+
+
+def _particle_contact_ke(test, device):
+    """With one model-wide contact stiffness, a scene holding a soft and a much stiffer body must give the soft body's
+    own near-surface contacts the stiff body's spring. A foam slab whose surfaces touch at rest then blows up although
+    the stiff cube is far away. ``particle_contact_ke`` gives each particle its own body's stiffness, so the slab's
+    contacts with itself keep the foam spring, as if it were alone."""
+    dt = 1.0 / 600.0
+    foam_ke, stiff_ke = 100.0 * 1.0e4 * 0.01, 100.0 * 1.2e6 * 0.02  # 100 E h per body
+    options = {"iterations": 10, "particle_enable_self_contact": True, "particle_self_contact_margin": 0.002,
+               "particle_self_contact_gap": 0.004, "particle_topological_contact_filter_threshold": 1}
+
+    def slab_thickness(per_particle: bool) -> float:
+        model, slab = _slab_and_stiff_cube(device)
+        model.soft_contact_ke = stiff_ke  # the model-wide value a mixed scene needs for its stiff body
+        extra = {}
+        if per_particle:
+            ke = np.full(model.particle_count, stiff_ke)
+            ke[:slab] = foam_ke
+            extra["particle_contact_ke"] = ke
+        solver = newton.solvers.SolverVBD(model, **options, **extra)
+        state, following, control = model.state(), model.state(), model.control()
+        for _ in range(60):
+            state.clear_forces()
+            solver.step(state, following, control, None, dt)
+            state, following = following, state
+        end = state.particle_q.numpy()
+        test.assertTrue(np.isfinite(end).all())
+        return float(np.ptp(end[:slab, 1]))
+
+    test.assertGreater(slab_thickness(False), 0.05)  # blown apart (it starts 1.5 mm thick)
+    test.assertLess(slab_thickness(True), 0.02)  # pushed out to about the margin, as with foam_ke alone
+
+    model, _slab = _slab_and_stiff_cube(device)
+    with test.assertRaises(ValueError):
+        newton.solvers.SolverVBD(model, particle_contact_ke=np.ones(3))
+    with test.assertRaises(ValueError):
+        newton.solvers.SolverVBD(model, particle_contact_ke=np.full(model.particle_count, -1.0))
+
+
+add_function_test(TestSolverVBD, "test_particle_contact_ke", _particle_contact_ke, devices=devices)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
