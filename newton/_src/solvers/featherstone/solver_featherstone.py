@@ -1030,7 +1030,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             solve_H = state_aug.H
                             solve_armature = armature
                             if self._has_joint_mimics:
-                                state_aug.H_mimic.zero_()
                                 wp.launch(
                                     reduce_mimic_inertia,
                                     dim=model.joint_dof_count,
@@ -1092,7 +1091,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     if self._has_joint_mimics:
                         solve_H = self._mass_scratch_holder.H_mimic
                         solve_armature = self.joint_armature_zero
-                        state_aug.joint_tau_mimic.zero_()
                         wp.launch(
                             reduce_mimic_forces,
                             dim=model.joint_dof_count,
