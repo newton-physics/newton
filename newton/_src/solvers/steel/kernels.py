@@ -8187,15 +8187,17 @@ def build_distance_limit_rows(
     ``|p|``, the child anchor's position in the parent anchor frame (the joint's linear coordinates). With the
     joint velocity ``(v, w)`` of the child COM in that frame, the anchor moves at ``u = v + w x r`` for
     ``r = p - p_com``, and a row along a unit ``n`` has the rate ``n . v + (r x n) . w``, so each row spans only the
-    joint's own six DOFs. Both bounds act along the predicted end-of-step separation ``p + dt u``, which keeps a
-    centered COM on the bounds when the anchor moves across ``p`` or through the parent anchor; the lower row's
+    joint's own six DOFs. Both bounds act along the predicted end-of-step separation ``p + dt u``, which keeps the
+    anchor on the bounds when it moves across ``p`` or through the parent anchor, as long as the anchor's
+    translational response is isotropic, as for a lone body whose COM is at the anchor; the lower row's
     target velocity carries the part of its gap along that direction beyond the distance gap. When the step crosses
     the parent anchor, the lower bound acts along ``p / |p|`` instead, or along ``u`` at coincident anchors, so that
     it stops the anchor on the near side; with an upper bound active in the same step, the two rows then act along
-    different directions and the anchor can pass the upper bound. With an offset COM, the impulse also changes the
-    anchor's transverse velocity and rotation adds integration error, so the anchor can pass a bound. A zero maximum
-    distance bounds each axis of ``p`` at zero with two opposing rows, which are always active; with an offset COM the
-    anchor drifts from zero the same way. ``u`` is taken before the solve, so a velocity change from contacts or other
+    different directions and the anchor can pass the upper bound. With an offset COM or descendant bodies, the
+    impulse also changes the anchor's transverse velocity, and with an offset COM rotation adds integration error, so
+    the anchor can pass a bound. A zero maximum distance bounds each axis of ``p`` at zero with two opposing rows,
+    which are always active, and the minimum is ignored; with an offset COM the anchor drifts from zero the same
+    way. ``u`` is taken before the solve, so a velocity change from contacts or other
     rows in the same step can carry the anchor past the upper bound. A kinematic root follows its prescribed motion and gets no rows.
     """
     group_idx = wp.tid()

@@ -1461,17 +1461,18 @@ class SolverSteel(SolverBase, CouplingInterface):
       articulation (the limits of its first DOF) on the distance between the joint's two anchors.
       Both bounds act along the predicted end-of-step separation, except that the lower bound acts
       along the current separation when the step crosses the parent anchor, so it stops the anchor
-      on the near side; a zero ``max_distance`` bounds the anchor on all three axes. Each row
-      bounds the anchor's velocity along one direction: when the child anchor is offset from the
-      child's center of mass, its impulse can also change the anchor's transverse velocity, and
-      rotation adds integration error, so the anchor can pass a bound and drift from a zero
-      ``max_distance``. A step that would cross the parent anchor with both bounds active can
+      on the near side; a zero ``max_distance`` bounds the anchor on all three axes and
+      overrides ``min_distance``. Each row bounds the anchor's velocity along one direction:
+      when the child anchor is offset from the child's center of mass, or the root carries
+      descendant bodies, its impulse can also change the anchor's transverse velocity, and with
+      an offset COM rotation adds integration error, so the anchor can pass a bound and drift
+      from a zero ``max_distance``. A step that would cross the parent anchor with both bounds active can
       also pass ``max_distance``. The rows take their direction from the anchor velocity before
       the solve, so a velocity change from contacts or other rows in the same step can carry the
       anchor past ``max_distance``. A shorter timestep reduces these errors; more
       iterations of the same rows do not remove them. A kinematic root gets no rows. Any other
-      DISTANCE joint raises :class:`NotImplementedError` when
-      limits are enabled. Joint limits are not enforced by default. Joint velocity limits
+      DISTANCE joint raises :class:`NotImplementedError` when limits are enabled, whatever its
+      current bounds, since bounds are read every step. Joint limits are not enforced by default. Joint velocity limits
       (:attr:`~newton.Model.joint_velocity_limit`) are enforced as rows when
       ``enable_joint_velocity_limits`` is set.
     - Experimental dry joint friction: with ``enable_joint_friction=True``,
@@ -4073,7 +4074,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         default ``+/-1e10``, count like any other finite bound. With ``enable_joint_friction``
         each responding, non-kinematic DOF with positive friction is one row in every step.
         Each bound of a root DISTANCE joint counts like a DOF limit, and a zero ``max_distance``
-        is six rows whatever the gap.
+        is six rows whatever the gap; a root that is kinematic at construction counts none.
         """
         limit_rows = np.zeros(max(self._world_count, 1), dtype=np.int64)
         friction_rows = np.zeros_like(limit_rows)
@@ -4091,6 +4092,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             bounds = ((lower > 0.0) & np.isfinite(lower)).astype(np.int64) + ((upper >= 0.0) & np.isfinite(upper))
             # A zero maximum takes six rows in every step, whatever the activation gap.
             per_joint = np.where(upper == 0.0, 6, bounds if np.isinf(self._joint_limit_activation_gap) else 0)
+            per_joint[self._kinematic_dof_mask_host[dofs] != 0] = 0
             worlds = self._art_to_world.numpy()[model.joint_articulation.numpy()[joints]]
             np.add.at(limit_rows, worlds, per_joint)
         if self._joint_friction_warp_kernels:

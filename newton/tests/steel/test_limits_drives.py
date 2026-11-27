@@ -3211,12 +3211,26 @@ def test_kinematic_distance_root_gets_no_limit_rows(test, device):
 
 
 def test_distance_rows_count_toward_the_capacity_warning(test, device):
-    """Warn at construction when a bounded DISTANCE joint's rows alone exceed ``articulation_constraint_max``."""
+    """Warn at construction when a bounded DISTANCE joint's rows alone exceed ``articulation_constraint_max``, and
+    not for a kinematic root, which gets no rows."""
     model, _ = _build_tether(device, start=(0.3, 0.0, 1.0), lower=0.1, upper=0.5)
     with test.assertWarnsRegex(newton.NewtonWarning, r"need at least 2 dense rows"):
         SolverSteel(
             model, enable_joint_limits=True, joint_limit_activation_gap=float("inf"), articulation_constraint_max=1
         )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    root = builder.add_link(is_kinematic=True, mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    child = builder.add_link(mass=0.5, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    joints = [
+        builder.add_joint_distance(-1, root, max_distance=0.0),
+        builder.add_joint_revolute(root, child, axis=newton.Axis.Z),
+    ]
+    builder.add_articulation(joints)
+    model = builder.finalize(device=device)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", newton.NewtonWarning)
+        # A finite gap leaves only the zero cap's six rows, which a kinematic root never builds.
+        SolverSteel(model, enable_joint_limits=True, joint_limit_activation_gap=0.1, articulation_constraint_max=1)
 
 
 def test_multi_world_distance_limits_match_single_worlds(test, device):
