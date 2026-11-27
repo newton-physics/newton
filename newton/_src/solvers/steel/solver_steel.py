@@ -596,13 +596,14 @@ def _reset_solver_status(
     overflow: wp.array[wp.bool],
     disabled_tree_joint: wp.array[wp.bool],
     joint_friction_invalid: wp.array[wp.bool],
+    shape_mu_invalid_world: wp.array[wp.bool],
     shape_friction_rejected: wp.array[wp.bool],
     fk_id_valid: wp.array[int],
 ):
     """Clear the status of selected worlds, request a mass refresh of their articulations and drop their carried kinematics.
 
-    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid``, ``shape_friction_rejected`` and
-    ``world_mask`` share the ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
+    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid``, ``shape_mu_invalid_world``,
+    ``shape_friction_rejected`` and ``world_mask`` share the ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
     global articulations (world ``-1``) are selected by the final mask entry.
     """
     tid = wp.tid()
@@ -611,7 +612,8 @@ def _reset_solver_status(
             overflow[tid] = False
             disabled_tree_joint[tid] = False
             joint_friction_invalid[tid] = False
-            shape_friction_rejected[tid] = False
+            # Worlds still using a flagged shape stay reported.
+            shape_friction_rejected[tid] = shape_mu_invalid_world[tid]
     if tid < mass_update_requested.shape[0]:
         if not world_mask or reset_world_selected(articulation_world[tid], world_mask, world_count):
             mass_update_requested[tid] = 1
@@ -3011,7 +3013,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._shape_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         # First shape whose scaled friction coefficient is not finite; written by each material refresh.
         self._shape_mu_invalid = wp.full(1, _NO_INVALID_SHAPE, dtype=wp.int32, device=model.device)
-        # Worlds a refresh since their last reset ran with a flagged shape, in the reset layout.
+        # Worlds of the shapes the last refresh flagged, and of those flagged since each world's reset.
+        self._shape_mu_invalid_world = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         self._shape_friction_rejected = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         self._shape_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
@@ -3100,6 +3103,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         if model.shape_material_restitution is not None and model.shape_count:
             wp.copy(self._shape_restitution, model.shape_material_restitution, count=model.shape_count)
         self._shape_mu_invalid.fill_(_NO_INVALID_SHAPE)
+        self._shape_mu_invalid_world.zero_()
         if model.shape_material_mu is not None and model.shape_count:
             wp.launch(
                 scale_shape_friction,
@@ -3110,7 +3114,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                     model.shape_world,
                     int(model.world_count),
                 ],
-                outputs=[self._shape_mu, self._shape_mu_invalid, self._shape_friction_rejected],
+                outputs=[
+                    self._shape_mu,
+                    self._shape_mu_invalid,
+                    self._shape_mu_invalid_world,
+                    self._shape_friction_rejected,
+                ],
                 device=model.device,
             )
 
@@ -3604,7 +3613,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         entry also discards world 0's warm-start impulses while a dynamic global
         articulation exists. Any reset, whatever its mask, also clears the solver-wide contact
         torsion input error; it clears the disabled-tree-joint, invalid-joint-friction and
-        rejected-shape-friction status of the selected worlds. The reset is launched on the device
+        rejected-shape-friction status of the selected worlds, keeping the last while a shape of the
+        world still has a coefficient that is not finite. The reset is launched on the device
         without host synchronization and can be captured in a CUDA graph. A full reset
         (``world_mask=None``) also restarts the host-side step cadence (mass-matrix refresh interval,
         ``dt`` change detection, double-buffer schedule and warm-start history) for subsequent eager
@@ -3648,8 +3658,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
-            # Without articulations no step solves contacts.
-            self._shape_friction_rejected.zero_()
+            # Without articulations no step solves contacts, so only the current flags remain.
+            wp.copy(self._shape_friction_rejected, self._shape_mu_invalid_world)
             self._retake_status_snapshot()
             return
 
@@ -3666,6 +3676,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self.constraint_overflow,
                 self._disabled_tree_joint,
                 self._joint_friction_invalid,
+                self._shape_mu_invalid_world,
                 self._shape_friction_rejected,
                 self._fk_id_valid,
             ],

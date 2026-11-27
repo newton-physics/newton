@@ -438,6 +438,8 @@ def test_scaled_friction_overflow_is_rejected(test, device):
             np.testing.assert_array_equal(solver._shape_mu.numpy()[: model.shape_count], 0.0)
             with test.assertRaisesRegex(RuntimeError, pattern):
                 solver.check_constraint_capacity()
+    # A reset while a coefficient is still flagged keeps its worlds reported.
+    solver.reset(model.state())
     model.shape_material_mu.fill_(0.6)
     solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
     np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 1.2, rtol=1.0e-7)
