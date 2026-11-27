@@ -1480,15 +1480,21 @@ def eval_articulation_mass_matrix(
 
         # Compute contribution from this link: H += J_i^T * I_i * J_i
         for dof_i in range(articulation_dof_count):
+            J_col = wp.spatial_vector(
+                J[art_idx, row_start + 0, dof_i],
+                J[art_idx, row_start + 1, dof_i],
+                J[art_idx, row_start + 2, dof_i],
+                J[art_idx, row_start + 3, dof_i],
+                J[art_idx, row_start + 4, dof_i],
+                J[art_idx, row_start + 5, dof_i],
+            )
+            # Row dof_i of J_i^T * I_i, shared by every dof_j
+            JI_row = wp.transpose(I_s) * J_col
+
             for dof_j in range(articulation_dof_count):
                 sum_val = float(0.0)
-
-                # J_i^T * I_i * J_j (for the 6 rows of this link)
-                for k in range(6):
-                    for l in range(6):
-                        J_ik = J[art_idx, row_start + k, dof_i]
-                        J_jl = J[art_idx, row_start + l, dof_j]
-                        sum_val += J_ik * I_s[k, l] * J_jl
+                for l in range(6):
+                    sum_val += JI_row[l] * J[art_idx, row_start + l, dof_j]
 
                 H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
 
