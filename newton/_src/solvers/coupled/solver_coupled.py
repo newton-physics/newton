@@ -431,6 +431,7 @@ class SolverEntry:
     body_gravity_acceleration: wp.array[wp.vec3] | None = None
     particle_gravity_acceleration: wp.array[wp.vec3] | None = None
     free_root_joints: _FreeRootJoints | None = None
+    particle_target_q: wp.array[wp.vec3] | None = None
 
 
 _CORE_RESET_STATE_FLAGS = {
@@ -448,8 +449,6 @@ _RESET_FORCE_INPUT_FREQUENCIES = {
 _RESET_TRANSIENT_FIELDS = (
     ("body_f", Model.AttributeFrequency.BODY),
     ("particle_f", Model.AttributeFrequency.PARTICLE),
-    ("body_qdd", Model.AttributeFrequency.BODY),
-    ("body_parent_f", Model.AttributeFrequency.BODY),
 )
 _RESET_RECONCILABLE_FREQUENCIES = frozenset(
     {
@@ -780,6 +779,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _build_entries(self) -> None:
         model = self.model
         device = model.device
+        # A deprecated alias may hold edits that reading it applies to the model, as mujoco:condim does.
+        for namespace in vars(model).values():
+            if isinstance(namespace, Model.AttributeNamespace):
+                for getter, _message in namespace._deprecated_aliases.values():
+                    getter()
         any_body_owner = any(owner >= 0 for owner in self._body_owner)
         any_particle_owner = any(owner >= 0 for owner in self._particle_owner)
         any_joint_owner = any(owner >= 0 for owner in self._joint_owner)
@@ -953,6 +957,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
             entry.control = _entry_control(entry.view)
+            if entry.substeps > 1 and _entry_has_kinematic_particles(entry):
+                raise NotImplementedError(
+                    f"Entry '{entry.name}' uses substeps={entry.substeps} with ParticleFlags.KINEMATIC particles; "
+                    "kinematic particle targets are not interpolated across coupled substeps."
+                )
+            if int(entry.view.particle_count):
+                entry.particle_target_q = wp.clone(entry.view.particle_q)
             entry.has_body_force_input = entry.state_0.body_f is not None
             entry.has_particle_force_input = entry.state_0.particle_f is not None
             if entry.substeps > 1 and not entry.in_place:
@@ -1437,10 +1448,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         real_joint_order = [joint for joint in joint_order if joint not in free_root_cuts]
         body_set = set(body_order)
         joint_set = set(real_joint_order)
-        joint_global_to_local = {
-            global_id: local_id for local_id, global_id in enumerate(joint_order) if global_id not in free_root_cuts
-        }
-
         joint_parent = model.joint_parent.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
         joint_child = model.joint_child.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
         for joint in real_joint_order:
@@ -1461,10 +1468,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         articulation_order = self._compact_articulation_order(view, real_joint_order, joint_set)
         if articulation_order is None:
             return None, "the selected joints do not contain complete enabled articulations"
-
-        mimic_order = self._compact_mimic_constraint_order(joint_global_to_local)
-        if mimic_order is None:
-            return None, "the selected mimic constraints are not grouped by world"
 
         joint_q_start = model.joint_q_start.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
@@ -1547,7 +1550,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.JOINT_CONSTRAINT: joint_constraint_order,
             model.AttributeFrequency.SHAPE: shape_order,
             model.AttributeFrequency.ARTICULATION: articulation_order,
-            model.AttributeFrequency.CONSTRAINT_MIMIC: mimic_order,
             model.AttributeFrequency.PARTICLE: particle_order,
             model.AttributeFrequency.EDGE: list(range(model.edge_count)) if keep_deformables else [],
             model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
@@ -1859,25 +1861,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return None
         return getattr(namespace, attr_name, None)
 
-    def _compact_mimic_constraint_order(self, joint_global_to_local: dict[int, int]) -> list[int] | None:
-        model = self.model
-        if model.constraint_mimic_count == 0:
-            return []
-        joint0 = model.constraint_mimic_joint0.numpy()
-        joint1 = model.constraint_mimic_joint1.numpy()
-        selected = {
-            constraint
-            for constraint in range(model.constraint_mimic_count)
-            if int(joint0[constraint]) in joint_global_to_local and int(joint1[constraint]) in joint_global_to_local
-        }
-        return self._ordered_world_subset(
-            selected,
-            model.constraint_mimic_world,
-            None,
-            model.constraint_mimic_count,
-            "mimic constraints",
-        )
-
     def _body_particle_attachment_rows(
         self,
         body_set: set[int],
@@ -1962,7 +1945,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         visible_shape_order = compact.order(frequency.SHAPE)
         shape_order = list(range(model.shape_count))
         articulation_order = compact.order(frequency.ARTICULATION)
-        mimic_order = compact.order(frequency.CONSTRAINT_MIMIC)
         edge_order = compact.order(frequency.EDGE)
         tri_order = compact.order(frequency.TRIANGLE)
         tet_order = compact.order(frequency.TETRAHEDRON)
@@ -1978,13 +1960,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.joint_constraint_count = len(joint_constraint_order)
         view.shape_count = model.shape_count
         view.articulation_count = len(articulation_order)
-        view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
         view.attachment_particle_body_count = len(attachment_order)
         view.tri_count = len(tri_order)
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        # Compact views have no cameras: their body indices no longer match the model's cameras, and
+        # sensors render from the full model.
+        view.camera_count = 0
+        view.camera_label = []
         view.curve_count = len(compact.order(frequency.CURVE))
         view.surface_count = len(compact.order(frequency.SURFACE))
         view.volume_count = len(compact.order(frequency.VOLUME))
@@ -3579,8 +3564,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         if filtered.rigid_contact_force is not None:
             filtered.rigid_contact_force.zero_()
-        if filtered.force is not None:
-            filtered.force.zero_()
 
         contact_update_dim = max(
             contacts.rigid_contact_max, contacts.soft_contact_max, filtered.contact_counters.shape[0]
@@ -3743,14 +3726,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415
 
-            requested = {"force"} if contacts.force is not None else None
             filtered = Contacts(
                 contacts.rigid_contact_max,
                 contacts.soft_contact_max,
                 requires_grad=contacts.requires_grad,
                 device=contacts.device,
                 per_contact_shape_properties=contacts.per_contact_shape_properties,
-                requested_attributes=requested,
                 contact_matching=contacts.rigid_contact_match_index is not None,
                 rigid_contact_surface_velocity=contacts.rigid_contact_surface_velocity is not None,
             )
@@ -3832,7 +3813,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             and filtered.soft_contact_max == contacts.soft_contact_max
             and filtered.requires_grad == contacts.requires_grad
             and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
-            and (filtered.force is not None) == (contacts.force is not None)
             and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
             and (filtered.rigid_contact_surface_velocity is None) == (contacts.rigid_contact_surface_velocity is None)
         )
@@ -3897,7 +3877,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model_frequency.SHAPE: ModelFlags.SHAPE_PROPERTIES,
             model_frequency.ONCE: ModelFlags.MODEL_PROPERTIES,
             model_frequency.WORLD: ModelFlags.MODEL_PROPERTIES,
-            model_frequency.CONSTRAINT_MIMIC: ModelFlags.CONSTRAINT_PROPERTIES,
             model_frequency.ATTACHMENT_PARTICLE_BODY: ModelFlags.CONSTRAINT_PROPERTIES,
         }
         return bool(flags & int(frequency_flags.get(attribute.frequency, 0)))
@@ -3921,6 +3900,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _non_graphable_model_flags(self) -> int:
         # Entry model views re-project the changed attributes into newly allocated copies.
         return ~0
+
+
+def _entry_has_kinematic_particles(entry: SolverEntry) -> bool:
+    view = entry.view
+    if not int(view.particle_count) or view.particle_flags is None:
+        return False
+    flags = view.particle_flags.numpy()
+    owned = np.ones(flags.shape[0], dtype=bool)
+    owned[entry.particle_dynamics_disabled_local_indices.numpy()] = False
+    return bool(np.any(flags[owned] & int(ParticleFlags.KINEMATIC)))
 
 
 def _entry_control(view: ModelView) -> Control:
@@ -3983,6 +3972,16 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
         _copy_control_float_array(src, dst, name, local_to_global, device, allow_direct_copy=not has_free_root_joints)
     for name in ("tri_activations", "tet_activations", "muscle_activations"):
         _copy_control_prefix_float_array(src, dst, name)
+    if src.particle_target_q is None or entry.particle_target_q is None:
+        dst.particle_target_q = None
+    else:
+        dst.particle_target_q = entry.particle_target_q
+        wp.launch(
+            _copy_mapped_vec3,
+            dim=entry.particle_local_to_global.shape[0],
+            inputs=[entry.particle_local_to_global, src.particle_target_q, dst.particle_target_q],
+            device=device,
+        )
     model = entry.view.parent
     for full_name, spec in model._iter_attribute_specs():
         if spec.assignment != model.AttributeAssignment.CONTROL:

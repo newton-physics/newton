@@ -527,14 +527,26 @@ response. See the implementation in
 :github:`newton/_src/solvers/mujoco/kernels.py` and its force-space contact tests
 in :github:`newton/tests/test_mujoco_solver.py`.
 
-With MuJoCo's default ``refsafe`` guard enabled, MuJoCo-Warp evaluates positive
-``solref`` using ``max(timeconst, 2 * dt)`` for the active constraint without
+With MuJoCo's default ``refsafe`` guard enabled and Euler, RK4, implicit, or
+implicitfast integration, MuJoCo-Warp evaluates positive ``solref`` using
+``max(timeconst, 2 * dt)`` for the active constraint without
 rewriting the stored value. Direct-format negative ``solref`` bypasses this
 clamp. Once a requested positive ``timeconst`` falls below that floor, raising
 the gains at a fixed damping ratio no longer hardens the effective response;
 reduce the step passed to :meth:`~newton.solvers.SolverMuJoCo.step` instead. See
 MuJoCo's `refsafe option
 <https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
+
+For overdamped Newton contacts with per-contact stiffness and damping, the
+adapter caps damping when the requested time constant falls below this floor.
+It adjusts the damping ratio to preserve stiffness. Underdamped contacts keep
+their existing conversion. If the critical-damping time constant is below the
+floor, MuJoCo can still soften the contact. Use a smaller timestep to retain
+the requested gains.
+With ``refsafe`` disabled or ``discrete`` integration, the adapter keeps the
+supplied positive damping.
+If you change the timestep, call :meth:`~newton.CollisionPipeline.collide` again
+to refresh the contact parameters.
 
 These ``SOLREF_MODE_*`` names describe internal mode values; they are not
 public Newton symbols. MJCF/USD import selects the appropriate authored/default
@@ -937,7 +949,12 @@ warning. Flex rest shapes come from ``Model.particle_q``, and flex radius and
 friction come from ``particle_radius`` and ``particle_mu``. Flexes collide with
 each other and with shapes that have :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES`,
 including shapes that do not collide with other shapes. A flex collides with
-itself only when ``selfcollide`` is set through ``add_flex``. Flex
+itself only when ``selfcollide`` is set through ``add_flex``. Flexes have
+sliding friction (MuJoCo ``condim`` 3) and priority 0. A flex contact uses the
+``condim`` of the side with the higher priority and, at equal priority, the
+higher ``condim`` of its flex and shape, so a
+:attr:`~newton.ShapeFrictionMode.NONE` shape makes flex contacts frictionless
+only if it has a positive ``mujoco:geom_priority``. Flex
 contacts require ``use_mujoco_contacts=True``; the solver rejects models with
 flexes otherwise. In exported contacts, the flex side has shape
 ``-1``; :class:`~newton.sensors.SensorContact` and the viewer skip these
@@ -1087,10 +1104,17 @@ full list of allowed pairs using at most 32 such rules. It is guaranteed to
 find an exact result for up to 33 selected shapes and often handles much larger
 models whose collision groups have a regular structure.
 
-If the rules do not fit in 32 bits, the solver uses the established legacy
-graph-color approximation, which may allow extra contacts. Finding an exact
-result requires checking every shape pair, so models above 256 selected shapes
-or 1,024 explicit excluded pairs skip directly to that fallback.
+Finding that result requires checking every shape pair, so models above 256
+selected shapes or 1,024 explicit excluded pairs skip this search. When the
+search is skipped or its rules do not fit in 32 bits, the solver encodes the
+collision groups alone and relies on body-wide excludes for the excluded pairs.
+The groups take one bit per positive group with more than one shape, or
+``ceil(log2(n))`` bits for ``n`` negative groups if that is more, because the
+negative groups reuse the bits of the positive groups. One more bit is shared
+by all single-shape positive groups if there is a negative group. If they need
+more than 32 bits, leave no bit for flexes, or an excluded pair between two
+bodies is not covered by an exclude, the solver uses the established legacy
+graph-color approximation, which may allow extra contacts.
 
 .. _mujoco-margin-gap-mapping:
 
@@ -1323,6 +1347,8 @@ all solvers and content already added to the shared builder. Inside
 outside a world, the global/default gravity is changed. A later import
 with ``gravity="enable"`` does not restore the previous gravity vector.
 
+.. _mujoco-sleeping:
+
 Sleeping
 --------
 
@@ -1462,6 +1488,35 @@ When importing MuJoCo-authored USD, opt into that mapping explicitly::
 
 Registering MuJoCo custom attributes alone enables the ``model.mujoco``
 namespace but does not map ``mjc:damping`` to the built-in property.
+
+.. _mujoco-friction-modes:
+
+Friction modes and ``condim``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Geom ``condim`` maps to :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`:
+``condim`` 1, 3, 4, and 6 import as :class:`~newton.ShapeFrictionMode`
+``NONE``, ``SLIDING``, ``SLIDING_TORSIONAL``, and ``SLIDING_TORSIONAL_ROLLING``,
+and the solver converts the modes back. USD ``mjc:condim`` maps through
+:class:`~newton.usd.SchemaResolverMjc`, or through the registered MuJoCo
+custom attributes. The ``mujoco:condim`` custom attribute is deprecated:
+per-shape values set in code override the friction mode at
+:meth:`~newton.ModelBuilder.finalize` with a deprecation warning, a changed
+default applies to shapes left at ``SLIDING``, and
+``model.mujoco.condim`` is a copy of the friction modes; values written to it
+are applied when it is next read or a solver is constructed.
+
+``SLIDING_ROLLING`` has no ``condim``. Its geom gets ``condim`` 6 and MuJoCo's
+minimum torsional coefficient of 1e-5 in place of ``mu_torsional``.
+MuJoCo resolves a contact between geoms of equal priority from the higher
+``condim`` and the larger coefficient of each friction component. With
+``use_mujoco_contacts=True``, a ``SLIDING_ROLLING`` shape therefore still gets
+torsional friction from the ``mu_torsional`` of the shape it touches, also when
+that shape's mode does not enable torsional friction. To avoid this, set
+``mu_torsional`` of the other shapes to zero, give the shape a higher
+``mujoco:geom_priority`` so that its own parameters apply, or use
+``use_mujoco_contacts=False``, where a contact has torsional friction only if
+one of its shapes enables it.
 
 
 Unsupported MuJoCo features
@@ -1717,7 +1772,10 @@ tendon limits using the current ``model.mujoco`` limit modes, gains, raw
 ``solref`` values, and ranges. Those pending edits are therefore published even
 without :attr:`~newton.ModelFlags.TENDON_PROPERTIES`. This includes joint
 inertial/reference updates and the broad joint-DOF, body, body-inertial, and
-actuator notifications. Publish tendon edits explicitly with
+actuator notifications. :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` recomputes
+constants, at the same cost, only for models with a spatial tendon or a
+site-based actuator transmission, whose reference constants depend on site and
+wrapping-geometry poses. Publish tendon edits explicitly with
 :attr:`~newton.ModelFlags.TENDON_PROPERTIES` before these updates rather than
 relying on them to preserve pending tendon-limit changes. Force-only joint
 notifications do not recompute constants and leave tendon limits unchanged.

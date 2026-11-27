@@ -95,6 +95,8 @@ def tangent_point_circle(
     orientation: int,
 ) -> wp.vec3:
     """Compute the tangent point on a circle from an external point."""
+    # A float32 body rotation can leave the world-space axis slightly non-unit.
+    plane_normal = wp.normalize(plane_normal)
     d = center - p
     d_proj = d - wp.dot(d, plane_normal) * plane_normal
     dist_in_plane = wp.length(d_proj)
@@ -199,15 +201,14 @@ def signed_arc_length(
     r_new = new_pt - center
     r_old = r_old - wp.dot(r_old, plane_normal) * plane_normal
     r_new = r_new - wp.dot(r_new, plane_normal) * plane_normal
-    len_old = wp.length(r_old)
-    len_new = wp.length(r_new)
-    if len_old < 1.0e-8 or len_new < 1.0e-8 or radius <= 0.0:
+    if wp.length_sq(r_old) < 1.0e-16 or wp.length_sq(r_new) < 1.0e-16 or radius <= 0.0:
         return 0.0
 
-    u_old = r_old / len_old
-    u_new = r_new / len_new
-    cross_val = wp.dot(wp.cross(u_new, u_old), plane_normal)
-    dot_val = wp.dot(u_old, u_new)
+    # The radial lengths cancel in atan2. Using the chord in the cross
+    # product avoids subtracting nearly equal products for small rotations.
+    chord = r_new - r_old
+    cross_val = wp.dot(wp.cross(chord, r_old), plane_normal)
+    dot_val = wp.dot(r_old, r_new)
     angle = wp.atan2(cross_val, dot_val)
     return angle * radius * float(orientation)
 

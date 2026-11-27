@@ -707,7 +707,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
                 self.assertFalse(any(pattern.search(benchmark) for pattern in patterns), benchmark)
 
     def test_pr_gate_caps_repeats_without_dropping_cases(self):
-        """Keep full workloads with three timing samples in the PR gate."""
+        """Keep full workloads with two timing samples per round in the PR gate."""
         cases = (
             (bench_selection.FastExampleSelectionCartpoleMuJoCo, 10),
             (bench_contacts.FastConvexCollision, 5),
@@ -716,9 +716,25 @@ class TestSimulationBenchmarks(unittest.TestCase):
             with self.subTest(benchmark=benchmark_cls.__name__):
                 self.assertEqual(benchmark_cls.repeat, pr_gate_repeat(full_repeat))
                 with patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}):
-                    self.assertEqual(pr_gate_repeat(full_repeat), 3)
+                    self.assertEqual(pr_gate_repeat(full_repeat), 2)
                 with patch.dict("os.environ", {}, clear=True):
                     self.assertEqual(pr_gate_repeat(full_repeat), full_repeat)
+
+    def test_pr_gate_sample_counts_can_reach_significance(self):
+        """Avoid six samples per revision, where ASV never reports a change."""
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        checked = 0
+        for benchmark in self._discover_benchmarks(pr_gate=True):
+            name, repeat = benchmark["name"], benchmark["repeat"]
+            if ".time_" not in name or not any(pattern.search(name) for pattern in patterns):
+                continue
+            if not isinstance(repeat, int) or repeat <= 0:
+                continue  # ASV picks the sample count at run time.
+            checked += 1
+            with self.subTest(benchmark=name):
+                # At 6 vs 6 the smallest Mann-Whitney p-value, 2/924, exceeds ASV's 0.002 threshold.
+                self.assertNotEqual(repeat * benchmark["rounds"], 6)
+        self.assertGreater(checked, 0)
 
     def test_fast_allegro_uses_representative_pr_workload(self):
         """Keep Allegro coverage while reducing duplicated PR sampling."""

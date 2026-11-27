@@ -1029,9 +1029,16 @@ class TestDriveNeuralGRU(unittest.TestCase):
         np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
 
     def test_gru_without_bias(self):
-        """Evaluate a checkpoint whose GRU nodes carry no bias initializer."""
+        """Evaluate a bias-free GRU with inferred hidden size and internal Y_h."""
         metadata = self._metadata(self.FEATURES[:-1])
-        path = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+        source = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+
+        def omit_optional_fields(model):
+            gru = next(node for node in model.graph.node if node.op_type == "GRU")
+            del gru.attribute[next(i for i, attr in enumerate(gru.attribute) if attr.name == "hidden_size")]
+            del model.graph.output[1:]
+
+        path = self._mutate_gru(source, "no_optional_fields.onnx", omit_optional_fields)
         case = self._make_case(path, 2)
 
         effort, hidden = self._step(case)
@@ -1376,6 +1383,13 @@ class TestDriveNeuralGRU(unittest.TestCase):
             model.graph.output[0].name = "not_the_head_output"
 
         edits.append(("disconnected_output.onnx", disconnected_output, "does not reach"))
+
+        def mix_lanes(model):
+            effort = model.graph.output[0]
+            model.graph.node.append(helper.make_node("Softmax", [effort.name], ["mixed_effort"], axis=0))
+            effort.name = "mixed_effort"
+
+        edits.append(("lane_mixing.onnx", mix_lanes, "unsupported output operation.*Softmax"))
 
         for filename, edit, message in edits:
             with self.subTest(filename=filename):
@@ -1725,6 +1739,82 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         self.assertEqual(parsed.drive_class, DriveNeuralGRU)
         self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
+
+    def test_gru_implicit_linearized(self):
+        """Linearize a stacked GRU for the implicit solve across recurrent steps."""
+        device = self.device
+        h = self.SAMPLE_DT
+        q0, qd0, target, target_vel = 0.2, 0.3, 1.0, -0.4
+        metadata = self._metadata(self.ALL_FEATURES)
+
+        model = _build_pendulum(device)
+        state = model.state()
+        state.joint_q.assign(np.array([q0], dtype=np.float32))
+        state.joint_qd.assign(np.array([qd0], dtype=np.float32))
+        control = model.control()
+        control.joint_target_q.assign(np.array([target], dtype=np.float32))
+        control.joint_target_qd.assign(np.array([target_vel], dtype=np.float32))
+        control.bias_force = wp.full(1, 0.7, dtype=wp.float32, device=device)
+
+        path = self._save_gru("implicit_gru.onnx", metadata=metadata, layer_count=2)
+        drive = DriveNeuralGRU(path)
+        response = JointSpaceResponse(model)
+        actuator = Actuator(indices=wp.array([0], dtype=wp.uint32, device=device), drive=drive)
+
+        self.assertIsNone(drive._lin_params)
+        self.assertFalse(drive._net_input.requires_grad)
+        actuator.set_effort_mode_implicit(response=response)
+        # Reusing the same configuration must preserve the first solver's binding.
+        Actuator(indices=actuator.indices, drive=drive)
+        response.refresh(state)
+        sa, sb = actuator.state(), actuator.state()
+        reference = types.SimpleNamespace(
+            position=state.joint_q.numpy(),
+            velocity=state.joint_qd.numpy(),
+            target=control.joint_target_q.numpy(),
+            target_velocity=control.joint_target_qd.numpy(),
+            bias_force=control.bias_force.numpy(),
+            indices=np.array([0]),
+            pos_indices=np.array([0]),
+            target_indices=np.array([0]),
+            target_vel_indices=np.array([0]),
+            network=self._networks[path],
+        )
+        alpha = _response_at_state(model, state)[0, 0]
+        for step in range(2):
+            incoming_hidden = sa.drive_state.hidden.numpy()
+            expected_tau0, expected_hidden = self._expected(metadata, reference, hidden=incoming_hidden)
+            control.joint_f.zero_()
+            actuator.step(state, control, sa, sb, dt=h)
+
+            with self.subTest(step=step):
+                tau0, a, b, pq0, pqd0 = (float(v) for v in drive._lin_params.numpy()[0])
+                self.assertAlmostEqual(pq0, q0, delta=1e-6)
+                self.assertAlmostEqual(pqd0, qd0, delta=1e-6)
+                self.assertGreater(abs(a) + abs(b), 0.0)
+                self.assertAlmostEqual(tau0, float(expected_tau0[0]), delta=1e-5)
+                expected = (tau0 + a * h * pqd0) / (1.0 - alpha * h * (a * h + b))
+                self.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected, delta=abs(expected) * 1e-3 + 1e-6)
+                np.testing.assert_allclose(sb.drive_state.hidden.numpy(), expected_hidden, rtol=1e-5, atol=1e-6)
+
+                eps = 1e-3
+                for field, raw_slope, packed_slope in (
+                    ("position", drive._dtau_dq, a),
+                    ("velocity", drive._dtau_dqd, b),
+                ):
+                    values = getattr(reference, field)
+                    original = float(values[0])
+                    values[0] = original + eps
+                    plus = self._expected(metadata, reference, hidden=incoming_hidden)[0][0]
+                    values[0] = original - eps
+                    minus = self._expected(metadata, reference, hidden=incoming_hidden)[0][0]
+                    values[0] = original
+                    finite_difference = float(plus - minus) / (2.0 * eps)
+                    slope = float(raw_slope.numpy()[0])
+                    self.assertAlmostEqual(slope, finite_difference, delta=abs(finite_difference) * 0.02 + 1e-3)
+                    self.assertAlmostEqual(packed_slope, slope, delta=1e-6)
+
+            sa, sb = sb, sa
 
 
 @requires("onnx", "warp_nn")
@@ -5463,6 +5553,53 @@ class TestActuatorBuilder(unittest.TestCase):
         builder2 = newton.ModelBuilder()
         result2 = parse_usd(builder2, usd_path, ignore_paths=[".*Actuator"])
         self.assertEqual(result2["actuator_count"], 0)
+
+    @requires("pxr.Usd", "newton_usd_schemas")
+    def test_from_usd_instanceable(self):
+        """Actuators and batteries under instanceable prims import like the uninstanced asset."""
+        from pxr import UsdPhysics
+
+        test_dir = os.path.join(os.path.dirname(__file__), "assets")
+
+        def load(asset, instanceable):
+            stage = Usd.Stage.CreateInMemory()
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            for i in range(2):
+                robot = stage.DefinePrim(f"/World/Robot{i}")
+                robot.GetReferences().AddReference(os.path.join(test_dir, asset), "/World/Robot")
+                robot.SetInstanceable(instanceable)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            result = parse_usd(builder, stage)
+            actuator_dofs = {
+                actuator: dof
+                for entry in builder.actuator_entries.values()
+                for actuator, dof in zip(entry.actuator_indices, entry.indices, strict=True)
+            }
+            dof_start = [builder.joint_qd_start[joint] for joint in builder.articulation_start]
+            dof_start.append(builder.joint_dof_count)
+            # Actuators are added in stage order, so each robot owns the next half of them.
+            per_robot = len(actuator_dofs) // 2
+            robot_dofs = []
+            for i, label in enumerate(builder.articulation_label):
+                self.assertEqual(label, f"/World/Robot{i}")
+                dofs = [actuator_dofs[actuator] for actuator in range(i * per_robot, (i + 1) * per_robot)]
+                for dof in dofs:
+                    self.assertIn(dof, range(dof_start[i], dof_start[i + 1]), label)
+                robot_dofs.append([dof - dof_start[i] for dof in dofs])
+            self.assertEqual(robot_dofs[0], robot_dofs[1])
+            model = builder.finalize()
+            batteries = [
+                (battery.num_batteries, battery.actuator_start.numpy().tolist(), battery.actuators.numpy().tolist())
+                for battery in model.batteries
+            ]
+            return result["actuator_count"], builder.joint_count, robot_dofs, batteries
+
+        for asset, actuator_count, battery_count in (("actuator_test.usda", 4, 0), ("actuator_bam_test.usda", 6, 2)):
+            with self.subTest(asset=asset):
+                expected = load(asset, instanceable=False)
+                self.assertEqual(expected[0], actuator_count)
+                self.assertEqual(sum(num_batteries for num_batteries, _, _ in expected[3]), battery_count)
+                self.assertEqual(load(asset, instanceable=True), expected)
 
     @requires("pxr.Usd")
     def test_from_usd_schema_plugin_not_loaded(self):
