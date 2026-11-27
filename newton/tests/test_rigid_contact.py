@@ -701,8 +701,9 @@ def test_mujoco_warp_newton_contacts(test, device):
         )
 
 
-def test_mujoco_convex_on_convex(test, device, solver_fn):
-    """Test that MuJoCo can handle CONVEX_MESH geometry type by simulating a simple drop."""
+@requires(*MUJOCO_MODULES)
+def test_mujoco_convex_on_convex(test, device, use_mujoco_cpu):
+    """Drop a convex mesh onto another using MuJoCo's native detector."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e5
     builder.default_shape_cfg.kd = 1.0e3
@@ -747,17 +748,14 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
     # Initialize kinematics
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    solver = solver_fn(model)
-
-    pipeline = None if solver.use_mujoco_cpu else newton.CollisionPipeline(model)
-    contacts = None if pipeline is None else pipeline.contacts()
+    solver = newton.solvers.SolverMuJoCo(
+        model, use_mujoco_cpu=use_mujoco_cpu, use_mujoco_contacts=True, njmax=None if use_mujoco_cpu else 150
+    )
     sim_dt = 1.0 / 60.0
     steps = 120  # 2 seconds to settle
     for _ in range(steps):
         state_0.clear_forces()
-        if pipeline is not None:
-            pipeline.collide(state_0, contacts)
-        solver.step(state_0, state_1, control, contacts, sim_dt)
+        solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
 
     # Fetch final Z position of the dynamic cube's body
@@ -1258,19 +1256,15 @@ for solver_name, solver_fn in particle_solvers.items():
 
 # Register MuJoCo convex<>convex tests for appropriate backends
 for device in devices:
-    for solver_name, solver_fn in solvers.items():
-        if not solver_name.startswith("mujoco_"):
-            continue
-        if device.is_cpu and solver_name == "mujoco_warp":
-            continue
-        if device.is_cuda and solver_name == "mujoco_cpu":
+    for solver_name, use_mujoco_cpu in (("mujoco_cpu", True), ("mujoco_warp", False)):
+        if device.is_cpu != use_mujoco_cpu:
             continue
         add_function_test(
             TestRigidContact,
             f"test_mujoco_convex_on_convex_{solver_name}",
             test_mujoco_convex_on_convex,
             devices=[device],
-            solver_fn=solver_fn,
+            use_mujoco_cpu=use_mujoco_cpu,
         )
 
 if __name__ == "__main__":

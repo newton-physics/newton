@@ -6458,6 +6458,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         avg: int = 10,
         *,
         use_mujoco_cpu: bool = False,
+        use_mujoco_contacts: bool = False,
         integrator: str | None = None,
     ):
         """Run simulation, settle, then average total contact force over *avg* steps.
@@ -6466,8 +6467,13 @@ class TestMuJoCoContactForce(unittest.TestCase):
             force: Averaged total linear contact force, shape (3,).
             shape0: Shape index of shape0 in the first contact.
         """
+        native_contacts = use_mujoco_cpu or use_mujoco_contacts
         solver = SolverMuJoCo(
-            model, cone=cone, use_mujoco_cpu=use_mujoco_cpu, use_mujoco_contacts=use_mujoco_cpu, integrator=integrator
+            model,
+            cone=cone,
+            use_mujoco_cpu=use_mujoco_cpu,
+            use_mujoco_contacts=native_contacts,
+            integrator=integrator,
         )
 
         self.assertEqual(solver.get_max_contact_count(), solver.mjw_data.naconmax)
@@ -6488,7 +6494,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         dt = 0.002
         for _ in range(settle):
             state_in.clear_forces()
-            if not use_mujoco_cpu:
+            if not native_contacts:
                 collision_pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
@@ -6501,27 +6507,35 @@ class TestMuJoCoContactForce(unittest.TestCase):
         force_acc = np.zeros(3)
         for _ in range(avg):
             state_in.clear_forces()
-            if not use_mujoco_cpu:
+            if not native_contacts:
                 collision_pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
-            nacon = solver.mj_data.ncon if use_mujoco_cpu else int(solver.mjw_data.nacon.numpy()[0])
-            if nacon > 0:
-                f = observables.contact_f.numpy()[:nacon, :3]
+            count = solver.mj_data.ncon if use_mujoco_cpu else int(contacts.rigid_contact_count.numpy()[0])
+            if count > 0:
+                f = observables.contact_f.numpy()[:count, :3]
                 force_acc += np.sum(f, axis=0)
 
         # These condim=3 contacts exert a force at the contact point, so the
         # torque about shape0's COM is entirely due to the moment arm.
+        wrenches = observables.contact_f.numpy()[:count]
         if use_mujoco_cpu:
-            positions = solver.mj_data.contact.pos[:nacon]
-            bodies = solver.mj_model.geom_bodyid[solver.mj_data.contact.geom[:nacon, 0]]
+            positions = solver.mj_data.contact.pos[:count]
+            bodies = solver.mj_model.geom_bodyid[solver.mj_data.contact.geom[:count, 0]]
             reference = solver.mj_data.xipos[bodies]
         else:
-            positions = solver.mjw_data.contact.pos.numpy()[:nacon]
-            bodies = solver.mjw_model.geom_bodyid.numpy()[solver.mjw_data.contact.geom.numpy()[:nacon, 0]]
+            indices = slice(count)
+            if not native_contacts:
+                # Wrenches follow Newton input rows. MuJoCo compacts its rows independently.
+                nacon = int(solver.mjw_data.nacon.numpy()[0])
+                indices = solver._contact_tid_to_cid.numpy()[:count]
+                mapped = (indices >= 0) & (indices < nacon)
+                indices = indices[mapped]
+                wrenches = wrenches[mapped]
+            positions = solver.mjw_data.contact.pos.numpy()[indices]
+            bodies = solver.mjw_model.geom_bodyid.numpy()[solver.mjw_data.contact.geom.numpy()[indices, 0]]
             reference = solver.mjw_data.xipos.numpy()[0, bodies]
-        wrenches = observables.contact_f.numpy()[:nacon]
         np.testing.assert_allclose(wrenches[:, 3:], np.cross(positions - reference, wrenches[:, :3]), atol=1e-5)
         total_force = force_acc / avg
         shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
@@ -6561,9 +6575,9 @@ class TestMuJoCoContactForce(unittest.TestCase):
                 np.testing.assert_allclose(force[1], 0.0, atol=1.0)
 
     def test_elliptic_cone_weight(self):
-        """Box weight via elliptic cone contacts must match mg."""
+        """Match box weight to mg using native MuJoCo Warp elliptic contacts."""
         model, ground_shape = self._build_box_on_ground(friction=0.5)
-        force, shape0 = self._run_and_collect_forces(model, cone="elliptic")
+        force, shape0 = self._run_and_collect_forces(model, cone="elliptic", use_mujoco_contacts=True)
         expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
         # Horizontal forces should be near zero for a resting box.
@@ -7770,7 +7784,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         solver = SolverMuJoCo(
             model,
-            use_mujoco_contacts=False,
+            use_mujoco_contacts=True,
             integrator="implicitfast",
             iterations=10,
             nconmax=100,
@@ -7799,7 +7813,6 @@ class TestMuJoCoConversion(unittest.TestCase):
         dt = 0.005
         for _ in range(200):
             state_0.clear_forces()
-            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt)
             state_0, state_1 = state_1, state_0
 

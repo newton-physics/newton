@@ -404,13 +404,10 @@ class TestHeightfield(unittest.TestCase):
         builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(600):
-            pipeline.collide(state_in, contacts)
-            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
             state_in, state_out = state_out, state_in
 
         # The bowl is shallow at its center, so the sphere's center rests
@@ -437,16 +434,12 @@ class TestHeightfield(unittest.TestCase):
             return builder.finalize()
 
     @staticmethod
-    def _sphere_heights(model, steps, *, native=False):
-        """Step the model with SolverMuJoCo and return each body's final height."""
-        solver = SolverMuJoCo(model, use_mujoco_contacts=native)
-        pipeline = None if native else newton.CollisionPipeline(model)
-        contacts = None if pipeline is None else pipeline.contacts()
+    def _sphere_heights(model, steps):
+        """Return each body's final height after stepping with native MuJoCo contacts."""
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(steps):
-            if pipeline is not None:
-                pipeline.collide(state_in, contacts)
-            solver.step(state_in, state_out, control, contacts, 0.002)
+            solver.step(state_in, state_out, control, None, 0.002)
             state_in, state_out = state_out, state_in
         return state_in.body_q.numpy()[:, 2]
 
@@ -510,7 +503,7 @@ class TestHeightfield(unittest.TestCase):
         heightfields[0].data[1:-1, 1:-1] = 1.0
         model = self._per_world_hfield_model(heightfields, starts)
 
-        np.testing.assert_allclose(self._sphere_heights(model, steps=400, native=True), [0.35, 0.05], atol=0.01)
+        np.testing.assert_allclose(self._sphere_heights(model, steps=400), [0.35, 0.05], atol=0.01)
 
     def test_heightfield_always_static(self):
         """Test that heightfields are always static (zero mass, zero inertia)."""

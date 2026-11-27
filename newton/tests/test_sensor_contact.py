@@ -868,10 +868,10 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         model = builder.finalize()
         mass_a = 4.5
 
-        solver = SolverMuJoCo(model, njmax=200, use_mujoco_contacts=False)
+        solver = SolverMuJoCo(model, njmax=200, use_mujoco_contacts=True)
 
         sensor = SensorContact(model, sensing_bodies=["a"])
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
         observables = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
 
@@ -880,14 +880,12 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         num_steps = 240 * 2
         avg_steps = 10  # average forces over last few steps for stability
         for _ in range(num_steps - avg_steps):
-            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         total_acc = np.zeros((1, 3))
         friction_acc = np.zeros((1, 3))
         for _ in range(avg_steps):
-            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
             sensor.update(state_in, contacts, observables=observables)
