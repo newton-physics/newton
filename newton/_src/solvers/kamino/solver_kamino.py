@@ -973,6 +973,18 @@ class SolverKamino(SolverBase, CouplingInterface):
                     collision_config,
                     max_contacts_per_world=_estimate_scc_contacts_per_world(self._model_kamino, self.model),
                 )
+            # Mix the materials of the detector's own contacts as configured
+            # for the solver, as done for contacts converted from Newton.
+            if collision_config is None:
+                collision_config = self._kamino.CollisionDetector.Config()
+            if self._config.materials is not None:
+                collision_config = replace(
+                    collision_config,
+                    friction_mix_mode=collision_config.friction_mix_mode or self._config.materials.friction_mix_mode,
+                    restitution_mix_mode=(
+                        collision_config.restitution_mix_mode or self._config.materials.restitution_mix_mode
+                    ),
+                )
             self._collision_detector_kamino = self._kamino.CollisionDetector(
                 model=self._model_kamino,
                 config=collision_config,

@@ -199,6 +199,63 @@ class TestGeometryCollisionDetector(NewtonTestCase):
         self.assertEqual(detector.world_max_contacts, model.geoms.world_minimum_contacts)
 
 
+class TestCollisionDetectorMaterialMixing(NewtonTestCase):
+    """Check that the detector's own contacts mix materials as configured."""
+
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        setup_test_output(self, verbose=test_context.verbose)
+
+    def _make_box_on_slab(self) -> ModelKamino:
+        """A box of friction 0.1 and restitution 0.2 resting on a static slab of 1.0 and 0.6."""
+        builder = ModelBuilder()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.049), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=ModelBuilder.ShapeConfig(mu=0.1, restitution=0.2))
+        builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
+            hx=1.0,
+            hy=1.0,
+            hz=0.5,
+            cfg=ModelBuilder.ShapeConfig(mu=1.0, restitution=0.6),
+        )
+        return ModelKamino.from_newton(builder.finalize(self.default_device))
+
+    def test_00_mix_modes(self):
+        """Both pipelines mix friction and restitution with the configured modes."""
+        for pipeline in ("primitive", "unified"):
+            for friction_mode, restitution_mode, expected_mu, expected_restitution in (
+                (None, None, 0.55, 0.4),
+                ("max", "min", 1.0, 0.2),
+                ("min", "max", 0.1, 0.6),
+                ("multiply", "average", 0.1, 0.4),
+            ):
+                with self.subTest(pipeline=pipeline, friction=friction_mode, restitution=restitution_mode):
+                    model = self._make_box_on_slab()
+                    data = model.data()
+                    config = CollisionDetector.Config(
+                        pipeline=pipeline,
+                        friction_mix_mode=friction_mode,
+                        restitution_mix_mode=restitution_mode,
+                    )
+                    detector = CollisionDetector(model=model, config=config)
+                    detector.collide(data)
+                    num_contacts = int(detector.contacts.model_active_contacts.numpy()[0])
+                    self.assertGreater(num_contacts, 0)
+                    material = detector.contacts.material.numpy()[:num_contacts]
+                    np.testing.assert_allclose(material[:, 0], expected_mu, rtol=1e-6)
+                    np.testing.assert_allclose(material[:, 1], expected_restitution, rtol=1e-6)
+
+    def test_01_reject_invalid_mix_mode(self):
+        """An unknown mixing mode is rejected when the config is made."""
+        with self.assertRaises(ValueError):
+            CollisionDetector.Config(friction_mix_mode="median")
+        with self.assertRaises(ValueError):
+            CollisionDetector.Config(restitution_mix_mode="median")
+
+
 class TestCollisionDetectorContactCapacity(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:

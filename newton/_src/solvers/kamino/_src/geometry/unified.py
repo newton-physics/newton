@@ -26,7 +26,12 @@ from .....geometry.types import GeoType
 
 # Kamino imports
 from ..core.data import DataKamino
-from ..core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION, make_get_material_pair_properties
+from ..core.materials import (
+    DEFAULT_FRICTION,
+    DEFAULT_RESTITUTION,
+    MaterialMixMode,
+    get_material_pair_properties,
+)
 from ..core.model import ModelKamino
 from ..geometry.contacts import (
     DEFAULT_GEOM_PAIR_CONTACT_GAP,
@@ -77,6 +82,8 @@ class ContactWriterDataKamino:
     material_pair_restitution: wp.array[wp.float32]
     material_pair_static_friction: wp.array[wp.float32]
     material_pair_dynamic_friction: wp.array[wp.float32]
+    friction_mix_mode: wp.int32  # MaterialMixMode for friction
+    restitution_mix_mode: wp.int32  # MaterialMixMode for restitution
 
     # Contact limit and active count (Newton interface)
     contact_max: wp.int32
@@ -207,9 +214,11 @@ def _write_contact_unified_kamino(
         margins = wp.vec2f(margin_a, margin_b)
 
     # Retrieve the material properties for the geom pair
-    restitution_ab, _, mu_ab = wp.static(make_get_material_pair_properties())(
+    restitution_ab, _, mu_ab = get_material_pair_properties(
         mid_a,
         mid_b,
+        writer_data.friction_mix_mode,
+        writer_data.restitution_mix_mode,
         writer_data.material_restitution,
         writer_data.material_static_friction,
         writer_data.material_dynamic_friction,
@@ -423,6 +432,8 @@ class CollisionPipelineUnifiedKamino:
         default_gap: float = DEFAULT_GEOM_PAIR_CONTACT_GAP,
         default_friction: float = DEFAULT_FRICTION,
         default_restitution: float = DEFAULT_RESTITUTION,
+        friction_mix_mode: MaterialMixMode | str = MaterialMixMode.AVERAGE,
+        restitution_mix_mode: MaterialMixMode | str = MaterialMixMode.AVERAGE,
     ):
         """
         Initialize an instance of Kamino's wrapper of the unified collision detection pipeline.
@@ -436,6 +447,10 @@ class CollisionPipelineUnifiedKamino:
             default_gap: Default detection gap [m] applied as a floor to per-geometry gaps.
             default_friction: Default contact friction coefficient.
             default_restitution: Default impact restitution coefficient.
+            friction_mix_mode: How the friction of two materials combines when
+                their pair defines no friction of its own.
+            restitution_mix_mode: How the restitution of two materials combines when
+                their pair defines no restitution of its own.
         """
         # Cache a reference to the Kamino model
         self._model: ModelKamino = model
@@ -450,6 +465,8 @@ class CollisionPipelineUnifiedKamino:
         self._default_restitution: float = default_restitution
         self._max_contacts_per_pair: int = max_contacts_per_pair
         self._max_triangle_pairs: int = max_triangle_pairs
+        self._friction_mix_mode: MaterialMixMode = MaterialMixMode.from_value(friction_mix_mode)
+        self._restitution_mix_mode: MaterialMixMode = MaterialMixMode.from_value(restitution_mix_mode)
 
         # Get geometry count from model
         self._num_geoms: int = self._model.geoms.num_geoms
@@ -777,6 +794,8 @@ class CollisionPipelineUnifiedKamino:
         writer_data.material_pair_restitution = self._model.material_pairs.restitution
         writer_data.material_pair_static_friction = self._model.material_pairs.static_friction
         writer_data.material_pair_dynamic_friction = self._model.material_pairs.dynamic_friction
+        writer_data.friction_mix_mode = wp.int32(int(self._friction_mix_mode))
+        writer_data.restitution_mix_mode = wp.int32(int(self._restitution_mix_mode))
         writer_data.contact_max = wp.int32(contacts.model_max_contacts_host)
         writer_data.contact_count = self.narrow_phase_contact_count
         writer_data.dropped_contact_count = self.dropped_contact_count

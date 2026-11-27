@@ -17,6 +17,7 @@ import warp as wp
 
 from ......geometry.types import GeoType
 from ...core.data import DataKamino
+from ...core.materials import MaterialMixMode
 from ...core.model import ModelKamino
 from ...core.types import to_warp_int32_array, vec6f
 from ..contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
@@ -48,6 +49,8 @@ class CollisionPipelinePrimitive:
         model: ModelKamino | None = None,
         bvtype: Literal["aabb", "bs"] = "aabb",
         default_gap: float = DEFAULT_GEOM_PAIR_CONTACT_GAP,
+        friction_mix_mode: MaterialMixMode | str = MaterialMixMode.AVERAGE,
+        restitution_mix_mode: MaterialMixMode | str = MaterialMixMode.AVERAGE,
     ):
         """
         Initialize an instance of Kamino's optimized primitive collision detection pipeline.
@@ -59,10 +62,16 @@ class CollisionPipelinePrimitive:
                 can be finalized later by providing a model to the `finalize` method.
             bvtype: Type of bounding volume to use in broad-phase.
             default_gap: Default detection gap [m] applied as a floor to per-geometry gaps.
+            friction_mix_mode: How the friction of two materials combines when
+                their pair defines no friction of its own.
+            restitution_mix_mode: How the restitution of two materials combines when
+                their pair defines no restitution of its own.
         """
         # Cache the model reference, target device and settings
         self._model: ModelKamino | None = model
         self._default_gap: float = default_gap
+        self._friction_mix_mode: MaterialMixMode = MaterialMixMode.from_value(friction_mix_mode)
+        self._restitution_mix_mode: MaterialMixMode = MaterialMixMode.from_value(restitution_mix_mode)
         self._device: wp.DeviceLike = None
 
         # Convert the bounding volume type from string to enum if necessary
@@ -198,6 +207,8 @@ class CollisionPipelinePrimitive:
             contacts,
             self._contact_overflow_warning_emitted,
             default_gap=self._default_gap,
+            friction_mix_mode=self._friction_mix_mode,
+            restitution_mix_mode=self._restitution_mix_mode,
         )
         # The primitive pipeline ignores torsional and rolling friction, and per-contact stiffness and damping
         for array in (contacts.angular_friction, contacts.stiffness, contacts.damping):
