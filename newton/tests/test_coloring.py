@@ -173,7 +173,9 @@ def test_coloring_trimesh(test, device):
         )
 
         # coloring with bending
-        edge_indices_cpu_with_bending = construct_trimesh_graph_edges(model.edge_indices, True)
+        edge_indices_cpu_with_bending = construct_trimesh_graph_edges(
+            model.tri_indices, bending_edge_indices=model.edge_indices.numpy()
+        )
         num_colors_greedy = wp.utils.graph_coloring_assign(
             edge_indices_cpu_with_bending,
             particle_colors,
