@@ -324,7 +324,7 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |yes|
    * - DISTANCE
      - 🟨 :sup:`1`
-     - 🟨 :sup:`1`
+     - 🟨 :sup:`2`
      - 🟨 :sup:`1`
      - |yes|
      - |no|
@@ -345,11 +345,15 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |no|
      - |no|
      - |yes|
-     - |yes| :sup:`2`
+     - |yes| :sup:`4`
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
-| :sup:`2` See :ref:`kamino-rod-joints` for the supported rod joint properties.
+| :sup:`2` With ``enable_joint_limits=True``, distance limits are enforced on a DISTANCE joint that roots its
+  articulation, except while its child body is kinematic, and a DISTANCE joint below another body raises
+  ``NotImplementedError``. Otherwise DISTANCE joints in an articulation tree are treated as FREE. A loop-closing
+  DISTANCE joint raises ``NotImplementedError`` either way.
 | :sup:`3` See :ref:`kamino-d6-joints` for the supported D6 axis and forward-kinematics configurations.
+| :sup:`4` See :ref:`kamino-rod-joints` for the supported rod joint properties.
 
 **Joint properties**
 

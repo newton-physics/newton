@@ -2834,5 +2834,485 @@ def _arm_and_box_model():
     return builder.finalize()
 
 
+_TETHER_ANCHOR = np.array((0.0, 0.0, 1.0))
+# Solver options of each articulated solve; the colored row solve is CUDA-only.
+_TETHER_MODES = {
+    "immediate": {"articulated_contact_response": "immediate"},
+    "propagation": {"articulated_contact_response": "propagation"},
+    "colored": {"solve_mode": "colored", "articulated_contact_response": "propagation"},
+}
+# The anchor distance curves within a step; a short step keeps the Baumgarte lag of the row small.
+_TETHER_DT = 1.0 / 480.0
+
+
+def _build_tether(device, *, start, lower=-1.0, upper=-1.0, velocity=(0.0, 0.0, 0.0), gravity=True):
+    """Build a 1 kg weight on a root DISTANCE joint anchored at ``_TETHER_ANCHOR``; return ``(model, body)``."""
+    builder = _tether_builder(start=start, lower=lower, upper=upper, velocity=velocity, gravity=gravity)
+    return builder.finalize(device=device), 0
+
+
+def _tether_builder(*, start, lower=-1.0, upper=-1.0, velocity=(0.0, 0.0, 0.0), gravity=True):
+    """Return a builder holding a 1 kg weight on a root DISTANCE joint anchored at ``_TETHER_ANCHOR``."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81 if gravity else 0.0))
+    weight = builder.add_link(
+        xform=wp.transform(wp.vec3(*start), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3)
+    )
+    joint = builder.add_joint_distance(
+        -1,
+        weight,
+        parent_xform=wp.transform(wp.vec3(*_TETHER_ANCHOR), wp.quat_identity()),
+        min_distance=lower,
+        max_distance=upper,
+    )
+    builder.add_articulation([joint])
+    # The builder starts a DISTANCE joint at the anchor; place the weight at ``start``.
+    builder.joint_q[0:3] = list(np.array(start) - _TETHER_ANCHOR)
+    builder.joint_qd[0:3] = list(velocity)
+    return builder
+
+
+def _tether_distances(model, body, steps, *, capture=False, **solver_kwargs):
+    """Step ``model`` and return the weight's distance from the anchor after every step, or every second captured step."""
+    solver = SolverSteel(model, **solver_kwargs)
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    graph = None
+    if capture:
+        # Two steps per graph return the result to state_0.
+        with wp.ScopedCapture(device=model.device) as tape:
+            solver.step(state_0, state_1, control, None, _TETHER_DT)
+            solver.step(state_1, state_0, control, None, _TETHER_DT)
+        graph = tape.graph
+    distances = []
+    for _ in range(steps // 2 if capture else steps):
+        if graph is not None:
+            wp.capture_launch(graph)
+        else:
+            solver.step(state_0, state_1, control, None, _TETHER_DT)
+            state_0, state_1 = state_1, state_0
+        distances.append(float(np.linalg.norm(state_0.body_q.numpy()[body, :3] - _TETHER_ANCHOR)))
+    return np.array(distances)
+
+
+def test_distance_joint_max_holds_a_falling_weight(test, device):
+    """Hold a slack tether's weight within ``max_distance`` once it falls taut, and leave it free without limits."""
+    model, body = _build_tether(device, start=(0.3, 0.0, 0.9), upper=0.4)
+    # The colored row solve is CUDA-only.
+    modes = ("immediate", "propagation", "colored") if wp.get_device(device).is_cuda else ("immediate", "propagation")
+    for mode in modes:
+        with test.subTest(mode=mode):
+            distances = _tether_distances(model, body, 240, enable_joint_limits=True, **_TETHER_MODES[mode])
+            test.assertLess(distances.max(), 0.4 + 1.0e-3)
+            test.assertGreater(distances.max(), 0.4 - 1.0e-3)
+    # Joint limits are opt-in for DISTANCE joints as for every other joint.
+    test.assertGreater(_tether_distances(model, body, 240)[-1], 1.0)
+
+
+def test_distance_joint_min_holds_an_approaching_weight(test, device):
+    """Stop a weight moving toward the anchor at ``min_distance``."""
+    model, body = _build_tether(device, start=(0.3, 0.0, 1.0), lower=0.2, velocity=(-1.0, 0.0, 0.0), gravity=False)
+    distances = _tether_distances(model, body, 120, enable_joint_limits=True)
+    test.assertGreater(distances.min(), 0.2 - 1.0e-3)
+
+
+def test_taut_distance_joint_swings_like_a_pendulum(test, device):
+    """Swing a taut tether released horizontally to the bottom at the speed ``sqrt(2 g L)`` of a pendulum."""
+    length = 0.4
+    model, body = _build_tether(device, start=(length, 0.0, 1.0), upper=length)
+    solver = SolverSteel(model, enable_joint_limits=True)
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    lowest_z, bottom_speed, max_length_error = np.inf, 0.0, 0.0
+    # A quarter period of a 0.4 m pendulum released at 90 degrees is about 0.37 s.
+    for _ in range(240):
+        solver.step(state_0, state_1, control, None, _TETHER_DT)
+        state_0, state_1 = state_1, state_0
+        position = state_0.body_q.numpy()[body, :3]
+        max_length_error = max(max_length_error, abs(float(np.linalg.norm(position - _TETHER_ANCHOR)) - length))
+        if position[2] < lowest_z:
+            lowest_z = float(position[2])
+            bottom_speed = float(np.linalg.norm(state_0.body_qd.numpy()[body, :3]))
+    test.assertLess(max_length_error, 1.0e-3)
+    test.assertAlmostEqual(lowest_z, 1.0 - length, delta=1.0e-3)
+    test.assertAlmostEqual(bottom_speed, np.sqrt(2.0 * 9.81 * length), delta=0.03 * np.sqrt(2.0 * 9.81 * length))
+
+
+def test_distance_joint_below_a_link_is_rejected(test, device):
+    """Reject DISTANCE limits on a joint below another link, and build the model without limits."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    arm = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+    weight = builder.add_link(mass=0.2, inertia=wp.mat33(np.eye(3) * 1.0e-4))
+    joints = [
+        builder.add_joint_revolute(-1, arm, axis=newton.Axis.Z),
+        builder.add_joint_distance(arm, weight, max_distance=0.1),
+    ]
+    builder.add_articulation(joints)
+    model = builder.finalize(device=device)
+    with test.assertRaisesRegex(NotImplementedError, "DISTANCE joint limits only on articulation roots"):
+        SolverSteel(model, enable_joint_limits=True)
+    SolverSteel(model)
+
+
+def test_distance_joint_bounds_are_read_every_step(test, device):
+    """Build no rows for negative bounds, and enforce a bound set in place after construction."""
+    model, body = _build_tether(device, start=(0.3, 0.0, 0.9))
+    solver = SolverSteel(model, enable_joint_limits=True, joint_limit_activation_gap=float("inf"))
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    solver.step(state_0, state_1, control, None, _TETHER_DT)
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), 0)
+    upper = model.joint_limit_upper.numpy()
+    upper[0] = 0.4
+    model.joint_limit_upper.assign(upper)
+    state_0, state_1 = state_1, state_0
+    distances = []
+    for _ in range(120):
+        solver.step(state_0, state_1, control, None, _TETHER_DT)
+        state_0, state_1 = state_1, state_0
+        distances.append(float(np.linalg.norm(state_0.body_q.numpy()[body, :3] - _TETHER_ANCHOR)))
+    test.assertLess(max(distances), 0.4 + 1.0e-3)
+
+
+def test_distance_row_is_the_anchor_distance_rate(test, device):
+    """Give both bound rows ``J qd`` the anchor's rate along the predicted end-of-step separation, from forward
+    kinematics with offset frames."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    child = builder.add_link(mass=0.7, com=wp.vec3(-0.1, 0.05, 0.03), inertia=wp.mat33(np.eye(3) * 0.1))
+    parent_xform = wp.transform((0.4, -0.1, 1.2), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6))
+    child_xform = wp.transform((0.12, 0.08, -0.04), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.4))
+    joint = builder.add_joint_distance(
+        -1, child, parent_xform=parent_xform, child_xform=child_xform, min_distance=0.1, max_distance=0.2
+    )
+    builder.add_articulation([joint])
+    builder.joint_q[0:3] = [0.3, -0.2, 0.1]
+    builder.joint_q[3:7] = list(wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7))
+    builder.joint_qd[:] = [0.5, -0.4, 0.3, 0.7, -0.2, 0.6]
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, enable_joint_limits=True, joint_limit_activation_gap=float("inf"))
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    body_q, body_qd = state_0.body_q.numpy()[child], state_0.body_qd.numpy()[child]
+    pose = wp.transform(wp.vec3(*body_q[:3]), wp.quat(*body_q[3:]))
+    p_a = np.array(wp.transform_get_translation(parent_xform))
+    p_c = np.array(wp.transform_point(pose, wp.transform_get_translation(child_xform)))
+    center = np.array(wp.transform_point(pose, wp.vec3(*model.body_com.numpy()[child])))
+    v_c = body_qd[:3] + np.cross(body_qd[3:], p_c - center)
+    dt = 0.01
+    n = (p_c - p_a) / np.linalg.norm(p_c - p_a)
+    n_end = (p_c - p_a + dt * v_c) / np.linalg.norm(p_c - p_a + dt * v_c)
+    solver.step(state_0, state_1, model.control(), None, dt)
+    test.assertEqual(int(solver._constraint_count.numpy()[0]), 2)
+    J = solver._J_by_size[6].numpy()[0, :2]
+    qd = state_0.joint_qd.numpy()
+    test.assertAlmostEqual(float(J[0] @ qd), float(n_end @ v_c), delta=1.0e-5)
+    test.assertAlmostEqual(float(J[1] @ qd), -float(n_end @ v_c), delta=1.0e-5)
+    test.assertGreater(float(np.linalg.norm(n_end - n)), 1.0e-3)
+
+
+def test_captured_distance_joint_limit_matches_eager_steps(test, device):
+    """Replay a captured graph of DISTANCE limit rows like eager steps, through the fall onto the cap."""
+    model, body = _build_tether(device, start=(0.3, 0.0, 0.9), upper=0.4)
+    # The weight falls taut after about 0.18 s.
+    eager = _tether_distances(model, body, 240, enable_joint_limits=True)
+    captured = _tether_distances(model, body, 240, capture=True, enable_joint_limits=True)
+    test.assertLess(captured.max(), 0.4 + 1.0e-3)
+    test.assertGreater(captured.max(), 0.4 - 1.0e-3)
+    np.testing.assert_allclose(captured, eager[1::2], atol=1.0e-6)
+
+
+def test_zero_min_distance_is_no_bound(test, device):
+    """Let a weight pass through the anchor with ``min_distance=0``, as with no lower bound."""
+    distances = {}
+    for lower in (0.0, -1.0):
+        model, body = _build_tether(
+            device, start=(0.1, 0.0, 1.0), lower=lower, velocity=(-1.0, 0.0, 0.0), gravity=False
+        )
+        distances[lower] = _tether_distances(model, body, 120, enable_joint_limits=True)
+    np.testing.assert_array_equal(distances[0.0], distances[-1.0])
+    test.assertAlmostEqual(distances[0.0][-1], 120 * _TETHER_DT - 0.1, delta=1.0e-4)
+
+
+def test_zero_max_distance_holds_the_anchors_together(test, device):
+    """Hold coincident anchors together under gravity and a transverse push with ``max_distance=0``."""
+    model, body = _build_tether(device, start=tuple(_TETHER_ANCHOR), upper=0.0, velocity=(0.0, 0.5, 0.2))
+    modes = ("immediate", "propagation", "colored") if wp.get_device(device).is_cuda else ("immediate", "propagation")
+    for mode in modes:
+        with test.subTest(mode=mode):
+            distances = _tether_distances(model, body, 120, enable_joint_limits=True, **_TETHER_MODES[mode])
+            test.assertLess(distances.max(), 1.0e-5)
+
+
+def test_positive_max_distance_caps_any_push_from_coincident_anchors(test, device):
+    """Stop a weight pushed from coincident anchors at a 5 mm ``max_distance`` along every axis and a diagonal."""
+    cap, speed = 0.005, 4.0
+    directions = [np.eye(3)[axis] * sign for axis in range(3) for sign in (1.0, -1.0)]
+    directions.append(np.ones(3) / np.sqrt(3.0))
+    for direction in directions:
+        with test.subTest(direction=direction.tolist()):
+            model, body = _build_tether(
+                device, start=tuple(_TETHER_ANCHOR), upper=cap, velocity=tuple(speed * direction), gravity=False
+            )
+            distances = _tether_distances(model, body, 10, enable_joint_limits=True)
+            test.assertLess(distances.max(), cap + 1.0e-5)
+
+
+def test_distance_bounds_hold_a_push_through_or_across_the_anchor(test, device):
+    """Hold 5 mm bounds when one step carries the weight through the parent anchor or across the bound."""
+    cap = 0.005
+    # Crossing within the first step, head-on and oblique; a tangential push at the cap, alone and with a lower
+    # bound active in the same step; an inward oblique push with equal bounds; and a lower bound that stops a
+    # crossing on the near side.
+    cases = [
+        ((0.001, 0.0, 0.0), (-4.0, 0.0, 0.0), -1.0, cap),
+        ((0.001, 0.0, 0.0), (-4.0, 1.0, 0.0), -1.0, cap),
+        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), -1.0, cap),
+        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), 0.0049, cap),
+        ((cap, 0.0, 0.0), (0.0, 4.0, 0.0), cap, cap),
+        ((cap, 0.0, 0.0), (-1.732, 1.0, 0.0), cap, cap),
+        ((0.003, 0.0, 0.0), (-4.0, 0.0, 0.0), 0.002, -1.0),
+    ]
+    for offset, velocity, lower, upper in cases:
+        with test.subTest(offset=offset, velocity=velocity, lower=lower, upper=upper):
+            model, body = _build_tether(
+                device, start=tuple(_TETHER_ANCHOR + offset), lower=lower, upper=upper, velocity=velocity, gravity=False
+            )
+            distances = _tether_distances(model, body, 10, enable_joint_limits=True)
+            if upper >= 0.0:
+                test.assertLess(distances.max(), upper + 1.0e-5)
+            if lower > 0.0:
+                test.assertGreater(distances.min(), lower - 1.0e-5)
+    # The lower bound stops the crossing on the near side of the anchor, at +2 mm along x.
+    model, _ = _build_tether(
+        device,
+        start=tuple(_TETHER_ANCHOR + np.array((0.003, 0.0, 0.0))),
+        lower=0.002,
+        velocity=(-4.0, 0.0, 0.0),
+        gravity=False,
+    )
+    solver = SolverSteel(model, enable_joint_limits=True)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    solver.step(state_0, state_1, model.control(), None, _TETHER_DT)
+    np.testing.assert_allclose(state_1.joint_q.numpy()[0:3], (0.002, 0.0, 0.0), atol=1.0e-6)
+
+
+def test_equal_distance_bounds_on_a_step_through_the_anchor(test, device):
+    """Bound the overshoot of equal 5 mm bounds when one step would carry the weight through the parent anchor."""
+    cap = 0.005
+    # The lower bound stops the weight on the near side while the upper bound acts along the far-side direction.
+    model, body = _build_tether(
+        device,
+        start=tuple(_TETHER_ANCHOR + np.array((cap, 0.0, 0.0))),
+        lower=cap,
+        upper=cap,
+        velocity=(-4.0, 4.0, 0.0),
+        gravity=False,
+    )
+    distances = _tether_distances(model, body, 10, enable_joint_limits=True)
+    # The lower row holds x at the cap and the upper row, along the predicted end point (cap - 4 dt, 4 dt), stops the
+    # first step at y = 7.39 mm, 8.92 mm from the anchor.
+    test.assertLess(distances.max(), 8.93e-3)
+    test.assertAlmostEqual(distances[-1], cap, delta=1.0e-5)
+
+
+def test_contact_push_can_pass_max_distance_for_a_step(test, device):
+    """Let a sideways contact push carry a capped weight past ``max_distance`` within one step, then return it."""
+    cap, radius, speed = 0.005, 0.01, 4.0
+    builder = _tether_builder(start=tuple(_TETHER_ANCHOR + np.array((cap, 0.0, 0.0))), upper=cap, gravity=False)
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0)
+    builder.add_shape_sphere(0, radius=radius, cfg=cfg)
+    start = _TETHER_ANCHOR + np.array((cap, -2.0 * radius - 1.0e-4, 0.0))
+    striker = builder.add_body(
+        xform=wp.transform(wp.vec3(*start), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3)
+    )
+    builder.add_shape_sphere(striker, radius=radius, cfg=cfg)
+    # The striker's free joint is the last one; its linear velocity comes first.
+    builder.joint_qd[builder.joint_qd_start[-1] + 1] = speed
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, enable_joint_limits=True)
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    distances, sideways_speeds = [], []
+    for _ in range(12):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, _TETHER_DT)
+        state_0, state_1 = state_1, state_0
+        distances.append(float(np.linalg.norm(state_0.joint_q.numpy()[0:3])))
+        sideways_speeds.append(float(state_0.joint_qd.numpy()[1]))
+    # The row's direction comes from the velocity before the solve, so the contact's sideways velocity change u
+    # carries the anchor to sqrt(cap^2 + (dt u)^2), 6.48 mm here; the row then returns it within three steps.
+    test.assertGreater(sideways_speeds[0], 1.0)
+    test.assertAlmostEqual(distances[0], np.hypot(cap, _TETHER_DT * sideways_speeds[0]), delta=1.0e-6)
+    test.assertLess(distances[0], 6.48e-3)
+    test.assertLess(max(distances[3:]), cap + 1.0e-5)
+
+
+def test_zero_max_distance_drift_with_an_offset_com(test, device):
+    """Keep the drift of an offset-COM body from a zero ``max_distance`` small, and smaller at a shorter timestep."""
+
+    def peak_distance(hz, steps):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, com=wp.vec3(0.1, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3))
+        builder.add_articulation([builder.add_joint_distance(-1, body, max_distance=0.0)])
+        builder.joint_qd[0:3] = list(4.0 * np.ones(3) / np.sqrt(3.0))
+        model = builder.finalize(device=device)
+        solver = SolverSteel(model, enable_joint_limits=True)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        peak = 0.0
+        for _ in range(steps):
+            solver.step(state_0, state_1, control, None, 1.0 / hz)
+            state_0, state_1 = state_1, state_0
+            peak = max(peak, float(np.linalg.norm(state_0.joint_q.numpy()[0:3])))
+        return peak
+
+    # The anchor is offset 0.1 m from the COM and pushed at 4 m/s; the six axis rows bound it to about a millimeter.
+    test.assertLess(peak_distance(480, 120), 1.5e-3)
+    test.assertLess(peak_distance(1920, 80), 0.25 * peak_distance(480, 20))
+
+
+def test_kinematic_distance_root_gets_no_limit_rows(test, device):
+    """Leave a kinematic DISTANCE root's dynamic child untouched, and bound the root once it turns dynamic."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    root = builder.add_link(is_kinematic=True, mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    child = builder.add_link(mass=0.5, com=wp.vec3(0.1, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    joints = [
+        builder.add_joint_distance(-1, root, max_distance=0.005),
+        builder.add_joint_revolute(root, child, axis=newton.Axis.Z),
+    ]
+    builder.add_articulation(joints)
+    # The root sits on the cap and its prescribed velocity is tangent to it.
+    builder.joint_q[0:3] = [0.005, 0.0, 0.0]
+    builder.joint_qd[0:3] = [0.0, 4.0, 0.0]
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, enable_joint_limits=True)
+    observables = solver.observables({SolverBase.ObservableKind.BODY_PARENT_F})
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    def distance_row_count():
+        # The hinge's default limits are 1e10 away; only the DISTANCE row has a millimeter gap.
+        phi = solver._phi.numpy()[0, : int(solver._constraint_count.numpy()[0])]
+        return int(np.count_nonzero(np.abs(phi) < 1.0))
+
+    solver.step(state_0, state_1, control, None, _TETHER_DT, observables=observables)
+    test.assertEqual(distance_row_count(), 0)
+    test.assertEqual(float(state_1.joint_qd.numpy()[6]), 0.0)
+    np.testing.assert_array_equal(observables.body_parent_f.numpy()[child], 0.0)
+    # The kinematic mask is read every step, so a root made dynamic gets its limit row.
+    flags = model.body_flags.numpy()
+    flags[root] = int(BodyFlags.DYNAMIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    solver.step(state_0, state_1, control, None, _TETHER_DT)
+    test.assertEqual(distance_row_count(), 1)
+
+
+def test_distance_rows_count_toward_the_capacity_warning(test, device):
+    """Warn at construction when a bounded DISTANCE joint's rows alone exceed ``articulation_constraint_max``, and
+    not for a kinematic root, which gets no rows."""
+    model, _ = _build_tether(device, start=(0.3, 0.0, 1.0), lower=0.1, upper=0.5)
+    with test.assertWarnsRegex(newton.NewtonWarning, r"need at least 2 dense rows"):
+        SolverSteel(
+            model, enable_joint_limits=True, joint_limit_activation_gap=float("inf"), articulation_constraint_max=1
+        )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    root = builder.add_link(is_kinematic=True, mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    child = builder.add_link(mass=0.5, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    joints = [
+        builder.add_joint_distance(-1, root, max_distance=0.0),
+        builder.add_joint_revolute(root, child, axis=newton.Axis.Z),
+    ]
+    builder.add_articulation(joints)
+    model = builder.finalize(device=device)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", newton.NewtonWarning)
+        # A finite gap leaves only the zero cap's six rows, which a kinematic root never builds.
+        SolverSteel(model, enable_joint_limits=True, joint_limit_activation_gap=0.1, articulation_constraint_max=1)
+
+
+def test_multi_world_distance_limits_match_single_worlds(test, device):
+    """Match each world of a mixed batch to its own single-world run, bitwise across two ``RUN_TO_RUN`` runs."""
+    worlds = [
+        {"start": (0.3, 0.0, 0.9), "upper": 0.4},
+        {"start": (0.3, 0.0, 1.0), "lower": 0.2, "velocity": (-1.0, 0.0, 0.0)},
+        {"start": (0.4, 0.0, 1.0), "lower": 0.4, "upper": 0.4},
+        {"start": (0.3, 0.0, 0.9)},
+    ]
+    options = {"enable_joint_limits": True, "deterministic": wp.DeterministicMode.RUN_TO_RUN}
+    scene = newton.ModelBuilder()
+    for world in worlds:
+        scene.add_world(_tether_builder(**world))
+    model = scene.finalize(device=device)
+
+    def run():
+        solver = SolverSteel(model, **options)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        distances = []
+        for _ in range(120):
+            solver.step(state_0, state_1, control, None, _TETHER_DT)
+            state_0, state_1 = state_1, state_0
+            distances.append(np.linalg.norm(state_0.body_q.numpy()[:, :3] - _TETHER_ANCHOR, axis=1))
+        return state_0.body_q.numpy(), np.array(distances)
+
+    batched, distances = run()
+    rerun, rerun_distances = run()
+    np.testing.assert_array_equal(rerun, batched)
+    np.testing.assert_array_equal(rerun_distances, distances)
+    # Each bounded world holds its bounds over the whole run; the unbounded one falls past the other worlds' cap.
+    test.assertLess(distances[:, 0].max(), 0.4 + 1.0e-3)
+    test.assertGreater(distances[:, 1].min(), 0.2 - 1.0e-3)
+    np.testing.assert_allclose(distances[:, 2], 0.4, atol=1.0e-3)
+    test.assertGreater(distances[-1, 3], 0.4 + 0.05)
+    for i, world in enumerate(worlds):
+        with test.subTest(world=i):
+            single, body = _build_tether(device, **world)
+            expected = _tether_distances(single, body, 120, **options)[-1]
+            test.assertAlmostEqual(float(distances[-1, i]), expected, delta=1.0e-6)
+
+
+class TestSteelDistanceJointLimits(unittest.TestCase):
+    """DISTANCE joint ``min_distance`` / ``max_distance`` as joint-limit rows on the anchor distance."""
+
+
+for _name, _func in (
+    ("test_distance_joint_max_holds_a_falling_weight", test_distance_joint_max_holds_a_falling_weight),
+    ("test_distance_joint_min_holds_an_approaching_weight", test_distance_joint_min_holds_an_approaching_weight),
+    ("test_taut_distance_joint_swings_like_a_pendulum", test_taut_distance_joint_swings_like_a_pendulum),
+    ("test_distance_joint_below_a_link_is_rejected", test_distance_joint_below_a_link_is_rejected),
+    ("test_distance_joint_bounds_are_read_every_step", test_distance_joint_bounds_are_read_every_step),
+    ("test_distance_row_is_the_anchor_distance_rate", test_distance_row_is_the_anchor_distance_rate),
+    ("test_zero_min_distance_is_no_bound", test_zero_min_distance_is_no_bound),
+    ("test_zero_max_distance_holds_the_anchors_together", test_zero_max_distance_holds_the_anchors_together),
+    (
+        "test_positive_max_distance_caps_any_push_from_coincident_anchors",
+        test_positive_max_distance_caps_any_push_from_coincident_anchors,
+    ),
+    (
+        "test_distance_bounds_hold_a_push_through_or_across_the_anchor",
+        test_distance_bounds_hold_a_push_through_or_across_the_anchor,
+    ),
+    (
+        "test_equal_distance_bounds_on_a_step_through_the_anchor",
+        test_equal_distance_bounds_on_a_step_through_the_anchor,
+    ),
+    ("test_contact_push_can_pass_max_distance_for_a_step", test_contact_push_can_pass_max_distance_for_a_step),
+    ("test_zero_max_distance_drift_with_an_offset_com", test_zero_max_distance_drift_with_an_offset_com),
+    ("test_kinematic_distance_root_gets_no_limit_rows", test_kinematic_distance_root_gets_no_limit_rows),
+    ("test_distance_rows_count_toward_the_capacity_warning", test_distance_rows_count_toward_the_capacity_warning),
+    ("test_multi_world_distance_limits_match_single_worlds", test_multi_world_distance_limits_match_single_worlds),
+):
+    add_function_test(TestSteelDistanceJointLimits, _name, _func, devices=get_test_devices())
+add_function_test(
+    TestSteelDistanceJointLimits,
+    "test_captured_distance_joint_limit_matches_eager_steps",
+    test_captured_distance_joint_limit_matches_eager_steps,
+    devices=get_cuda_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main()
