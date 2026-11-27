@@ -46,7 +46,10 @@ Use the **Security** tab of the
 [Newton repository](https://github.com/newton-physics/newton/security) and
 select **Report a vulnerability**. This confidential process delivers the report
 to the appropriate Newton maintainers. For other repositories in the
-organization, use that repository's Security tab.
+organization, use **Report a vulnerability** in the affected repository's
+**Security** tab if available. Otherwise, select **Report a vulnerability** on
+the [newton-governance advisories page](https://github.com/newton-physics/newton-governance/security/advisories)
+and name the affected repository in your report.
 
 Include the following information:
 
