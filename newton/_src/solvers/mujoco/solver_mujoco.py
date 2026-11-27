@@ -78,6 +78,7 @@ from .geometry import build_shape_layout, compile_layout_collision_masks
 from .joint_springs import finalize_springref, finalize_stiffness
 from .kernels import (
     _sync_nacon_count,
+    apply_hydroelastic_compliance_kernel,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
@@ -4815,6 +4816,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
         mujoco_attrs = getattr(model, "mujoco", None)
+        solref_mode = getattr(mujoco_attrs, "solref_mode", None)
+        required_flags = ShapeFlags.HYDROELASTIC | ShapeFlags.COLLIDE_SHAPES
+        # Select at construction so unselected scenes need no extra contact pass.
+        self._has_force_space_hydroelastic = (
+            solref_mode is not None
+            and np.count_nonzero(
+                ((model.shape_flags.numpy() & required_flags) == required_flags)
+                & (solref_mode.numpy() == SOLREF_MODE_FORCE_SPACE)
+            )
+            >= 2
+        )
         if enable_sleeping is None:
             if mujoco_attrs is not None and hasattr(mujoco_attrs, "enable_sleeping"):
                 enable_sleeping = bool(mujoco_attrs.enable_sleeping.numpy()[0])
@@ -5123,6 +5135,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._mjw_qfrc_frictionloss: wp.array2d[wp.float32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._contacts_epoch = 0
+        self._last_contact_timestep = None
+        self._last_contacts_epoch = None
+        if self._has_force_space_hydroelastic:
+            self._last_contact_timestep = wp.zeros(1, dtype=float, device=self.device)
+            self._last_contacts_epoch = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         # Reset by the conversion finalizer, avoiding a memset before each pass.
         self._contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
@@ -5281,10 +5299,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with self._scoped_deterministic_config():
             yield
 
+    def _supports_hydroelastic_compliance(self) -> bool:
+        if not self._has_force_space_hydroelastic or self.use_mujoco_cpu or self._use_mujoco_contacts:
+            return False
+        opt = self.mjw_model.opt
+        integrators = self._mujoco_warp.IntegratorType
+        return (
+            opt.integrator in (integrators.EULER, integrators.IMPLICIT, integrators.IMPLICITFAST)
+            and opt.cone == self._mujoco_warp.ConeType.ELLIPTIC
+        )
+
     @event_scope
-    def _mujoco_warp_step(self):
+    def _mujoco_warp_step(self, contacts: Contacts | None):
+        hydroelastic = self._supports_hydroelastic_compliance()
         if not self._use_speculative_contacts:
-            self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+            if hydroelastic:
+                self._mujoco_warp.step1(self.mjw_model, self.mjw_data)
+                self._apply_hydroelastic_compliance(self.mjw_model, self.mjw_data, contacts)
+                self._mujoco_warp.step2(self.mjw_model, self.mjw_data)
+            else:
+                self._mujoco_warp.step(self.mjw_model, self.mjw_data)
             return
         model, data = self.mjw_model, self.mjw_data
         if model.opt.integrator not in (
@@ -5313,6 +5347,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.device,
         )
         self._mujoco_warp.step1(model, data)
+        if hydroelastic:
+            self._apply_hydroelastic_compliance(model, data, contacts)
         wp.launch(
             speculative.set_contact_targets,
             dim=data.naconmax,
@@ -5444,7 +5480,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Always clear d.overflow before the step so observables.overflow
                 # reflects only the current step (d.overflow uses |= accumulation).
                 self.mjw_data.overflow.zero_()
-                self._mujoco_warp_step()
+                self._mujoco_warp_step(contacts)
                 if observables is not None and observables.is_requested(self.ObservableKind.OVERFLOW):
                     # Pipeline overflow is relevant only when Newton supplies collision input.
                     newton_contacts = int(not self.mjw_model.opt.run_collision_detection and contacts is not None)
@@ -5917,6 +5953,44 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    def _apply_hydroelastic_compliance(self, model: MjWarpModel, data: MjWarpData, contacts: Contacts | None) -> None:
+        """Apply hydroelastic stiffness and damping before the backend constraint solve."""
+        disabled = self._mujoco_warp.DisableBit.CONSTRAINT | self._mujoco_warp.DisableBit.CONTACT
+        if model.opt.disableflags & disabled or contacts is None or contacts.rigid_contact_stiffness is None:
+            return
+        wp.launch(
+            apply_hydroelastic_compliance_kernel,
+            dim=(
+                contacts.rigid_contact_max
+                if self._compact_stale_contacts or contacts._mesh_recovery_contacts is not None
+                else min(contacts.rigid_contact_max, data.naconmax)
+            ),
+            inputs=[
+                contacts.rigid_contact_count,
+                contacts._hydroelastic_pressure_contact,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                self.model.shape_flags,
+                getattr(getattr(self.model, "mujoco", None), "solref_mode", None),
+                contacts.rigid_contact_stiffness,
+                contacts.rigid_contact_damping,
+                self._contact_tid_to_cid,
+                data.nacon,
+                model.opt.timestep,
+                data.contact.dim,
+                data.contact.worldid,
+                data.contact.efc_address,
+                data.contact.dist,
+                data.contact.includemargin,
+                self._speculative_clearance if self._use_speculative_contacts else None,
+                data.contact.adhesion if model.flg_adhesion else None,
+                data.nefc,
+                data.efc.vel,
+            ],
+            outputs=[data.efc.D, data.efc.aref],
+            device=self.device,
+        )
+
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         if self._use_speculative_contacts:
             # The conversion fast path reuses material properties. Restore
@@ -5975,6 +6049,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contacts_id = id(contacts.contact_generation)
         if self._last_contacts_id != contacts_id or self._last_rigid_contact_max != contacts.rigid_contact_max:
             self._invalidate_contact_fast_path()
+            # Track buffer switches on device so graph replay refreshes backend rows.
+            self._contacts_epoch += 1
             self._last_contacts_id = contacts_id
             self._last_rigid_contact_max = contacts.rigid_contact_max
 
@@ -5991,6 +6067,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._mujoco.mjMINVAL,
                 state_in.body_q,
                 model.shape_body,
+                model.shape_flags,
                 model.body_flags,
                 self.mjw_model.geom_bodyid,
                 self.mjw_model.body_weldid,
@@ -6052,6 +6129,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
+                self._last_contact_timestep,
+                contacts._hydroelastic_pressure_contact if self._has_force_space_hydroelastic else None,
+                contacts._hydroelastic_pressure_generation if self._has_force_space_hydroelastic else None,
+                self._last_contacts_epoch,
+                self._supports_hydroelastic_compliance(),
+                self._contacts_epoch,
                 recovery,
                 self.mjw_model.opt.timestep,
                 self.mjw_model.opt.integrator != self._mujoco.mjtIntegrator.mjINT_DISCRETE
@@ -6067,6 +6150,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         #    the scratch counter, avoiding a separate pre-conversion memset
         #  - last_contact_generation is only updated after ALL threads in the
         #    main kernel have read it (avoids a cross-block race)
+        # Cached timestep and buffer epochs must also be published after those reads.
         wp.launch(
             _sync_nacon_count,
             dim=1,
@@ -6077,6 +6161,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._last_nacon_count,
                 contacts.contact_generation,
                 self._last_contact_generation,
+                self.mjw_model.opt.timestep,
+                self._last_contact_timestep,
+                self._last_contacts_epoch,
+                self._contacts_epoch,
                 recovery,
                 compact_stale,
                 naconmax,

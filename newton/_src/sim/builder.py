@@ -1295,8 +1295,9 @@ class ModelBuilder:
 
             For :class:`~newton.solvers.SolverMuJoCo`, stiffness values are
             internally scaled by masses when Newton-generated contacts are
-            passed through the MuJoCo contact path. Tune ``kh`` with that
-            scaling in mind.
+            passed through the MuJoCo contact path. For hydroelastic contacts,
+            see :ref:`mujoco-hydroelastic-response` for how ``mujoco.solref_mode``
+            affects this mapping before tuning ``kh``.
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
