@@ -1,0 +1,8 @@
+﻿newton.controllers.ControllerBase
+=================================
+
+.. autoclass:: newton.controllers.ControllerBase
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

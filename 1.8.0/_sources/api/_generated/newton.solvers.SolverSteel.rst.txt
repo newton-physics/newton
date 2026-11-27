@@ -1,0 +1,8 @@
+﻿newton.solvers.SolverSteel
+==========================
+
+.. autoclass:: newton.solvers.SolverSteel
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

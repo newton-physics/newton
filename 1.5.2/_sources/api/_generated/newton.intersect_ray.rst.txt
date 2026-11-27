@@ -1,0 +1,6 @@
+﻿newton.intersect\_ray
+=====================
+
+.. currentmodule:: newton
+
+.. autofunction:: intersect_ray

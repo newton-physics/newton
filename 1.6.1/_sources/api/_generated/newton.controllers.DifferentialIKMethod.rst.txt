@@ -1,0 +1,8 @@
+﻿newton.controllers.DifferentialIKMethod
+=======================================
+
+.. autoclass:: newton.controllers.DifferentialIKMethod
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,8 @@
+﻿newton.ik.IKObjectivePosition
+=============================
+
+.. autoclass:: newton.ik.IKObjectivePosition
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

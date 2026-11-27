@@ -1,0 +1,8 @@
+﻿newton.ShapeFrictionMode
+========================
+
+.. autoclass:: newton.ShapeFrictionMode
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,8 @@
+﻿newton.geometry.DeformableVisuals
+=================================
+
+.. autoclass:: newton.geometry.DeformableVisuals
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,6 @@
+﻿newton.utils.create\_straight\_cable\_points\_and\_quaternions
+==============================================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: create_straight_cable_points_and_quaternions

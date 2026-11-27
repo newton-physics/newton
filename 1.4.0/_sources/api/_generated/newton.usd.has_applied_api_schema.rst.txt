@@ -1,0 +1,6 @@
+﻿newton.usd.has\_applied\_api\_schema
+====================================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: has_applied_api_schema

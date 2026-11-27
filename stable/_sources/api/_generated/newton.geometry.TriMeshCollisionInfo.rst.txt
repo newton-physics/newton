@@ -1,0 +1,6 @@
+﻿newton.geometry.TriMeshCollisionInfo
+====================================
+
+.. currentmodule:: newton.geometry
+
+.. autodata:: TriMeshCollisionInfo
