@@ -806,10 +806,15 @@ def _build_free_velocity_bias_contacts(
     contacts_gapfunc: wp.array[wp.vec4f],
     contacts_material: wp.array[wp.vec2f],
     contacts_gid: wp.array[wp.vec2i],
+    contacts_bid: wp.array[wp.vec2i],
+    contacts_position_A: wp.array[wp.vec3f],
+    contacts_position_B: wp.array[wp.vec3f],
     contacts_stiffness: wp.array[wp.float32],
     contacts_damping: wp.array[wp.float32],
     shape_stiffness: wp.array[wp.float32],
     shape_damping: wp.array[wp.float32],
+    data_bodies_q_i: wp.array[wp.transformf],
+    data_bodies_u_i: wp.array[wp.spatial_vectorf],
     problem_config: wp.array[DualProblemConfigStruct],
     problem_vio: wp.array[wp.int32],
     # Outputs:
@@ -892,6 +897,24 @@ def _build_free_velocity_bias_contacts(
     # NOTE#2: xi corresponds to one-sided Baumgarte-like stabilization
     xi = inv_dt * penetration_k
     xi_relaxed = wp.max(-config.contact_recovery_speed, coefficient * wp.min(0.0, penetration_k)) + wp.max(0.0, xi)
+
+    # Apply restitution to a separated contact only if it closes within the step, as an impact without
+    # the gap allowance; otherwise it would rebound before reaching the surface
+    if epsilon_k > 0.0 and penetration_k > 0.0:
+        bids = contacts_bid[tid]
+        u_B = data_bodies_u_i[bids[1]]
+        r_B = contacts_position_B[tid] - wp.transform_get_translation(data_bodies_q_i[bids[1]])
+        v_c = wp.spatial_top(u_B) + wp.cross(wp.spatial_bottom(u_B), r_B)
+        if bids[0] >= 0:
+            u_A = data_bodies_u_i[bids[0]]
+            r_A = contacts_position_A[tid] - wp.transform_get_translation(data_bodies_q_i[bids[0]])
+            v_c -= wp.spatial_top(u_A) + wp.cross(wp.spatial_bottom(u_A), r_A)
+        normal = contacts_gapfunc[tid]
+        v_n = wp.dot(wp.vec3f(normal[0], normal[1], normal[2]), v_c)
+        if v_n + xi >= 0.0:
+            epsilon_k = 0.0
+        else:
+            xi_relaxed = 0.0
 
     # Gate contact stabilization for restitutive impacts with
     # critical restitution coefficients (i.e. epsilon_k >= 1.0)
@@ -2031,10 +2054,15 @@ class DualProblem:
                     contacts.gapfunc,
                     contacts.material,
                     contacts.gid_AB,
+                    contacts.bid_AB,
+                    contacts.position_A,
+                    contacts.position_B,
                     contacts.stiffness,
                     contacts.damping,
                     model.geoms.stiffness,
                     model.geoms.damping,
+                    data.bodies.q_i,
+                    data.bodies.u_i,
                     self._data.config,
                     self._data.vio,
                     # Outputs:

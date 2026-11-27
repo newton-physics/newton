@@ -19,6 +19,7 @@ import os
 import threading
 
 # Thirdparty
+import numpy as np
 import warp as wp
 
 # Kamino
@@ -81,6 +82,8 @@ class SimulatorFromNewton:
         self._model: ModelKamino = ModelKamino.from_newton(newton_model)
         if isinstance(config.dt, float):
             self._model.time.set_uniform_timestep(config.dt)
+        else:
+            self._model.time.set_timesteps(np.asarray(config.dt, dtype=np.float32))
 
         # Allocate state and control
         self._state_p: StateKamino = self._model.state(device=self._device)
@@ -160,12 +163,17 @@ class SimulatorFromNewton:
             body_q_com=state_kamino.q_i,
             body_q=self._newton_state.body_q,
         )
+        # Both use world-frame twists about the center of mass
+        wp.copy(self._newton_state.body_qd, state_kamino.u_i)
         self._newton_collision_pipeline.collide(self._newton_state, self._newton_contacts)
         convert_contacts_newton_to_kamino(
             self._newton_model,
             self._newton_state,
             self._newton_contacts,
             self._contacts,
+            contact_dead_zone=self._config.solver.constraints.delta,
+            cull_unreachable_contacts=self._solver.cull_unreachable_contacts,
+            dt=self._model.time.dt,
         )
 
     def step(self):
@@ -1136,7 +1144,6 @@ class RigidBodySim:
         settings.solver.constraints.alpha = 0.1
         settings.solver.padmm.primal_tolerance = 1e-4
         settings.solver.padmm.dual_tolerance = 1e-4
-        settings.solver.padmm.compl_tolerance = 1e-4
         settings.solver.padmm.max_iterations = 200
         settings.solver.padmm.eta = 1e-5
         settings.solver.padmm.rho_0 = 0.05

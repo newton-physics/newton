@@ -14,7 +14,6 @@ def PhysicsScene "World" (
 {
     float physics:gravityMagnitude = 9.8067
     vector3f physics:gravityDirection = (0, 0, -1)
-    uniform float newton:kamino:padmm:complementarityTolerance = 0.0001
     uniform float newton:kamino:padmm:dualTolerance = 0.0001
     uniform float newton:kamino:padmm:primalTolerance = 0.0001
 }

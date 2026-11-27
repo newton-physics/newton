@@ -8,6 +8,7 @@ import time
 import unittest
 import warnings
 from itertools import product
+from types import SimpleNamespace
 from typing import Literal
 from unittest import mock
 
@@ -938,7 +939,7 @@ class TestSolverKaminoStatus(NewtonTestCase):
         solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT, observables=observables)
         self._assert_residual_matches_status(solver, observables)
         status = solver.status
-        common_fields = ("converged", "iterations", "r_p", "r_d", "r_c")
+        common_fields = ("converged", "iterations", "r_p", "r_d")
 
         self.assertIsInstance(status, wp.array)
         self.assertIs(status, solver._solver_kamino.solver_fd.data.status)
@@ -951,7 +952,7 @@ class TestSolverKaminoStatus(NewtonTestCase):
             self.assertEqual(status_host[field].shape, (3,))
         self.assertTrue(np.all((status_host["converged"] == 0) | (status_host["converged"] == 1)))
         self.assertTrue(np.all(status_host["iterations"] > 0))
-        for field in ("r_p", "r_d", "r_c"):
+        for field in ("r_p", "r_d"):
             self.assertTrue(np.all(np.isfinite(status_host[field])))
             self.assertTrue(np.all(status_host[field] >= 0.0))
 
@@ -976,7 +977,6 @@ class TestSolverKaminoStatus(NewtonTestCase):
                 [
                     _tolerance_scaled(status["r_p"], config["primal_tolerance"]),
                     _tolerance_scaled(status["r_d"], config["dual_tolerance"]),
-                    _tolerance_scaled(status["r_c"], config["compl_tolerance"]),
                 ]
             )
             np.testing.assert_allclose(residual, expected, rtol=1e-6)
@@ -1045,6 +1045,38 @@ class TestSolverKaminoStatus(NewtonTestCase):
                 self.assertTrue(np.all(np.isfinite(residual)))
                 self.assertTrue(np.all(residual > 1.0))
 
+    def test_deprecated_contact_options_warn(self):
+        """Warn when accessing the removed complementarity tolerance and speculative contact cull options."""
+        padmm = kamino_config.PADMMSolverConfig()
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "compl_tolerance") as warning:
+            padmm.compl_tolerance = 1.0e-6
+        self.assertEqual(warning.filename, __file__)
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "compl_tolerance"):
+            self.assertEqual(padmm.compl_tolerance, float("inf"))
+
+        # The deprecated attribute is ignored with a warning only when authored
+        authored = SimpleNamespace(
+            kamino=SimpleNamespace(
+                padmm_complementarity_tolerance=wp.array([1.0e-4], dtype=wp.float32, device=self.default_device)
+            )
+        )
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "complementarityTolerance") as warning:
+            kamino_config.PADMMSolverConfig.from_model(authored)
+        self.assertEqual(warning.filename, __file__)
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        model = builder.finalize(device=self.default_device)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", newton.NewtonDeprecationWarning)
+            kamino_config.PADMMSolverConfig.from_model(model)
+
+        dynamics = kamino_config.ConstrainedDynamicsConfig()
+        self.assertTrue(dynamics.cull_unreachable_contacts)
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "cull_unreachable_contacts") as warning:
+            dynamics.cull_speculative_contacts = True
+        self.assertEqual(warning.filename, __file__)
+        self.assertTrue(dynamics.cull_unreachable_contacts)
+
     def test_padmm_status_is_always_available(self):
         """Verify PADMM terminal status is available regardless of detailed collection."""
         model = self._make_three_world_model()
@@ -1054,7 +1086,7 @@ class TestSolverKaminoStatus(NewtonTestCase):
         ):
             # Zero tolerances with the exactly converged contact-free worlds also check that 0/0 reports zero.
             padmm = (
-                kamino_config.PADMMSolverConfig(primal_tolerance=0.0, dual_tolerance=0.0, compl_tolerance=0.0)
+                kamino_config.PADMMSolverConfig(primal_tolerance=0.0, dual_tolerance=0.0)
                 if collect_solver_info
                 else None
             )

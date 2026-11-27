@@ -55,7 +55,6 @@ class Example:
         solver_config.use_collision_detector = True
         solver_config.padmm.primal_tolerance = 1e-6
         solver_config.padmm.dual_tolerance = 1e-6
-        solver_config.padmm.compl_tolerance = 1e-6
         solver_config.padmm.max_iterations = 200
         solver_config.padmm.rho_0 = 0.1
 

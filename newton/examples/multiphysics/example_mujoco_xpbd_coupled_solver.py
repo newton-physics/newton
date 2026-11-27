@@ -60,7 +60,6 @@ def _make_kamino_config() -> SolverKamino.Config:
     config.padmm.max_iterations = 120
     config.padmm.primal_tolerance = 1.0e-5
     config.padmm.dual_tolerance = 1.0e-5
-    config.padmm.compl_tolerance = 1.0e-5
     config.padmm.rho_0 = 0.1
     config.padmm.use_acceleration = True
     config.padmm.warmstart_mode = "containers"

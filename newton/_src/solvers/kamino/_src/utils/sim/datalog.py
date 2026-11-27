@@ -84,8 +84,6 @@ class SimulationLogger:
         self.log_padmm_iters = np.zeros((self._max_frames,), dtype=np.int32)
         self.log_padmm_r_p = np.zeros((self._max_frames,), dtype=np.float32)
         self.log_padmm_r_d = np.zeros((self._max_frames,), dtype=np.float32)
-        self.log_padmm_r_c = np.zeros((self._max_frames,), dtype=np.float32)
-
         # Extract actuated DOF indices
         self._nja: int = self._sim.model.size.sum_of_num_actuated_joints
         self._njaq: int = self._sim.model.size.sum_of_num_actuated_joint_coords
@@ -166,8 +164,6 @@ class SimulationLogger:
         self.log_padmm_iters[self._frames] = self._sim.solver.solver_fd.data.status.numpy()[0][1]
         self.log_padmm_r_p[self._frames] = self._sim.solver.solver_fd.data.status.numpy()[0][2]
         self.log_padmm_r_d[self._frames] = self._sim.solver.solver_fd.data.status.numpy()[0][3]
-        self.log_padmm_r_c[self._frames] = self._sim.solver.solver_fd.data.status.numpy()[0][4]
-
         # Log joint actuator info if available
         if self._njaq > 0 and self._nja > 0 and self._njaq == self._nja:
             self.log_q_j[self._frames, :] = self._sim.state.q_j.numpy()[self._actuated_dofs]
@@ -232,7 +228,7 @@ class SimulationLogger:
 
         # Plot the PADMM convergence information
         padmm_iters_path = os.path.join(path, "padmm_status.png") if path is not None else None
-        _, axs = self.plt.subplots(4, 1, figsize=(10, 10), sharex=True)
+        _, axs = self.plt.subplots(3, 1, figsize=(10, 8), sharex=True)
 
         # Plot the PADMM iterations
         axs[0].step(time, self.log_padmm_iters[: self._frames], label="PADMM Iterations", color="blue")
@@ -261,16 +257,6 @@ class SimulationLogger:
         axs[2].set_xlabel("Time (s)")
         axs[2].legend()
         axs[2].grid()
-
-        # Plot the PADMM complementarity residuals
-        eps_c = self._sim.config.solver.padmm.compl_tolerance
-        axs[3].step(time, self.log_padmm_r_c[: self._frames], label="PADMM Complementarity Residual", color="red")
-        axs[3].axhline(eps_c, color="black", linestyle="--", linewidth=1.0, label=f"eps_c={eps_c:.1e}")
-        axs[3].set_title("PADMM Complementarity Residual")
-        axs[3].set_ylabel("Complementarity Residual")
-        axs[3].set_xlabel("Time (s)")
-        axs[3].legend()
-        axs[3].grid()
 
         # Adjust layout
         self.plt.tight_layout()

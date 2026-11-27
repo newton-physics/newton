@@ -66,7 +66,6 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
         preconditioning=False,
         unilateral_solver="pgs",
         linear_solver=None,
-        speculative=False,
         internal=False,
         collect_solver_info=False,
         compute_solution_metrics=True,
@@ -83,7 +82,6 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
             dynamics=ConstrainedDynamicsConfig(
                 preconditioning=preconditioning,
                 linear_solver_type=linear_solver or ("CR" if sparse else "LLTB"),
-                cull_speculative_contacts=not speculative,
             ),
             compute_solution_metrics=compute_solution_metrics,
             collect_solver_info=collect_solver_info,
@@ -97,7 +95,6 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
         config.padmm.max_iterations = 300
         config.padmm.primal_tolerance = 1.0e-7
         config.padmm.dual_tolerance = 1.0e-7
-        config.padmm.compl_tolerance = 1.0e-7
         return SolverKamino(model, config=config)
 
     def _step(self, model, solver, *, dt=0.01, state_in=None, contacts=None):
@@ -298,7 +295,7 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
         """Keep gap closing and hard-contact restitution independent of the positional speed cap."""
         constraints = ConstraintStabilizationConfig(contact_recovery_time=0.1, contact_recovery_speed=0.0, delta=0.0)
         model = self._sphere(gap=0.005, gravity=0.0, velocity=-0.2)
-        solver = self._solver(model, constraints, speculative=True)
+        solver = self._solver(model, constraints)
         state = self._step(model, solver)
         # The body can close the gap without an impulse; damping or capping the
         # positive gap would stop it prematurely.
@@ -314,6 +311,16 @@ class TestKaminoConstraintCompliance(NewtonTestCase):
                 else:
                     expected = 0.5
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
+
+        # Separated contacts rebound fully once they close within the step, and not before
+        constraints.contact_compliance = False
+        for backend in ("scc", "padmm"):
+            for gap, restitution, expected in ((0.015, 1.0, -1.0), (0.005, 0.5, 0.5), (0.005, 1.0, 1.0)):
+                with self.subTest(backend=backend, gap=gap, restitution=restitution):
+                    model = self._sphere(gap=gap, gravity=0.0, velocity=-1.0, restitution=restitution)
+                    solver = self._solver(model, constraints, backend=backend)
+                    state = self._step(model, solver)
+                    self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
 
     def test_material_refresh_and_contact_removal(self):
         """Refresh material compliance and clear retired contact rows in reused solver storage."""

@@ -121,7 +121,6 @@ class Example:
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
-            solver_config.dynamics.cull_speculative_contacts = False
             solver_config.scc.max_alternating_iterations = 2
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:

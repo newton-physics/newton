@@ -142,8 +142,6 @@ class PADMMConfigStruct:
             Must be greater than zero. Defaults to `1e-6`.
         dual_tolerance: The target tolerance on the total dual residual `r_dual`.
             Must be greater than zero. Defaults to `1e-6`.
-        compl_tolerance: The target tolerance on the complementarity residual `r_compl`.
-            Must be greater than zero. Defaults to `1e-6`.
         restart_tolerance: The tolerance on the total combined primal-dual
             residual `r_comb`, for determining when gradient acceleration should be restarted.
             Must be greater than zero. Defaults to `0.999`.
@@ -178,12 +176,6 @@ class PADMMConfigStruct:
     dual_tolerance: wp.float32
     """
     The target tolerance on the total dual residual `r_dual` (`r_d`).
-    Must be greater than zero. Defaults to `1e-6`.
-    """
-
-    compl_tolerance: wp.float32
-    """
-    The target tolerance on the complementarity residual `r_compl` (`r_c`).
     Must be greater than zero. Defaults to `1e-6`.
     """
 
@@ -297,13 +289,6 @@ class PADMMStatus:
         r_d: The total dual residual.
             Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`,
             or as `r_dual := || P^{-1} D (x - x_p) ||_inf` with the Delassus-weighted dual residual.
-        r_c: The complementarity residual used by the convergence test.
-            For each bounded-multiplier row `b`, the residual is the directional
-            box complementarity between its velocity and lower/upper box faces,
-            `(x_b - lower_b) * max(z_b, 0) + (upper_b - x_b) * max(-z_b, 0)`.
-            For each limit or contact entity `k`, it is the complementarity inner
-            product `x_k.T @ z_k`. `r_c` is the maximum absolute value over these
-            entity residuals.
         r_dx: The total primal iterate residual.
             Computed as the L2-norm `r_dx := || x - x_p ||_2`.
         r_dy: The total slack iterate residual.
@@ -344,17 +329,6 @@ class PADMMStatus:
     """
     The total dual residual.
     Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.
-    """
-
-    r_c: wp.float32
-    """
-    The complementarity residual used by the convergence test.
-    For each bounded-multiplier row `b`, the residual is the directional
-    box complementarity between its velocity and lower/upper box faces,
-    `(x_b - lower_b) * max(z_b, 0) + (upper_b - x_b) * max(-z_b, 0)`.
-    For each limit or contact entity `k`, it is the complementarity inner
-    product `x_k.T @ z_k`. `r_c` is the maximum absolute value over these
-    entity residuals.
     """
 
     r_dx: wp.float32
@@ -699,10 +673,6 @@ class PADMMResiduals:
             Shape of ``(sum_of_max_total_cts,)``.
         r_dual: The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.
             Shape of ``(sum_of_max_total_cts,)``.
-        r_compl: The PADMM complementarity residual vector. Per-inequality entries are directional
-            box-complementarity products for bounded multipliers and inner products
-            `x_j.dot(z_j)` for limit and contact constraints.
-            Shape of ``(sum_of_max_inequalities,)``.
         r_dx: The PADMM primal iterate residual vector, computed as `r_dx := x - x_p`.
             Shape of ``(sum_of_max_total_cts,)``.
         r_dy: The PADMM slack iterate residual vector, computed as `r_dy := y - y_p`.
@@ -731,14 +701,6 @@ class PADMMResiduals:
         """
         The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.
         Shape of ``(sum_of_max_total_cts,)``.
-        """
-
-        self.r_compl: wp.array[wp.float32] | None = None
-        """
-        The PADMM complementarity residual vector. Per-inequality entries are directional
-        box-complementarity products for bounded multipliers and inner products `x_j.dot(z_j)`
-        for limit and contact constraints.
-        Shape of ``(sum_of_max_inequalities,)``.
         """
 
         self.r_dx: wp.array[wp.float32] | None = None
@@ -777,7 +739,6 @@ class PADMMResiduals:
         # Allocate the main residuals arrays
         self.r_primal = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.r_dual = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
-        self.r_compl = wp.zeros(size.sum_of_max_inequalities, dtype=wp.float32)
 
         # Optionally allocate iterate residuals used when acceleration is enabled
         if use_acceleration:
@@ -791,7 +752,6 @@ class PADMMResiduals:
         """
         self.r_primal.zero_()
         self.r_dual.zero_()
-        self.r_compl.zero_()
         if use_acceleration:
             self.r_dx.zero_()
             self.r_dy.zero_()
@@ -847,8 +807,6 @@ class PADMMInfo:
         r_primal: History of the total primal residual.
             Shape of ``(num_worlds * max_iters,)``.
         r_dual: History of the total dual residual.
-            Shape of ``(num_worlds * max_iters,)``.
-        r_compl: History of the complementarity residual.
             Shape of ``(num_worlds * max_iters,)``.
         r_comb: History of the total combined primal-dual residual.
             Shape of ``(num_worlds * max_iters,)``.
@@ -1004,12 +962,6 @@ class PADMMInfo:
         Shape of ``(num_worlds * max_iters,)``.
         """
 
-        self.r_compl: wp.array[wp.float32] | None = None
-        """
-        History of the PADMM complementarity residuals.
-        Shape of ``(num_worlds * max_iters,)``.
-        """
-
         self.r_pd: wp.array[wp.float32] | None = None
         """
         History of PADMM primal-dual residual ratio.
@@ -1106,7 +1058,6 @@ class PADMMInfo:
         self.f_ncp = wp.zeros(maxsize, dtype=wp.float32)
         self.r_primal = wp.zeros(maxsize, dtype=wp.float32)
         self.r_dual = wp.zeros(maxsize, dtype=wp.float32)
-        self.r_compl = wp.zeros(maxsize, dtype=wp.float32)
         self.r_pd = wp.zeros(maxsize, dtype=wp.float32)
         self.r_dp = wp.zeros(maxsize, dtype=wp.float32)
         self.r_ncp_primal = wp.zeros(maxsize, dtype=wp.float32)
@@ -1139,7 +1090,6 @@ class PADMMInfo:
         self.r_dz.zero_()
         self.r_primal.zero_()
         self.r_dual.zero_()
-        self.r_compl.zero_()
         self.r_pd.zero_()
         self.r_dp.zero_()
         self.r_ncp_primal.zero_()
@@ -1291,7 +1241,6 @@ def convert_config_to_struct(config: PADMMSolverConfig) -> PADMMConfigStruct:
     config_struct = PADMMConfigStruct()
     config_struct.primal_tolerance = config.primal_tolerance
     config_struct.dual_tolerance = config.dual_tolerance
-    config_struct.compl_tolerance = config.compl_tolerance
     config_struct.restart_tolerance = config.restart_tolerance
     config_struct.eta = config.eta
     config_struct.rho_0 = config.rho_0

@@ -1040,8 +1040,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         """Per-world terminal solver status on the simulation device.
 
         The active backend defines the array's Warp struct type. PADMM, SCC, and
-        LOX provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
-        fields. Backend-specific fields may also be present.
+        LOX provide ``converged``, ``iterations``, ``r_p``, and ``r_d`` fields,
+        and SCC and LOX also provide ``r_c``. Backend-specific fields may also be
+        present.
 
         Residuals are absolute maxima, not relative or dimensionless values.
         For PADMM, ``x`` and ``y`` are the current preconditioned impulse
@@ -1050,8 +1051,12 @@ class SolverKamino(SolverBase, CouplingInterface):
         proximal and penalty parameters. PADMM reports
         ``r_p = ||P (x - y)||_inf`` [N·s or N·m·s],
         ``r_d = ||P^-1 D (x - x_prev)||_inf`` [m/s or rad/s], the change of
-        constraint velocity with the preconditioned Delassus matrix ``D``, and
-        the maximum inequality impulse-velocity inner product ``r_c`` [J].
+        constraint velocity with the preconditioned Delassus matrix ``D``.
+        With a nonzero ``contact_primal_relative_tolerance``, the ``r_p`` entries
+        of contact rows are scaled down by the contact's dual variable, as
+        described in :attr:`PADMMSolverConfig.contact_primal_relative_tolerance`,
+        so that PADMM converges when ``r_p <= primal_tolerance`` and
+        ``r_d <= dual_tolerance``.
         With ``dual_residual_mode="standard"`` or an iterative linear solver,
         ``r_d`` is instead the ADMM residual ``||P^-1 (eta (x - x_prev) + rho_i (y - y_prev))||_inf``, with
         the penalty ``rho_i`` of each row. The ``P`` factors convert the first
@@ -1324,10 +1329,11 @@ class SolverKamino(SolverBase, CouplingInterface):
                     convert_forces=False,
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
-                    cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
                     kinematic_only_immovable=self._config.dynamics_solver == "lox",
                     contact_dead_zone=self._config.constraints.delta,
                     geom_friction_mode=self._model_kamino.geoms.friction_mode,
+                    cull_unreachable_contacts=self._solver_kamino.cull_unreachable_contacts,
+                    dt=dt,
                 )
         else:
             self._detector = None

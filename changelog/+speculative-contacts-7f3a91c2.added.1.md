@@ -1,0 +1,1 @@
+Add `PADMMSolverConfig.contact_primal_relative_tolerance` to `SolverKamino`, which relaxes the primal tolerance of each contact by a multiple of its dual variable so that PADMM can converge despite the float32 resolution of large contact impulses. It defaults to `3e-7`; set it to `0` to restore the absolute primal tolerance.

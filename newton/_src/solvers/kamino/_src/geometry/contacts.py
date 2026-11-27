@@ -109,10 +109,21 @@ threshold.
 Set to `1e-5`.
 """
 
-DEFAULT_CULL_SPECULATIVE_CONTACTS: bool = True
+UNREACHABLE_CONTACT_SPEED_SCALE: float = 2.0
 """
-The global default for culling speculative contacts (with positive
-margin-shifted distance) during Newton->Kamino conversion.
+The safety factor on the normal approach velocity of the contact points when culling
+the speculative contacts that cannot close their gap within the step.
+
+Covers an approach velocity that doubles within the step, e.g. under strong actuation.
+"""
+
+UNREACHABLE_CONTACT_SPEED_MARGIN: float = 1.0
+"""
+The normal velocity [m/s] that the contact points of a speculative contact are assumed
+to possibly gain within the step, on top of their scaled approach velocity.
+
+Covers contacts whose points start nearly at rest, e.g. a foot about to touch down. Without
+this margin, legged robots stepping at 1 ms miss impacts of up to about 1 m/s.
 """
 
 
@@ -988,8 +999,8 @@ class ContactsKamino:
 def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
-    cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
+    cull_unreachable: bool = False,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -997,8 +1008,9 @@ def make_convert_contacts_newton_to_kamino(
     Args:
         friction_mix_mode: The mixing mode to use for friction.
         restitution_mix_mode: The mixing mode to use for restitution.
-        cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
-            whose margin-shifted distance exceeds the kernel's ``contact_dead_zone``.
+        cull_unreachable: If ``True``, skip the speculative contacts, i.e., the contacts whose
+            margin-shifted distance exceeds the kernel's ``contact_dead_zone``, that cannot
+            close within the step, given the approach velocity of their points.
         kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
             see :func:`is_immovable_for_kamino`.
 
@@ -1038,6 +1050,12 @@ def make_convert_contacts_newton_to_kamino(
         body_inv_inertia: wp.array[wp.mat33f],
         body_flags: wp.array[wp.int32],
         contact_dead_zone: wp.float32,
+        body_qd: wp.array[wp.spatial_vectorf],
+        body_com: wp.array[wp.vec3f],
+        dt: wp.float32,
+        world_dt: wp.array[wp.float32],
+        reach_scale: wp.float32,
+        reach_speed: wp.float32,
         # Outputs:
         kamino_model_active: wp.array[wp.int32],
         kamino_world_active: wp.array[wp.int32],
@@ -1139,11 +1157,27 @@ def make_convert_contacts_newton_to_kamino(
         # and the per-shape surface thicknesses stored in rigid_contact_margin*.
         distance = contact_surface_separation(p0_world, p1_world, normal, margin_0, margin_1)
 
-        # Cull speculative contacts. The dynamics treat separations within the dead-zone
-        # as touching, so rounding must not drop a resting contact.
-        if wp.static(cull_speculative):
+        # Cull the speculative contacts whose gap exceeds the distance they can close within the step,
+        # i.e. a scaled approach velocity plus a margin speed. The dynamics treat separations within
+        # the dead-zone as touching, so rounding must not drop a resting contact.
+        if wp.static(cull_unreachable):
             if distance > contact_dead_zone:
-                return
+                v_0 = wp.vec3f(0.0)
+                if bid_0 >= 0:
+                    qd_0 = body_qd[bid_0]
+                    r_0 = p0_world - wp.transform_point(X_0, body_com[bid_0])
+                    v_0 = wp.spatial_top(qd_0) + wp.cross(wp.spatial_bottom(qd_0), r_0)
+                v_1 = wp.vec3f(0.0)
+                if bid_1 >= 0:
+                    qd_1 = body_qd[bid_1]
+                    r_1 = p1_world - wp.transform_point(X_1, body_com[bid_1])
+                    v_1 = wp.spatial_top(qd_1) + wp.cross(wp.spatial_bottom(qd_1), r_1)
+                approach_speed = wp.max(0.0, -wp.dot(v_1 - v_0, normal))
+                step = dt
+                if world_dt:
+                    step = world_dt[wid]
+                if distance - contact_dead_zone > step * (reach_scale * approach_speed + reach_speed):
+                    return
 
         # Ensure static body is always Kamino A, dynamic body is Kamino B
         if bid_1 < 0:
@@ -1477,10 +1511,13 @@ def convert_contacts_newton_to_kamino(
     contact_f: wp.array[wp.spatial_vector] | None = None,
     friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average",
     restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
-    cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
     contact_dead_zone: float = 1.0e-6,
     geom_friction_mode: wp.array[wp.int32] | None = None,
+    cull_unreachable_contacts: bool = False,
+    dt: float | wp.array[wp.float32] = 0.0,
+    reach_scale: float = UNREACHABLE_CONTACT_SPEED_SCALE,
+    reach_speed: float = UNREACHABLE_CONTACT_SPEED_MARGIN,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1525,9 +1562,6 @@ def convert_contacts_newton_to_kamino(
             The mixing mode to use for contact friction. Defaults to `"average"`.
         restitution_mix_mode:
             The mixing mode to use for contact restitution. Defaults to `"min"`.
-        cull_speculative_contacts:
-            If ``True`` (the default), drop speculative contacts (contacts whose
-            margin-shifted distance exceeds ``contact_dead_zone``).
         kinematic_only_immovable:
             Whether only KINEMATIC bodies are immovable, see
             :func:`is_immovable_for_kamino`. Defaults to ``False``.
@@ -1537,6 +1571,13 @@ def convert_contacts_newton_to_kamino(
         geom_friction_mode:
             Per-geometry :class:`~newton.ShapeFrictionMode` used to remove
             friction components the contact pairs do not enable, or ``None``.
+        cull_unreachable_contacts:
+            If ``True``, drop the speculative contacts whose gap beyond ``contact_dead_zone`` exceeds
+            ``dt * (reach_scale * approach_speed + reach_speed)``, where ``approach_speed`` is the
+            normal approach velocity of the contact points at ``state``. Defaults to ``False``.
+        dt: The time step [s] used by ``cull_unreachable_contacts``, either uniform or per world.
+        reach_scale: The safety factor on the approach velocity of the contact points.
+        reach_speed: The approach velocity margin [m/s].
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1582,8 +1623,8 @@ def convert_contacts_newton_to_kamino(
     _convert_contacts_newton_to_kamino = make_convert_contacts_newton_to_kamino(
         friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
-        cull_speculative=cull_speculative_contacts,
         kinematic_only_immovable=kinematic_only_immovable,
+        cull_unreachable=cull_unreachable_contacts,
     )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format.
@@ -1620,6 +1661,12 @@ def convert_contacts_newton_to_kamino(
             model.body_inv_inertia,
             model.body_flags,
             contact_dead_zone,
+            state.body_qd,
+            model.body_com,
+            0.0 if isinstance(dt, wp.array) else dt,
+            dt if isinstance(dt, wp.array) else None,
+            reach_scale,
+            reach_speed,
         ],
         outputs=[
             contacts_out.model_active_contacts,

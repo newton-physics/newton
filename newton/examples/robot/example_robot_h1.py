@@ -97,8 +97,6 @@ class Example:
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model, dynamics_solver="scc", sparse_dynamics=True, sparse_jacobian=True
             )
-            # Preserve ground support as nearly touching contacts cross zero separation.
-            solver_config.dynamics.cull_speculative_contacts = False
             solver_config.scc.max_alternating_iterations = 8
             solver_config.scc.bilateral_solve_interval = 8
             solver_config.scc.bilateral_solver_type = args.bilateral_solver_type or "LLTBRCM"

@@ -156,6 +156,8 @@ def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: D
     lambdas_wp_np = extract_problem_vector(
         problem.delassus, solver.data.solution.lambdas.numpy(), only_active_dims=only_active_dims
     )
+    x_wp_np = extract_problem_vector(problem.delassus, solver.data.state.x.numpy(), only_active_dims=only_active_dims)
+    y_wp_np = extract_problem_vector(problem.delassus, solver.data.state.y.numpy(), only_active_dims=only_active_dims)
 
     # Check solution
     status = solver.data.status.numpy()
@@ -180,7 +182,6 @@ def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: D
         iterations = status[w]["iterations"]
         r_p = status[w]["r_p"]
         r_d = status[w]["r_d"]
-        r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
         if logger.isEnabledFor(logging.DEBUG):
@@ -193,7 +194,6 @@ def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: D
                 "\n---------"
                 "\nr_p: %s"
                 "\nr_d: %s"
-                "\nr_c: %s"
                 "\n---------"
                 "\nerror_dual_abs_l2: %s"
                 "\nerror_dual_abs_inf: %s"
@@ -205,7 +205,6 @@ def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: D
                 iterations,
                 r_p,
                 r_d,
-                r_c,
                 error_dual_abs_l2,
                 error_dual_abs_inf,
                 lambdas_wp_np[w],
@@ -217,11 +216,13 @@ def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: D
         test.assertLessEqual(iterations, solver.config[w].max_iterations)
         test.assertLessEqual(r_p, solver.config[w].primal_tolerance)
         test.assertLessEqual(r_d, solver.config[w].dual_tolerance)
-        test.assertLessEqual(r_c, solver.config[w].compl_tolerance)
         # Using expanded tolerance for true dual error due to potential numerical inaccuracies
-        # between in-solver residual and true residual.
-        test.assertLessEqual(error_dual_abs_l2, solver.config[w].dual_tolerance * 4.0)
-        test.assertLessEqual(error_dual_abs_inf, solver.config[w].dual_tolerance * 4.0)
+        # between in-solver residual and true residual. The impulses come from the projected
+        # iterate and the velocities from the unprojected one, which differ by the primal residual.
+        primal_gap = np.max(np.abs(P_wp_np[w] * (x_wp_np[w] - y_wp_np[w])), initial=0.0)
+        error_dual_tolerance = solver.config[w].dual_tolerance * 4.0 + np.linalg.norm(D_true, ord=np.inf) * primal_gap
+        test.assertLessEqual(error_dual_abs_l2, error_dual_tolerance)
+        test.assertLessEqual(error_dual_abs_inf, error_dual_tolerance)
 
 
 def solve_apadmm_bilateral_reference(
@@ -369,7 +370,6 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None):
     r_dz_np = extract_info_vectors(offsets_np, solver.data.info.r_dz.numpy(), iterations)
     r_primal_np = extract_info_vectors(offsets_np, solver.data.info.r_primal.numpy(), iterations)
     r_dual_np = extract_info_vectors(offsets_np, solver.data.info.r_dual.numpy(), iterations)
-    r_compl_np = extract_info_vectors(offsets_np, solver.data.info.r_compl.numpy(), iterations)
     r_pd_np = extract_info_vectors(offsets_np, solver.data.info.r_pd.numpy(), iterations)
     r_dp_np = extract_info_vectors(offsets_np, solver.data.info.r_dp.numpy(), iterations)
     r_ncp_primal_np = extract_info_vectors(offsets_np, solver.data.info.r_ncp_primal.numpy(), iterations)
@@ -399,7 +399,6 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None):
             logger.debug("solver.info.r_dz: %s", r_dz_np[w])
             logger.debug("solver.info.r_primal: %s", r_primal_np[w])
             logger.debug("solver.info.r_dual: %s", r_dual_np[w])
-            logger.debug("solver.info.r_compl: %s", r_compl_np[w])
             logger.debug("solver.info.r_pd: %s", r_pd_np[w])
             logger.debug("solver.info.r_dp: %s", r_dp_np[w])
             logger.debug("solver.info.r_ncp_primal: %s", r_ncp_primal_np[w])
@@ -426,7 +425,6 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None):
         ("r_dz", r_dz_np),
         ("r_primal", r_primal_np),
         ("r_dual", r_dual_np),
-        ("r_compl", r_compl_np),
         ("r_pd", r_pd_np),
         ("r_dp", r_dp_np),
         ("r_ncp_primal", r_ncp_primal_np),
@@ -556,7 +554,6 @@ class TestPADMMSolver(NewtonTestCase):
                 config = PADMMSolver.Config()
                 config.primal_tolerance = 1e-6
                 config.dual_tolerance = 1e-6
-                config.compl_tolerance = 1e-6
                 config.eta = 1e-5
                 config.rho_0 = 1.0
                 config.max_iterations = 200
@@ -601,7 +598,6 @@ class TestPADMMSolver(NewtonTestCase):
         config = PADMMSolver.Config()
         config.primal_tolerance = 1e-6
         config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -633,6 +629,42 @@ class TestPADMMSolver(NewtonTestCase):
         # Check solution
         check_padmm_solution(self, test.model, test.problem, solver)
 
+    def test_03b_padmm_solve_with_contact_primal_relative_tolerance(self):
+        """
+        Tests that the relative contact primal tolerance lets PADMM converge below the
+        float32 floor of the absolute primal residual, with and without acceleration.
+        """
+        test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=8, device=self.default_device)
+
+        for use_acceleration in (False, True):
+            for relative_tolerance in (0.0, 3e-7):
+                with self.subTest(use_acceleration=use_acceleration, relative_tolerance=relative_tolerance):
+                    # Solve each configuration from a freshly assembled problem
+                    test.build()
+
+                    # Use an absolute primal tolerance below the float32 resolution of the contact impulses
+                    config = PADMMSolver.Config()
+                    config.primal_tolerance = 1e-12
+                    config.dual_tolerance = 1e-5
+                    config.contact_primal_relative_tolerance = relative_tolerance
+                    config.max_iterations = 500
+                    solver = PADMMSolver(
+                        model=test.model,
+                        problem=test.problem,
+                        config=config,
+                        warmstart=PADMMWarmStartMode.NONE,
+                        use_acceleration=use_acceleration,
+                    )
+                    solver.reset()
+                    solver.coldstart()
+                    solver.solve(problem=test.problem)
+
+                    # Only the relative tolerance accounts for the float32 floor of the contact rows
+                    status = solver.data.status.numpy()[0]
+                    self.assertEqual(bool(status["converged"]), relative_tolerance > 0.0, str(status))
+                    if relative_tolerance > 0.0:
+                        self.assertLess(int(status["iterations"]), config.max_iterations)
+
     def test_04_padmm_solve_with_internal_warmstart(self):
         """
         Tests the Proximal-ADMM (PADMM) solver on the reference problem with internal warmstarting.
@@ -647,7 +679,6 @@ class TestPADMMSolver(NewtonTestCase):
         config = PADMMSolver.Config()
         config.primal_tolerance = 1e-6
         config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
         config.eta = 1e-5
         config.rho_0 = 1.0
         config.max_iterations = 200
@@ -698,7 +729,6 @@ class TestPADMMSolver(NewtonTestCase):
         config = PADMMSolver.Config()
         config.primal_tolerance = 1e-6
         config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
         config.eta = 1e-5
         config.rho_0 = 1.0
         config.max_iterations = 200
@@ -747,7 +777,6 @@ class TestPADMMSolver(NewtonTestCase):
         config = PADMMSolver.Config()
         config.primal_tolerance = 1e-5
         config.dual_tolerance = 1e-5
-        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -796,7 +825,6 @@ class TestPADMMSolver(NewtonTestCase):
         config = PADMMSolver.Config()
         config.primal_tolerance = 1e-5
         config.dual_tolerance = 1e-5
-        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -874,7 +902,6 @@ class TestPADMMSolver(NewtonTestCase):
                     config=PADMMSolver.Config(
                         primal_tolerance=1.0e3,
                         dual_tolerance=1.0e3,
-                        compl_tolerance=1.0e3,
                         max_iterations=8,
                     ),
                     warmstart=PADMMWarmStartMode.NONE,
@@ -943,7 +970,6 @@ class TestPADMMSolver(NewtonTestCase):
         config = PADMMSolver.Config(
             primal_tolerance=0.0,
             dual_tolerance=0.0,
-            compl_tolerance=0.0,
             restart_tolerance=1.0e-6,
             max_iterations=6,
             unpenalized_bilateral_rows=False,
@@ -976,15 +1002,15 @@ class TestPADMMSolver(NewtonTestCase):
         solver.solve(problem=test.problem)
 
         status = solver.data.status.numpy()[0]
-        self.assertEqual(int(status[11]), reference["restart"])
-        self.assertEqual(int(status[12]), reference["num_restarts"])
+        self.assertEqual(int(status["restart"]), reference["restart"])
+        self.assertEqual(int(status["num_restarts"]), reference["num_restarts"])
 
         # The tight restart tolerance makes the solve alternate between accepted and
         # restarted steps, so both writeback branches run and the run ends on a restart.
         self.assertEqual(reference["restart"], 1)
         self.assertEqual(reference["num_restarts"], 3)
 
-        iterations = int(status[1])
+        iterations = int(status["iterations"])
         reference_history = reference["history"]
         solver_history = {
             "a": solver.data.info.a.numpy()[:iterations],
@@ -1040,7 +1066,6 @@ class TestPADMMSolver(NewtonTestCase):
         config = PADMMSolver.Config(
             primal_tolerance=1.0e3,
             dual_tolerance=1.0e3,
-            compl_tolerance=1.0e3,
             restart_tolerance=1.0e-6,
             max_iterations=8,
         )
@@ -1058,11 +1083,11 @@ class TestPADMMSolver(NewtonTestCase):
         solver.solve(problem=test.problem)
 
         status = solver.data.status.numpy()[0]
-        self.assertEqual(int(status[0]), 1)
+        self.assertEqual(int(status["converged"]), 1)
         # Convergence is gated on having completed more than one iteration.
-        self.assertEqual(int(status[1]), 2)
-        self.assertEqual(int(status[11]), 0)
-        self.assertEqual(int(status[12]), 0)
+        self.assertEqual(int(status["iterations"]), 2)
+        self.assertEqual(int(status["restart"]), 0)
+        self.assertEqual(int(status["num_restarts"]), 0)
 
     def test_11_apadmm_honors_per_world_iteration_budgets(self):
         """Give each world exactly its own iteration budget when the budgets differ.
@@ -1091,7 +1116,6 @@ class TestPADMMSolver(NewtonTestCase):
                     PADMMSolver.Config(
                         primal_tolerance=0.0,
                         dual_tolerance=0.0,
-                        compl_tolerance=0.0,
                         max_iterations=budget,
                         unpenalized_bilateral_rows=False,
                     )

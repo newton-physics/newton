@@ -84,7 +84,6 @@ class Example:
         solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-4
         solver_config.padmm.dual_tolerance = 1e-4
-        solver_config.padmm.compl_tolerance = 1e-4
         solver_config.padmm.max_iterations = 200
         solver_config.padmm.rho_0 = 0.1
         solver_config.padmm.use_acceleration = True

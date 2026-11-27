@@ -32,7 +32,6 @@ def make_settings(sim_dt: float = 0.004) -> Simulator.Config:
     settings.solver.constraints.alpha = 0.1
     settings.solver.padmm.primal_tolerance = 1e-6
     settings.solver.padmm.dual_tolerance = 1e-6
-    settings.solver.padmm.compl_tolerance = 1e-6
     settings.solver.padmm.max_iterations = 200
     settings.solver.padmm.rho_0 = 0.1
     settings.solver.padmm.use_acceleration = True

@@ -287,7 +287,6 @@ def _run_padmm_sparse(solver_cls, device):
     config = PADMMSolver.Config()
     config.primal_tolerance = 1e-6
     config.dual_tolerance = 1e-6
-    config.compl_tolerance = 1e-6
     config.eta = 1e-5
     config.rho_0 = 1.0
     config.max_iterations = 200

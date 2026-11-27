@@ -156,9 +156,9 @@ Choose a solver that uses these contacts:
 * **Steel** supports separated contacts by default. ``contact_speculative_scale``
   controls how much of the gap may close per step; ``contact_gap_gate`` can
   discard farther contacts. See :class:`~newton.solvers.SolverSteel`.
-* **Kamino LOX** keeps separated contacts by default; other Kamino modes cull
-  them by default. See :doc:`/solvers/kamino` and
-  ``config.dynamics.cull_speculative_contacts``.
+* **Kamino LOX** keeps separated contacts; other Kamino modes cull those that
+  cannot close their gap within the step. See :doc:`/solvers/kamino` and
+  ``config.dynamics.cull_unreachable_contacts``.
 
 Measure total runtime as well as collision-check counts at the fastest expected
 motion. Fast scenes may still check every substep and incur scheduling overhead;
