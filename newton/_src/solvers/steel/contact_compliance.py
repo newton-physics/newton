@@ -8,7 +8,8 @@ For signed separation ``phi``, separating velocity ``u`` and impulse ``lambda``:
 ``bias = k*phi/(h*k+c)``, ``residual = u_next + bias + gamma*lambda``.
 Hydroelastic contact stiffness is already area/pressure weighted [N/m], not shape
 bulk stiffness [N/m^3]. Friction weighting is applied once to the existing pair
-coefficient, with the cone bounded by the compliant normal impulse.
+coefficient, with the cone bounded by the compliant normal impulse; a weighted
+coefficient outside float32 range is rejected.
 
 Row coefficients are prepared on the device in persistent buffers, and the solve
 kernels add ``gamma * lambda`` to compliant normal residuals in every sweep, so the
@@ -41,7 +42,8 @@ _DENSE_TYPE = 9
 _MF_TYPE = 10
 _INVALID_SEPARATION = 11
 _PROPAGATION_TYPE = 12
-_STATUS_CODES = 13
+_FRICTION_RANGE = 13
+_STATUS_CODES = 14
 # status[_STATUS_CODES] holds the smallest (contact + 1) * 16 + code; global errors use contact = -1.
 _NO_ERROR = 2147483647
 
@@ -62,6 +64,7 @@ _ERRORS = {
     _MF_TYPE: (RuntimeError, "Contact map no longer points to an effective free-body normal row"),
     _INVALID_SEPARATION: (ValueError, "separation must be finite"),
     _PROPAGATION_TYPE: (RuntimeError, "Contact map no longer points to a propagation normal row"),
+    _FRICTION_RANGE: (ValueError, "Weighted contact friction coefficient exceeds float32 range"),
 }
 
 
@@ -273,7 +276,7 @@ def prepare_rows(solver, contacts, dt):
             buffers.dense_gamma,
             buffers.dense_weight,
         ],
-        outputs=[solver._row_mu],
+        outputs=[solver._row_mu, status],
         device=device,
     )
     if solver._has_free_rigid_bodies:
@@ -287,7 +290,7 @@ def prepare_rows(solver, contacts, dt):
                 buffers.mf_gamma,
                 buffers.mf_weight,
             ],
-            outputs=[solver._mf_row_mu],
+            outputs=[solver._mf_row_mu, status],
             device=device,
         )
     if propagation:
@@ -301,7 +304,7 @@ def prepare_rows(solver, contacts, dt):
                 buffers.propagation_gamma,
                 buffers.propagation_weight,
             ],
-            outputs=[solver._propagation_row_mu],
+            outputs=[solver._propagation_row_mu, status],
             device=device,
         )
     if not capturing:
@@ -538,6 +541,7 @@ def _weight_friction_rows(
     gamma: wp.array2d[float],
     weight: wp.array2d[float],
     row_mu: wp.array2d[float],
+    status: wp.array[wp.int32],
 ):
     world, row = wp.tid()
     if row >= row_count[world] or row_type[world, row] != PGS_CONSTRAINT_TYPE_FRICTION:
@@ -545,4 +549,9 @@ def _weight_friction_rows(
     parent = row_parent[world, row]
     if parent < 0 or parent >= gamma.shape[1] or gamma[world, parent] == 0.0:
         return
-    row_mu[world, row] = row_mu[world, row] * weight[world, parent]
+    mu = row_mu[world, row] * weight[world, parent]
+    # A rejected row keeps its unweighted, finite coefficient.
+    if not wp.isfinite(mu):
+        _latch(status, _FRICTION_RANGE, -1)
+        return
+    row_mu[world, row] = mu

@@ -96,7 +96,20 @@ Effort limits, target rates, armature, and friction
    armature, and friction rather than inferring support from the model arrays.
    Armature adds joint-space inertia and can lower the effective natural
    frequency of a drive, but it changes the physical model and should be
-   justified by actuator or gearbox data when possible.
+   justified by actuator or gearbox data when possible. Solvers that evaluate
+   Coriolis and centrifugal forces explicitly, such as
+   :class:`~newton.solvers.SolverFeatherstone`,
+   :class:`~newton.solvers.SolverSteel` and the ``"euler"`` and
+   ``"implicitfast"`` integrators of :class:`~newton.solvers.SolverMuJoCo`,
+   can gain energy numerically when joint speeds are high relative to ``dt``,
+   such as a freely swinging chain whose tip whips around. Scaling every link's
+   mass by one factor leaves this error unchanged only when joint armature,
+   damping and drive gains scale with it; fixed values change relative to the
+   link inertia and so change the response. A smaller ``dt`` reduces the error.
+   Armature can improve stability when it is large relative to the link
+   inertia, with the caveat above; validate it over the intended trajectory and
+   duration. More solver iterations do not address this unconstrained
+   integration error.
 
 Collision frequency
    When the solver consumes contacts from :class:`~newton.CollisionPipeline`,
@@ -161,10 +174,7 @@ repository examples spend tuning effort, not a shared solver API.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
      - ``iterations``, ``friction_epsilon``,
-       ``dat_conservative_bound_relaxation``,
-       ``rigid_avbd_alpha``,
-       ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
-       ``rigid_avbd_gamma``, ``rigid_contact_history``,
+       ``dat_conservative_bound_relaxation``, ``rigid_contact_history``,
        ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``,
        ``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``,
@@ -187,8 +197,10 @@ repository examples spend tuning effort, not a shared solver API.
        numerical ALM conditioning parameters internally. The legacy AVBD path
        (``rigid_compliant_alm=False``) and its penalty-ramping and hard/soft
        controls were removed after their 1.6 deprecation; rigid simulations
-       that relied on them may require stiffness retuning. Alpha remains an
-       advanced stabilization override.
+       that relied on them may require stiffness retuning. The
+       ``rigid_avbd_alpha``, ``rigid_avbd_joint_alpha``,
+       ``rigid_avbd_contact_alpha``, and ``rigid_avbd_gamma`` arguments are
+       deprecated; omit them.
 
        Optional numeric contact warm-starting with
        ``rigid_contact_history=True`` requires
@@ -376,7 +388,20 @@ repository examples spend tuning effort, not a shared solver API.
        change, contact with a moving body or a tangentially moving mesh
        surface, reset or model notification wakes them; it saves work on
        scenes where many objects rest, and costs a few extra launches per
-       step when nothing sleeps. ``articulated_contact_response``
+       step when nothing sleeps. An island sleeps once its bodies' speeds, checked
+       at the end of each step, stay within both thresholds for
+       ``sleep_quiet_time``. Articulations with nonzero drive gains or passive
+       springs (nonzero ``joint_stiffness`` on a PRISMATIC, REVOLUTE or D6 tree
+       joint) stay awake at any speed, even when the spring is unloaded. With
+       the default contact order the residual motion of a resting stack can
+       keep it awake; a deterministic contact order
+       (``CollisionPipeline(deterministic=True)``) may reduce that motion, and
+       when angular motion is the limiting condition a larger
+       ``sleep_angular_threshold``, such as 0.3 rad/s, lets islands sleep with
+       more residual motion. It also puts to sleep bodies that genuinely turn
+       slower than the threshold, such as a slowly spinning ball or a box
+       turning on a slippery floor, so raise it only where such motion does not
+       matter. ``articulated_contact_response``
        selects how contacts of articulated bodies are solved: ``"immediate"`` rows of
        the generalized coordinates, or the ``"propagation"`` response,
        which solves them as body-space rows and propagates their impulses through each

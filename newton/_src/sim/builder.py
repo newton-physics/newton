@@ -32,6 +32,7 @@ from ..core.host_transform import (
     join_warp_values,
     pack_transforms,
     pack_warp_values,
+    quat_multiply_rows,
     quat_rotate_rows,
     store_transform_rows,
     transform_inverse,
@@ -2835,6 +2836,8 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
         self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
         """Row counts covered by the latest custom-frequency owner resolution."""
+        self._placement_filled_attribute_keys: set[str] = set()
+        """Custom attributes a placed copy extended past their authored rows; :meth:`finalize` accepts them short."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
@@ -4834,6 +4837,59 @@ class ModelBuilder:
                 if has_batteries:
                     self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
+
+        self._placement_filled_attribute_keys |= builder._placement_filled_attribute_keys
+        eq_count = builder._equality_constraint_count
+        if eq_count and len(moved_copies):
+            eq_base = self._equality_constraint_count - copy_count * eq_count
+            self._transform_world_equalities(builder, eq_base + moved_copies * eq_count, moved_xforms)
+
+    def _transform_world_equalities(self, builder: ModelBuilder, starts: np.ndarray, xforms: np.ndarray) -> None:
+        """Place the world-side equality frames of the copies of ``builder`` whose rows begin at ``starts``."""
+        # Import locally to avoid a cycle while the public simulation package initializes.
+        from ..solvers.mujoco.enums import EqType  # noqa: PLC0415
+        from ..solvers.mujoco.equality import MJC_OBJ_BODY, MJC_OBJ_UNKNOWN  # noqa: PLC0415
+
+        def source(name: str) -> list:
+            return builder._eq_list(f"equality_constraint_{name}")
+
+        def destination(name: str, targets: np.ndarray) -> list:
+            attr = self._eq_attr(f"equality_constraint_{name}")
+            if attr.values is None:
+                attr.values = []
+            if targets.max() >= len(attr.values):
+                # Rows past the authored column get values, so one added later without this frame is no missed row.
+                attr.values.extend([None] * (self._equality_constraint_count - len(attr.values)))
+                self._placement_filled_attribute_keys.add(attr.key)
+            return attr.values
+
+        # Rows are selected once in the source; arrays below are shaped (moved copy, row, ...).
+        kind, body1, body2 = (np.asarray(source(name)) for name in ("type", "body1", "body2"))
+        on_bodies = np.isin(source("objtype"), (MJC_OBJ_UNKNOWN, MJC_OBJ_BODY))
+        weld = on_bodies & (kind == EqType.WELD)
+        world_first = np.flatnonzero(weld & (body1 < 0))
+        world_second = np.flatnonzero(weld & (body1 >= 0) & (body2 < 0))
+        anchored = np.concatenate((np.flatnonzero(on_bodies & (kind == EqType.CONNECT) & (body1 < 0)), world_second))
+
+        if len(anchored):
+            anchors = source("anchor")
+            points = pack_warp_values([anchors[row] for row in anchored.tolist()], wp.vec3)
+            points = quat_rotate_rows(xforms[:, None, 3:], points[None]) + xforms[:, None, :3]
+            targets = starts[:, None] + anchored[None]
+            values = destination("anchor", targets)
+            for target, point in zip(targets.ravel().tolist(), points.reshape(-1, 3), strict=True):
+                values[target] = wp.vec3.from_buffer_copy(point)
+        welded = np.concatenate((world_first, world_second))
+        if len(welded):
+            relposes = source("relpose")
+            poses = pack_transforms([relposes[row] for row in welded.tolist()])
+            first = transform_multiply_rows(xforms[:, None], poses[None, : len(world_first)])
+            # Match collapse_fixed_joints: body2's anchor moves, but relpose.p stays in body1.
+            second = np.tile(poses[len(world_first) :], (len(xforms), 1, 1))
+            second[..., 3:] = quat_multiply_rows(second[..., 3:], transform_inverse_rows(xforms)[:, None, 3:])
+            targets = starts[:, None] + welded[None]
+            placed = np.concatenate((first, second), axis=1)
+            store_transform_rows(destination("relpose", targets), targets.ravel(), placed.reshape(-1, 7))
 
     def _model_value_key(self, attribute: CustomAttribute) -> int:
         """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
@@ -6862,7 +6918,10 @@ class ModelBuilder:
             xform: Optional transform that places the copy. It moves the root bodies and
                 root joint frames, static shapes, particles, tetrahedral rest poses, and
                 free-root joint state and targets, and rotates their world-frame velocities.
-                Other world-frame data, such as custom attributes, is copied unchanged.
+                It also moves the world-side ``mujoco:equality_constraint_anchor`` and
+                ``mujoco:equality_constraint_relpose`` frames of ``CONNECT`` and ``WELD``
+                equality constraints between a body and the world. Other world-frame data,
+                such as other custom attributes, is copied unchanged.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
@@ -17699,13 +17758,13 @@ class ModelBuilder:
             # Only MODEL attributes are checked here; non-MODEL ones are filled at runtime via
             # _add_custom_attributes. An empty values list opts into defaults and stays silent;
             # partial population (some values, but fewer than the frequency expects) usually
-            # signals a missed row, so it warns.
+            # signals a missed row, so it warns, unless a placed copy extended the column.
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
                 if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
-                    if 0 < attr_count < expected_count:
+                    if 0 < attr_count < expected_count and full_key not in self._placement_filled_attribute_keys:
                         warnings.warn(
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",
