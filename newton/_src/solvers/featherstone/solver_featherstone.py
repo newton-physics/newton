@@ -184,6 +184,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
 
         super().__init__(model)
+        self._validate_body_gravity_scale(applies_scale=True)
         warn_unsupported_friction_modes(model, "SolverFeatherstone")
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
         if self._has_joint_mimics:
@@ -361,6 +362,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        self._notify_body_gravity_scale(flags, applies_scale=True)
         self._apply_module_options()
         if flags & (
             ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
@@ -792,6 +794,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         model.joint_X_p,
                         model.body_world,
                         model.gravity,
+                        model.body_gravity_scale,
                     ],
                     outputs=[
                         state_aug.body_qd_fk,

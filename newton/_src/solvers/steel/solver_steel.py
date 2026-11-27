@@ -2605,6 +2605,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._contact_compliance = bool(contact_compliance)
         self._compliance = None
         super().__init__(model)
+        self._validate_body_gravity_scale(applies_scale=True)
         self._solve_mode = solve_mode
         if model.requires_grad:
             raise NotImplementedError("SolverSteel does not support gradients (model.requires_grad=True).")
@@ -3411,7 +3412,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
         Steel ignores. A captured notification skips all three checks. An eager shape notification reads
         the scaled friction coefficients on the host and raises :class:`ValueError` when one is not finite in
-        float32; a captured one leaves the error to :meth:`check_constraint_capacity`.
+        float32; a captured one leaves the error to :meth:`check_constraint_capacity`. An eager body gravity
+        notification also checks :attr:`~newton.Model.body_gravity_scale` on the host and raises
+        :class:`ValueError` for non-finite values; a captured one skips the check. Body gravity changes wake
+        the sleeping islands they belong to.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3421,6 +3425,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 discards the warm-start impulses of every world.
         """
         world_mask = self._normalize_reset_world_mask(world_mask)
+        self._notify_body_gravity_scale(flags, applies_scale=True)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
             if self._mimic_reads_equality:
@@ -3437,6 +3442,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             | dof_inertial
             | ModelFlags.BODY_PROPERTIES
             | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.BODY_GRAVITY_PROPERTIES
             | ModelFlags.MODEL_PROPERTIES
         ):
             # The carried kinematics and inverse-dynamics terms read these properties.
@@ -3518,6 +3524,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ModelFlags.JOINT_PROPERTIES
                 | ModelFlags.JOINT_DOF_PROPERTIES
                 | ModelFlags.BODY_INERTIAL_PROPERTIES
+                | ModelFlags.BODY_GRAVITY_PROPERTIES
                 | ModelFlags.SHAPE_PROPERTIES
             )
         mujoco = getattr(self.model, "mujoco", None)
@@ -8662,6 +8669,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             0,
             model.body_world,
             model.gravity,
+            model.body_gravity_scale,
         ]
         fk_outputs = [
             state_in.body_q,
@@ -8745,6 +8753,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     0,
                     model.body_world,
                     model.gravity,
+                    model.body_gravity_scale,
                     state_aug._body_v_s,
                     state_aug._body_a_s,
                     self._dynamics_body_active,
@@ -11046,6 +11055,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         0,
                         model.body_world,
                         model.gravity,
+                        model.body_gravity_scale,
                         self._body_v_s,
                         self._body_a_s,
                         self._dynamics_body_active,

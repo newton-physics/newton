@@ -118,6 +118,7 @@ from .kernels import (
     sync_static_geom_xposes_kernel,
     update_actuator_properties_kernel,
     update_axis_properties_kernel,
+    update_body_gravcomp_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_connect_constraint_anchors_kernel,
@@ -525,6 +526,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         - For installation instructions, see the `mujoco_warp`_ repository.
         - ``shape_collision_radius`` from Newton models is not used by MuJoCo. Instead, MuJoCo computes
           bounding sphere radii (``geom_rbound``) internally based on the geometry definition.
+        - :attr:`~newton.Model.body_gravity_scale` ``s`` is applied as MuJoCo gravity compensation
+          ``1 - s * (1 - gravcomp)``. ``BODY_PARENT_F`` and ``qfrc_bias`` therefore include the removed
+          weight, and with ``actuatorgravcomp`` the compensation counts against the actuator force limits.
+          ``s * (1 - gravcomp) > 1`` gives a negative gravcomp, which native MuJoCo (``use_mujoco_cpu=True``)
+          applies only when some body has a positive one; otherwise :class:`NotImplementedError` is raised.
+          MuJoCo skips gravity compensation when both the ``spring`` and ``damper`` flags are disabled, so a
+          dynamic body with a scale other than ``1`` then raises :class:`NotImplementedError`.
 
     Joint support:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, D6.
@@ -5811,7 +5819,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         out_body_acceleration: wp.array[wp.vec3] | None,
         out_particle_acceleration: wp.array[wp.vec3] | None,
     ) -> None:
-        """Evaluate MuJoCo's internally applied gravity acceleration for coupling."""
+        """Evaluate MuJoCo's internally applied gravity acceleration for coupling.
+
+        A body's acceleration is ``s * (1 - gravcomp) * g`` with its
+        :attr:`~newton.Model.body_gravity_scale` ``s``. When actuator gravity compensation saturates
+        an actuator's force limit, this overstates the compensation MuJoCo applies.
+        """
         if out_particle_acceleration is not None:
             super().coupling_eval_gravity_acceleration(None, out_particle_acceleration)
 
@@ -5829,6 +5842,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.model.gravity,
                 self.model.body_world,
+                self.model.body_gravity_scale,
                 self.mjc_body_to_newton,
                 body_gravcomp,
                 self._option_world,
@@ -6136,6 +6150,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_compiled_mesh_scales()
 
+        # MuJoCo computes gravcomp in its passive force pass, which it skips when springs and dampers are disabled.
+        passive_disabled = int(self._mujoco.mjtDisableBit.mjDSBL_SPRING | self._mujoco.mjtDisableBit.mjDSBL_DAMPER)
+        self._notify_body_gravity_scale(
+            flags,
+            applies_scale=self.mj_model.opt.disableflags & passive_disabled != passive_disabled,
+            reason=" with both spring and damper disabled",
+        )
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
             # set_const_fixed / set_const_0 (called below) recompute MuJoCo
@@ -6146,6 +6167,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._invalidate_contact_fast_path()
             need_const_fixed = True
             need_const_0 = True
+        elif flags & ModelFlags.BODY_GRAVITY_PROPERTIES:
+            self._update_body_gravcomp()
+            if self.use_mujoco_cpu:
+                self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
+                # mj_setConst recounts ngravcomp, and MuJoCo skips all gravcomp while that count is 0.
+                need_const_0 = self.mj_model.ngravcomp == 0 and bool(np.any(self.mj_model.body_gravcomp > 0.0))
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
         if flags & ModelFlags.BODY_PROPERTIES:
@@ -6263,6 +6290,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     getattr(self.mj_model, name)[ctrl_direct] = getattr(self.mjw_model, name).numpy()[0, ctrl_direct]
             if need_const_fixed or need_const_0:
                 self._set_const_0()
+            # mj_setConst counts only positive gravcomp, so any later constant refresh drops a negative-only one.
+            body_gravcomp = self.mj_model.body_gravcomp
+            if np.any(body_gravcomp < 0.0) and not np.any(body_gravcomp > 0.0):
+                raise NotImplementedError(
+                    "Native MuJoCo skips negative gravcomp, as from body_gravity_scale * (1 - gravcomp) > 1, unless a body has a positive one"
+                )
             if need_solref_update:
                 self._update_solref_from_invweight0()
             if need_const_0:
@@ -7700,7 +7733,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_stiffness = model.joint_stiffness.numpy()
         joint_damping = model.joint_damping.numpy() if model.joint_damping is not None else None
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
+        # Compile the gravcomp the inertial refresh writes, 1 - s * (1 - gravcomp), so a saved MJCF has it too.
+        body_gravity_scale = model.body_gravity_scale.numpy()
         body_gravcomp = get_custom_attribute("gravcomp")
+        if body_gravcomp is None:
+            body_gravcomp = np.zeros_like(body_gravity_scale)
+        body_gravcomp = body_gravcomp + (1.0 - body_gravity_scale) * (1.0 - body_gravcomp)
         body_sleep_policy = get_custom_attribute("sleep_policy")
         joint_rest_q = model.joint_rest_q.numpy()
         joint_ref = get_custom_attribute("dof_ref")
@@ -8640,7 +8678,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": mocap}
             # The compact simple-body qM layout cannot hold runtime COM or inertia-frame edits.
             body_kwargs["simple"] = 0
-            if body_gravcomp is not None and body_gravcomp[child] != 0.0:
+            if body_gravcomp[child] != 0.0:
                 body_kwargs["gravcomp"] = float(body_gravcomp[child])
             if body_sleep_policy is not None and body_sleep_policy[child] != self.SleepPolicy.AUTO:
                 body_kwargs["sleep"] = int(body_sleep_policy[child])
@@ -10437,6 +10475,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    def _update_body_gravcomp(self) -> None:
+        """Write MuJoCo's gravcomp ``1 - s * (1 - gravcomp)`` from ``mujoco:gravcomp`` and the body gravity scales."""
+        if self.model.body_count == 0:
+            return
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        gravcomp = getattr(mujoco_attrs, "gravcomp", None) if mujoco_attrs is not None else None
+        wp.launch(
+            update_body_gravcomp_kernel,
+            dim=self.mjc_body_to_newton.shape,
+            inputs=[self.mjc_body_to_newton, gravcomp, self.model.body_gravity_scale],
+            outputs=[self.mjw_model.body_gravcomp],
+            device=self.model.device,
+        )
+
     def _update_model_inertial_properties(self):
         if self.model.body_count == 0:
             return
@@ -10465,6 +10517,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+        self._update_body_gravcomp()
 
         wp.launch(
             update_body_inertia_kernel,

@@ -918,6 +918,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             collision_frequency_type=collision_frequency_type,
         )
         self._empty_mesh_recovery = empty_mesh_recovery(model.device.alias)
+        # Bodies integrated by another solver get their gravity there.
+        self._validate_body_gravity_scale(applies_scale=not integrates_rigid_bodies)
         # The solver's warm-start setting is authoritative for an owned pipeline:
         # multiplier restores ride the pipeline's matched contact indices, so
         # history without matching silently cold-starts every refresh (k times per
@@ -1572,6 +1574,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits
                 indicating which model properties changed.
         """
+        self._notify_body_gravity_scale(flags, applies_scale=not self._integrates_rigid_bodies)
         self._apply_module_options()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_contact_materials()

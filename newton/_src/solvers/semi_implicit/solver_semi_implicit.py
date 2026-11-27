@@ -6,7 +6,7 @@ import math
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, JointType, Model, State
+from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase, warn_unsupported_friction_modes
@@ -110,6 +110,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             raise ValueError("SolverSemiImplicit does not support JointType.ROD joints.")
 
         super().__init__(model=model)
+        self._validate_body_gravity_scale(applies_scale=False)
         warn_unsupported_friction_modes(model, "SolverSemiImplicit")
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
@@ -178,6 +179,21 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             else:
                 wp.copy(dst, src)
         return work
+
+    @override
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Reject gravity scales the solver does not apply after body, body inertial or body gravity changes.
+
+        Args:
+            flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
+                changed.
+        """
+        self._notify_body_gravity_scale(flags, applies_scale=False)
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The gravity scale check skips its host read during capture.
+        return 0
 
     @override
     def step(

@@ -1299,6 +1299,11 @@ models built without :meth:`~newton.ModelBuilder.begin_world`, where importers s
 options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
 a MuJoCo world has one gravity, so dynamic global bodies that share it with world ``0``
 bodies must have the same gravity, or construction raises :class:`ValueError`.
+For global bodies that had ``s`` times world ``0``'s gravity, set both entries to
+world ``0``'s gravity and give those bodies a :attr:`~newton.Model.body_gravity_scale`
+of ``s``. A body with ``mujoco:gravcomp`` ``c`` then has the unclamped acceleration
+``s * (1 - c)`` times world ``0``'s gravity, as under its old gravity; that is ``s`` times
+world ``0``'s gravity only when ``c`` is ``0``.
 Later changes to either gravity entry or to a body's kinematic flag are not checked;
 such a MuJoCo world follows world ``0``.
 

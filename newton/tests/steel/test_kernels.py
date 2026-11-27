@@ -1593,6 +1593,7 @@ def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
                     materialize_terms,
                     model.body_world,
                     model.gravity,
+                    model.body_gravity_scale,
                     solver._dynamics_art_active,
                 ],
                 outputs=[
@@ -1658,6 +1659,7 @@ def test_split_kinematics_match_the_fused_fk_id_kernel(test, device):
                     materialize_terms,
                     model.body_world,
                     model.gravity,
+                    model.body_gravity_scale,
                     split["body_v_s"],
                     split["body_a_s"],
                     solver._dynamics_body_active,

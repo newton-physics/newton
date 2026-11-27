@@ -346,6 +346,7 @@ def find_mujoco_body_from_newton_body(
 def eval_mujoco_coupling_gravity_acceleration_kernel(
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
+    body_gravity_scale: wp.array[wp.float32],
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_gravcomp: wp.array2d[float],
     option_world: int,
@@ -368,7 +369,8 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
     if gravity_world >= -1 and gravity_world < gravity.shape[0]:
         g = gravity[gravity_world]
 
-    gravcomp = float(0.0)
+    # A body MuJoCo doesn't simulate gets the base hook's scaled gravity.
+    gravcomp = 1.0 - body_gravity_scale[body]
     mjc_body = find_mujoco_body_from_newton_body(mujoco_world, body, mjc_body_to_newton)
     if mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
         gravcomp = body_gravcomp[mujoco_world, mjc_body]
@@ -1964,6 +1966,26 @@ def update_body_mass_ipos_kernel(
     # update gravcomp
     if body_gravcomp:
         body_gravcomp_out[world, mjc_body] = body_gravcomp[newton_body]
+
+
+@wp.kernel
+def update_body_gravcomp_kernel(
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_gravcomp: wp.array[float],
+    body_gravity_scale: wp.array[wp.float32],
+    # outputs
+    body_gravcomp_out: wp.array2d[float],
+):
+    """Write MuJoCo body gravcomp ``1 - s * (1 - gravcomp)`` for each body's gravity scale ``s``."""
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body < 0:
+        return
+    gravcomp = float(0.0)
+    if body_gravcomp:
+        gravcomp = body_gravcomp[newton_body]
+    # Exact at s = 1.
+    body_gravcomp_out[world, mjc_body] = gravcomp + (1.0 - body_gravity_scale[newton_body]) * (1.0 - gravcomp)
 
 
 @wp.func

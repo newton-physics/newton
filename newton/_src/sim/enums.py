@@ -66,6 +66,9 @@ class ModelFlags(IntEnum):
         Body variants, including this flag, may change without a deprecation period.
     """
 
+    BODY_GRAVITY_PROPERTIES = 1 << 13
+    """Indicates body gravity property updates: body_gravity_scale."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -80,6 +83,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
         | SHAPE_TYPE_AND_SOURCE
+        | BODY_GRAVITY_PROPERTIES
     )
     """Indicates all property updates."""
 

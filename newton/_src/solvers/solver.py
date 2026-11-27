@@ -224,6 +224,27 @@ def _update_effective_inv_mass_inertia(
         eff_inv_inertia[tid] = model_inv_inertia[tid]
 
 
+@wp.kernel(enable_backward=False)
+def _summarize_body_gravity_scale_kernel(
+    body_gravity_scale: wp.array[wp.float32],
+    body_inv_mass: wp.array[float],
+    body_flags: wp.array[wp.int32],
+    summary: wp.array[wp.int32],
+):
+    """Flag non-finite scales, scales other than 1, and those on dynamic and on kinematic bodies with mass."""
+    body = wp.tid()
+    scale = body_gravity_scale[body]
+    if not wp.isfinite(scale):
+        wp.atomic_max(summary, 0, 1)
+    if scale != 1.0:
+        wp.atomic_max(summary, 1, 1)
+        if body_inv_mass[body] > 0.0:
+            if (body_flags[body] & BodyFlags.KINEMATIC) != 0:
+                wp.atomic_max(summary, 3, 1)
+            else:
+                wp.atomic_max(summary, 2, 1)
+
+
 @dataclass(frozen=True)
 class _ObservableField:
     """Immutable allocation metadata stored on a dataclass field."""
@@ -694,6 +715,11 @@ class SolverBase:
         self.model = model
         self._module_options: dict[Any, dict[str, Any]] = {}
         self._applied_module_options_revision = -1
+        # Whether some body has a scale other than 1, and whether some kinematic body with mass has one, at the
+        # last check; True until the first check.
+        self._body_gravity_scale_nonunit = True
+        self._body_gravity_scale_kinematic_nonunit = True
+        self._body_gravity_scale_summary: wp.array[wp.int32] | None = None
 
         if collision_pipeline is not None and not self.supports_collision_pipeline:
             raise ValueError(
@@ -1076,6 +1102,54 @@ class SolverBase:
         """
         return self.model.device
 
+    def _notify_body_gravity_scale(self, flags: ModelFlags | int, *, applies_scale: bool, reason: str = "") -> None:
+        """Check :attr:`~newton.Model.body_gravity_scale` after a notification that can change it or the bodies it
+        applies to; see :meth:`_validate_body_gravity_scale`."""
+        if flags & ModelFlags.BODY_GRAVITY_PROPERTIES:
+            check = True
+        elif applies_scale:
+            check = False
+        else:
+            # Mass can make a massless scaled body dynamic, and body flags a kinematic one.
+            check = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self._body_gravity_scale_nonunit) or bool(
+                flags & ModelFlags.BODY_PROPERTIES and self._body_gravity_scale_kinematic_nonunit
+            )
+        if check:
+            self._validate_body_gravity_scale(applies_scale=applies_scale, reason=reason)
+
+    def _validate_body_gravity_scale(self, *, applies_scale: bool, reason: str = "") -> None:
+        """Reject non-finite :attr:`~newton.Model.body_gravity_scale` values, and values other than 1 on
+        dynamic bodies unless the solver applies them.
+
+        Reads a summary of the scales back to the host, so it is skipped during CUDA graph capture.
+        """
+        model = self.model
+        scale = model.body_gravity_scale
+        if scale is None or scale.shape[0] == 0 or model.device.is_capturing:
+            return
+        if self._body_gravity_scale_summary is None:
+            self._body_gravity_scale_summary = wp.empty(4, dtype=wp.int32, device=model.device)
+        summary = self._body_gravity_scale_summary
+        summary.zero_()
+        wp.launch(
+            _summarize_body_gravity_scale_kernel,
+            dim=scale.shape[0],
+            inputs=[scale, model.body_inv_mass, model.body_flags],
+            outputs=[summary],
+            device=model.device,
+        )
+        nonfinite, nonunit, dynamic_nonunit, kinematic_nonunit = (bool(value) for value in summary.numpy())
+        self._body_gravity_scale_nonunit = nonunit
+        self._body_gravity_scale_kinematic_nonunit = kinematic_nonunit
+        if nonfinite:
+            values = scale.numpy()
+            body = int(np.flatnonzero(~np.isfinite(values))[0])
+            raise ValueError(f"Model.body_gravity_scale of body {body} must be finite, got {values[body]}")
+        if dynamic_nonunit and not applies_scale:
+            raise NotImplementedError(
+                f"{type(self).__name__} does not support Model.body_gravity_scale values other than 1{reason}"
+            )
+
     def _init_kinematic_state(self):
         """Allocate and populate effective inverse mass/inertia arrays."""
         model = self.model
@@ -1349,6 +1423,8 @@ class SolverBase:
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
           tensors have changed.
+        * ``ModelFlags.BODY_GRAVITY_PROPERTIES``: Rigid-body gravity scales
+          have changed.
         * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms, scales, or
           materials have changed.
         * ``ModelFlags.SHAPE_TYPE_AND_SOURCE``: Shapes changed type or source,
