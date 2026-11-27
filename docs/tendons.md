@@ -163,6 +163,48 @@ Rolling slip bounds the accumulated spin reaction and applies its change,
 including retraction when tension falls. As with other parallel XPBD
 constraints, relaxation may need adjustment for strongly coupled routes.
 
+### Direct material projection (experimental)
+
+Both solvers accept `tendon_material_direct=True` to try a coupled finite-friction
+solve of each anchor-separated tendon component.
+It supports the existing linear compliance and damping law, full rolling
+transport, and dynamic circular guides. Sweeps remain the default.
+
+If a tendon has more than 32 authored segments between anchors or an authored
+compliance below `1e-25 m/N`, it goes straight to sweeps. If a direct result fails
+its numerical or bound checks, only that tendon retries with sweeps from the
+same material allocation. A large compliance difference between segments makes numerical
+rejection more likely, even if every compliance exceeds the minimum. The outcome
+also depends on the applied load and route; there is no fixed supported ratio
+between the largest and smallest compliance. Fallback uses `tendon_max_sweeps`, `tendon_settle_tol`,
+and `tendon_settle_atol`. With zero relative tolerance, it runs the full sweep
+budget and checks the final result against the absolute tolerance.
+VBD retains its effective compliance floor. Reconstruct the solver to switch
+modes. Direct mode does not support differentiation or external rigid-body integration.
+
+An unresolved guide connection between two active spans is rejected rather than
+treated as two independent components. In particular, a zero or very short span
+at a pinhole can leave its routing direction undefined.
+
+Call `solver.check_tendon_material(state)` after stepping or replaying a CUDA
+graph, outside capture and before using that trajectory's results. This check
+synchronizes with the device and raises if a material projection failed at an
+accepted pose. Intermediate body iterates can be retried without latching a
+failure. An accepted failure remains in the State through subsequent steps and
+`State.assign()`; a later successful solve does not clear it. Discard the affected
+trajectory, correct its input, and reset its tendon history before retrying.
+Invalid routes, material deficits, and fallback sweeps that miss tolerance are
+reported with the world and tendon indices.
+
+Slack cable can have more than one zero-tension allocation. Direct keeps an
+already feasible allocation. If material must move, it minimizes the sum of
+squared transfers across the guides: a stretched middle segment between two
+equally slack neighbors draws equally from both sides. The resulting segment
+rest lengths carry over to the next step and are stored as float32.
+
+Select direct mode in Python. USD selection is tracked in
+[#5502](https://github.com/newton-physics/newton/issues/5502).
+
 ### Reading tension (experimental diagnostics)
 
 The solver-owned arrays `tendon_segment_material_tension` and
@@ -263,13 +305,16 @@ and reject unsupported semantics rather than silently discard them.
 - Segment compliance applies to the straight free spans. Wrapped arc length is
   included in material transport but is not independently stretchable.
 - Free-span rest lengths are limited to at least `1.0e-6 m` during material
-  transfer and dynamic-route transitions. If enforcing this floor adds material
-  beyond float32 roundoff at the accepted pose, XPBD and VBD emit an `ERROR`
+  transfer and dynamic-route transitions. With material sweeps, if enforcing this
+  floor adds material beyond float32 roundoff at the accepted pose, XPBD and VBD emit an `ERROR`
   diagnostic identifying the tendon and added length. This can happen when
   growing wrapped arcs exhaust the available material, or material transfers
   have not converged. The diagnostic also runs during CUDA graph replay, without
   host synchronization. It does not stop the simulation or repair the material
   budget; reported rest lengths and tensions are invalid after this error.
+  Direct mode rejects incompatible material bounds, including an activation
+  whose wrapped arc exhausts the available cable. Check its latched failure
+  with `solver.check_tendon_material(state)` as described above.
 - Fixed roller wraps must remain in `[0, pi]`. Zero wrap is a valid tangent
   boundary; crossing below zero or beyond pi is unsupported and emits a
   diagnostic from the accepted pose. The diagnostic does not repair the route.

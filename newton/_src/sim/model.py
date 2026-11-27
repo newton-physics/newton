@@ -524,6 +524,7 @@ class Model:
         "tendon_segment_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
         "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "_tendon_initialized": AttributeSpec(AttributeFrequency.TENDON),
+        "_tendon_material_failure": AttributeSpec(AttributeFrequency.TENDON),
         # particles
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
@@ -2784,6 +2785,7 @@ class Model:
             s.tendon_guide_active = wp.ones(self.tendon_guide_count, dtype=wp.bool, device=self.device)
             s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
             s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
+            s._tendon_material_failure = wp.full(self.tendon_count, wp.vec2i(0, -1), dtype=wp.vec2i, device=self.device)
 
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
