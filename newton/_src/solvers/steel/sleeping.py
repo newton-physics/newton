@@ -1305,9 +1305,12 @@ def _pinned_articulations(model, body_art):
         followers = np.flatnonzero(model.joint_mimic_joint.numpy() >= 0)
         pin_joints(followers)
         pin_joints(model.joint_mimic_joint.numpy()[followers])
-    if model.constraint_mimic_count:
-        pin_joints(model.constraint_mimic_joint0.numpy())
-        pin_joints(model.constraint_mimic_joint1.numpy())
+    from .solver_steel import _joint_equality_rows  # noqa: PLC0415
+
+    rows = _joint_equality_rows(model)
+    if rows.size:
+        pin_joints(model.mujoco.equality_constraint_joint1.numpy()[rows])
+        pin_joints(model.mujoco.equality_constraint_joint2.numpy()[rows])
     return pinned
 
 

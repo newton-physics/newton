@@ -1,0 +1,1 @@
+Fix `ModelBuilder.add_usd()` taking gravity and the other scene settings from a `PhysicsScene` that `ignore_paths` matches with a regular expression. The scene is skipped, as it already was for patterns without `.*`, and the next scene of the stage is used. Narrow the pattern if the scene's settings are still needed.
