@@ -7,9 +7,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
-import numpy as np
-import numpy.typing as npt
-
 from ..utils import topology
 
 logger = logging.getLogger(__name__)
@@ -44,29 +41,51 @@ class _ArticulationJointPlan:
             self.joint_edges.append(body_pair)
             self.joint_names.append(joint_path)
 
-    def get_joint_order(
-        self, joint_ordering: Literal["bfs", "dfs"] | None, *, verbose: bool = False
-    ) -> list[int] | npt.NDArray[np.intp]:
-        """Order the joints and report invalid trees.
+    def _components(self) -> list[list[int]]:
+        """Group the joint indices by connected component, the world's component first."""
+        root: dict[int, int] = {}
 
-        ``None`` keeps source order without checking the graph. Excluded joints
-        are not included in the ordering.
+        def find(body: int) -> int:
+            while root.setdefault(body, body) != body:
+                root[body] = body = root[root[body]]
+            return body
+
+        for parent, child in self.joint_edges:
+            root[find(parent)] = find(child)
+        components: dict[int, list[int]] = {}
+        for joint_id, (parent, _) in enumerate(self.joint_edges):
+            components.setdefault(find(parent), []).append(joint_id)
+        world = find(-1)
+        return [components[key] for key in sorted(components, key=lambda key: (key != world, components[key][0]))]
+
+    def get_joint_orders(
+        self, joint_ordering: Literal["bfs", "dfs"] | None, *, verbose: bool = False
+    ) -> list[list[int]]:
+        """Order the joints of each connected component and report invalid trees.
+
+        The component attached to the world comes first. ``None`` keeps source
+        order without checking the graph. Excluded joints are not included in
+        the ordering.
         """
-        if not self.joint_edges:
-            return []
         if joint_ordering is None:
-            return np.arange(len(self.joint_names))
+            return self._components()
         if verbose:
             logger.info("Sorting joints using %s ordering...", joint_ordering)
-        sorted_joints, reversed_joint_list = topology.topological_sort_undirected(
-            self.joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
-        )
-        if reversed_joint_list:
-            reversed_joint_paths = [self.joint_names[joint_id] for joint_id in reversed_joint_list]
-            reversed_joint_names = ", ".join(reversed_joint_paths)
-            raise ValueError(
-                f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
+        joint_orders = []
+        for component in self._components():
+            sorted_joints, reversed_joint_list = topology.topological_sort_undirected(
+                [self.joint_edges[joint_id] for joint_id in component],
+                custom_indices=component,
+                use_dfs=joint_ordering == "dfs",
+                ensure_single_root=True,
             )
+            if reversed_joint_list:
+                reversed_joint_paths = [self.joint_names[joint_id] for joint_id in reversed_joint_list]
+                reversed_joint_names = ", ".join(reversed_joint_paths)
+                raise ValueError(
+                    f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
+                )
+            joint_orders.append(sorted_joints)
         if verbose:
-            logger.info("Joint ordering: %s", sorted_joints)
-        return sorted_joints
+            logger.info("Joint ordering: %s", joint_orders)
+        return joint_orders

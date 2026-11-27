@@ -31,6 +31,18 @@ class TestUsdJointPlan(unittest.TestCase):
         )
         self.assertEqual(plan.joint_excluded, {"/loop"})
 
+    def test_order_connected_components(self):
+        """Order each connected component on its own, starting with the one attached to the world."""
+        plan = _ArticulationJointPlan()
+        plan.add_joint("/detached_child", 3, 4, excluded=False)
+        plan.add_joint("/child", 0, 1, excluded=False)
+        plan.add_joint("/detached_root", 2, 3, excluded=False)
+        plan.add_joint("/root", -1, 0, excluded=False)
+
+        for joint_ordering in ("dfs", "bfs"):
+            self.assertEqual(plan.get_joint_orders(joint_ordering), [[3, 1], [2, 0]])
+        self.assertEqual(plan.get_joint_orders(None), [[1, 3], [0, 2]])
+
 
 if __name__ == "__main__":
     unittest.main()

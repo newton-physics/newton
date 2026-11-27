@@ -1506,16 +1506,19 @@ class SolverBase:
         return ~0
 
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Update a legacy Contacts object with forces from the solver state.
+        """Write contact geometry detected by the solver's own collision backend into ``contacts``.
 
-        .. deprecated:: 1.7
-
-            Request :attr:`ObservableKind.CONTACT_F` using :meth:`observables`
-            and pass the resulting container to :meth:`step` instead.
+        Only solvers with native contact detection, such as :class:`~newton.solvers.SolverMuJoCo`
+        and :class:`~newton.solvers.SolverKamino`, implement this method. Request
+        :attr:`ObservableKind.CONTACT_F` using :meth:`observables` and pass the resulting
+        container to :meth:`step` to obtain contact forces.
 
         Args:
             contacts: The object to update from the solver state.
             state: Optional simulation state, used by some solvers.
+
+        Raises:
+            NotImplementedError: If the solver has no native contact detection.
         """
         raise NotImplementedError()
 
