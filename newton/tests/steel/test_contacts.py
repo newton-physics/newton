@@ -934,6 +934,10 @@ def test_max_depenetration_velocity_bounds_every_contact_route(test, device):
         ("slider", [bound], "propagation"),
         ("pair", [0.0, bound], "immediate"),
         ("pair", [bound, 0.0], "immediate"),
+        ("pair", [bound, 2.0], "immediate"),
+        ("pair", [2.0, bound], "immediate"),
+        ("fixed", [bound, 2.0], "propagation"),
+        ("fixed", [2.0, bound], "propagation"),
         # Bodies without response DOFs still contribute their bound.
         ("kinematic", [0.0, bound], "immediate"),
         ("kinematic", [0.0, bound], "propagation"),
