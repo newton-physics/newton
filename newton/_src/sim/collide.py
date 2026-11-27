@@ -440,6 +440,13 @@ def _record_reduction_overflow(
         overflow[0] = 1
 
 
+@wp.kernel(enable_backward=False)
+def _record_body_pair_fallback(group_fallback: wp.array[wp.int32], fallback: wp.array[wp.int32]):
+    """Raise the contact stream's fallback flag if body-pair reduction fell back this pass."""
+    if group_fallback[0] != 0:
+        fallback[0] = 1
+
+
 _EMPTY_AABB_EXTENT = wp.constant(1.0e30)
 _TETRAHEDRON_AABB_MIN_SHAPE_COUNT = 128
 
@@ -1784,8 +1791,9 @@ class CollisionPipeline:
         """
         hashtable_size_factor: float = 1.0
         """Multiplier on the group-table capacity, which is derived from the model's contact-pair topology
-        rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames keep every
-        primitive and convex contact, so ``rigid_contact_count`` stays near its unreduced value."""
+        rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames write their
+        primitive and convex contacts unreduced, so ``rigid_contact_count`` stays near its unreduced value; such a
+        frame sets :attr:`newton.Contacts.body_pair_reduction_fallback` and prints a warning once."""
         material_attributes: tuple[str, ...] | None = None
         """Per-shape custom attributes, by full name such as ``"steel:min_torsional_patch_radius"``, that
         must also match for shapes on one body to share a group.  ``None`` uses every per-shape custom
@@ -2837,6 +2845,20 @@ class CollisionPipeline:
         """
         return self._body_pair_reduction
 
+    def body_pair_reduction_stats(self) -> dict | None:
+        """Whole-run body-pair reduction telemetry, or ``None`` when body-pair reduction is disabled.
+
+        Forces a device sync; call it outside CUDA graph capture. ``fallback_frames`` counts passes that
+        skipped reduction because the group table saturated; such a pass writes its staged contacts unreduced,
+        still bounded by the staging and ``rigid_contact_max`` capacities. ``max_hashtable_entries`` against
+        ``hashtable_capacity`` shows how close the table runs to that limit.
+
+        .. experimental::
+        """
+        if self._body_pair_reducer is None:
+            return None
+        return self._body_pair_reducer.stats()
+
     def refresh_body_pair_reduction_groups(self):
         """Rebuild body-pair material groups and fixed local coverage bounds.
 
@@ -3506,6 +3528,14 @@ class CollisionPipeline:
                     device=self.device,
                     record_tape=False,
                 )
+        if self.narrow_phase.group_contact_reducer is not None:
+            wp.launch(
+                _record_body_pair_fallback,
+                dim=1,
+                inputs=[self.narrow_phase.group_contact_reducer.group_fallback, contacts._body_pair_reduction_fallback],
+                device=self.device,
+                record_tape=False,
+            )
 
         if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
             raise ValueError(

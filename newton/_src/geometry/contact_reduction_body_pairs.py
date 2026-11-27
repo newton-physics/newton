@@ -66,7 +66,8 @@ projected grid and its length scale.
 Reduction never crosses a normal bin, so multi-patch configurations (a body
 touching floor and wall at once) keep representatives of every patch.  On
 hashtable probe exhaustion the reduction fails open: if any contact cannot be
-registered within the bounded probe budget, the frame keeps every contact.  Probe
+registered within the bounded probe budget, the frame writes its staged contacts
+unreduced, still bounded by the staging and output capacities.  Probe
 exhaustion can mean a full table or a long collision cluster; telemetry does
 not claim to distinguish the two.
 
@@ -127,6 +128,11 @@ from .contact_reduction_global import (
 )
 from .flags import ShapeFlags
 from .types import GeoType
+
+# Automatic coverage splits a pair's contacts into a touching and a speculative layer.
+GROUP_DEPTH_LAYERS = 2
+# Normal bins budgeted per group pair: a sizing heuristic, not an occupancy bound.
+GROUP_AUTO_BINS_PER_PAIR = 3
 
 # Solver-visible contact material fields. Shapes on one body may only share a
 # reduction group when ALL of these are exactly equal: the surviving contacts'
@@ -349,15 +355,24 @@ def build_group_reduction_config(
     # A replicated scene can have one reachable pair per body, yet each pair spans
     # several bins and cells: reserve four patch entries per group at half load.
     group_budget = 8 * len(np.unique(shape_group))
+    pair_entries = 1
+    voxel_grids = {}
+    if cell_size is None:
+        voxel_grids = build_group_voxel_grids(model, shape_group)
+        # Automatic coverage keys a pair by bin, voxel and depth layer, so each pair owns several entries.
+        voxels = int(np.prod(voxel_grids["group_resolution"], axis=1).max(initial=1))
+        pair_entries = GROUP_AUTO_BINS_PER_PAIR * voxels * GROUP_DEPTH_LAYERS
     # Cap in float: an extreme size factor would overflow the integer conversion.
-    capacity_request = min(float(max(group_pair_bound, group_budget)) * float(hashtable_size_factor), staging_capacity)
+    capacity_request = min(
+        float(max(group_pair_bound * pair_entries, group_budget)) * float(hashtable_size_factor), staging_capacity
+    )
     capacity_request = max(1024, int(capacity_request))
     config = GroupReductionConfig(
         shape_group=shape_group,
         cell_size=0.0 if cell_size is None else float(np.float32(cell_size)),
         hashtable_capacity=capacity_request,
         staging_capacity=staging_capacity,
-        **(build_group_voxel_grids(model, shape_group) if cell_size is None else {}),
+        **voxel_grids,
     )
     return config, group_pair_bound, capacity_request
 
@@ -454,7 +469,7 @@ class BodyPairReduction:
 
         Returns:
             ``probe_failures``: group-table insertions that ran out of probes; each one
-            makes its whole frame keep every contact (counted in ``fallback_frames``).
+            makes its whole frame write its staged contacts unreduced (counted in ``fallback_frames``).
             ``invariant_violations``: discarded contacts that out-rank a recorded
             winner, counted only with :attr:`verify` on.
             ``cell_clamp_events``: contacts whose spatial cell hit the packed +/-31 range.
@@ -491,10 +506,11 @@ class BodyPairReduction:
         }
 
     def clear_stats(self):
-        """Zero the whole-run telemetry (host-side, outside capture)."""
+        """Zero the whole-run telemetry and re-arm the saturation warning (host-side, outside capture)."""
         self._raise_if_capturing("clear_stats()")
         if self.reducer is not None:
             self.reducer.group_stats.zero_()
+            self.reducer.group_fallback.zero_()
 
     def describe(self) -> dict:
         """Sizes fixed at construction."""

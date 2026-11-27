@@ -177,14 +177,15 @@ class Contacts:
         self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
         self._mesh_recovery_contacts = None
         with wp.ScopedDevice(device):
-            # Two contact counts, [0] rigid and [1] soft, plus overflow flags:
-            # [2] global contact reduction and [3] a coupled source's soft-contact buffer.
+            # Two contact counts, [0] rigid and [1] soft, plus flags: overflow in [2] global
+            # contact reduction and [3] a coupled source's soft-contact buffer, and
+            # [4] a body-pair reduction pass that skipped reduction.
             # rigid_contact_count (the [0:1] view) and soft_contact_count (the [1:2] view) index
             # into this same array, so each remains a separate count; they share one array only so
             # a single kernel can reset all slots to zero in one launch. The reset
             # happens at the start of every collision pass -- folded into the first kernel that
             # runs, compute_shape_aabbs -- and clear() resets them as well.
-            self.contact_counters = wp.zeros(4, dtype=wp.int32)
+            self.contact_counters = wp.zeros(5, dtype=wp.int32)
             # Sliced view for the rigid counter (no additional allocation)
             self.rigid_contact_count = self.contact_counters[0:1]
             # Nonzero when the collision pass that filled this buffer dropped contact candidates
@@ -194,6 +195,7 @@ class Contacts:
             # Coupling packs stored rows and loses the source count's overflow sentinel.
             # Preserve that loss so force consumers keep the source's overflow policy.
             self._soft_contact_source_overflow = self.contact_counters[3:4]
+            self._body_pair_reduction_fallback = self.contact_counters[4:5]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
             """Device-side generation counter, incremented each time :meth:`clear` is called.
@@ -485,6 +487,20 @@ class Contacts:
         .. experimental::
         """
         return self._rigid_contact_body_pair_reduced
+
+    @property
+    def body_pair_reduction_fallback(self) -> wp.array:
+        """Device flag, nonzero when the pass that filled this buffer skipped body-pair reduction.
+
+        A pass falls back when the body-pair group table saturates: it then writes the
+        primitive and convex contacts it staged within the contact gap, unreduced, so the
+        staging and ``rigid_contact_max`` capacities still bound what it keeps. Raise
+        :attr:`newton.CollisionPipeline.BodyPairReductionConfig.hashtable_size_factor`
+        when it is set. Reset at the start of every collision pass.
+
+        .. experimental::
+        """
+        return self._body_pair_reduction_fallback
 
     @property
     def device(self):
