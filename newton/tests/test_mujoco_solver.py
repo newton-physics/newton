@@ -7139,6 +7139,13 @@ class TestMuJoCoConversion(unittest.TestCase):
                     rtol=1.0e-6,
                 )
 
+        # A negative moment within the same distance of the boundary still fails to compile.
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.diag([1.0, 1.0, -1.0e-9])))
+        builder.add_articulation([builder.add_joint_free(body)])
+        with self.assertRaisesRegex(ValueError, "mjMINVAL"):
+            SolverMuJoCo(builder.finalize(device="cpu", skip_validation_inertia=True))
+
     def test_cone_runtime_resize_is_rejected(self):
         """Reject cone resizing because its MuJoCo mesh is compiled during construction."""
         for use_mujoco_cpu in (False, True):

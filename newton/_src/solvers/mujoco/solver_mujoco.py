@@ -421,7 +421,8 @@ def _mujoco_accepted_inertia(inertia: np.ndarray) -> np.ndarray:
     # The model does not keep ModelBuilder.inertia_absolute_tolerance, so this uses its default.
     rounding = np.finfo(np.float32).eps * largest
     tolerance = max(rounding, _INERTIA_ABS_FLOOR)
-    if middle + smallest < largest and excess <= 4.0 * tolerance:
+    # A moment MuJoCo rejects as too small is not a rounding miss, so it stays an error.
+    if smallest > MJ_MINVAL and middle + smallest < largest and excess <= 4.0 * tolerance:
         # Adding s to every moment shrinks C - A - B by s. The extra eps * C covers MuJoCo's rounding.
         return inertia + (excess + rounding) * np.eye(3)
     return inertia
