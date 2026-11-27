@@ -52,6 +52,8 @@ from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_p
 from .kernels import (
     CONTACT_GENERATION_NONE,
     CONTACT_ROW_FAMILIES,
+    MF_META_ROW_TYPE_BITS,
+    MF_META_ROW_TYPE_MASK,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_FRICTION,
@@ -1071,6 +1073,7 @@ def _use_resident_mfgs_metadata(
     *,
     has_drive_rows: bool = False,
     fuse_vel_limits: bool = False,
+    stream_mf_lambda: bool = False,
 ) -> bool:
     """Select resident dense-row metadata for compact solver shapes.
 
@@ -1086,8 +1089,11 @@ def _use_resident_mfgs_metadata(
         shared_metadata=True,
         has_drive_rows=has_drive_rows,
         fuse_vel_limits=fuse_vel_limits,
+        stream_mf_lambda=stream_mf_lambda,
     )
-    return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
+    return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= min(
+        max_shared_memory, _STATIC_SHARED_MEMORY_BYTES
+    )
 
 
 def _use_mfgs_pair_cache(
@@ -1102,6 +1108,7 @@ def _use_mfgs_pair_cache(
     world_count: int,
     sm_count: int,
     torsion_links: bool = False,
+    stream_mf_lambda: bool = False,
 ) -> bool:
     """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
 
@@ -1117,6 +1124,7 @@ def _use_mfgs_pair_cache(
         fuse_vel_limits=fuse_vel_limits,
         pair_cache=True,
         torsion_links=torsion_links,
+        stream_mf_lambda=stream_mf_lambda,
     )
     resident_worlds = sm_count * (max_shared_memory // block_bytes)
     # Row parents are cached as short, and the kernel's arrays are static shared memory.
@@ -1137,6 +1145,7 @@ def _use_mfgs_torsion_links(
     has_drive_rows: bool,
     fuse_vel_limits: bool,
     pair_cache: bool,
+    stream_mf_lambda: bool = False,
 ) -> bool:
     """Select the linked contact-torsion sweep when its row lists fit the static shared-memory bound.
 
@@ -1151,6 +1160,7 @@ def _use_mfgs_torsion_links(
         fuse_vel_limits=fuse_vel_limits,
         pair_cache=pair_cache,
         torsion_links=True,
+        stream_mf_lambda=stream_mf_lambda,
     )
     return block_bytes <= min(max_shared_memory, _STATIC_SHARED_MEMORY_BYTES)
 
@@ -1165,12 +1175,14 @@ def _mfgs_block_shared_bytes(
     fuse_vel_limits: bool,
     pair_cache: bool = False,
     torsion_links: bool = False,
+    stream_mf_lambda: bool = False,
 ) -> int:
     """Return the static shared memory [B] of one matrix-free Gauss-Seidel kernel block, up to 4-byte alignment.
 
     Every ``__shared__`` array of :func:`_get_pgs_solve_mf_gs_kernel` is counted here.
     """
-    total = _MFGS_TILE_SHARED_STORAGE_BYTES + 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    resident_mf_rows = 0 if stream_mf_lambda else free_body_constraint_max
+    total = _MFGS_TILE_SHARED_STORAGE_BYTES + 4 * (max_world_dofs + max_constraints + resident_mf_rows)
     if shared_metadata:
         total += _mfgs_metadata_bytes(max_constraints, has_drive_rows, fuse_vel_limits)
     if pair_cache:
@@ -2054,12 +2066,21 @@ class SolverSteel(SolverBase, CouplingInterface):
             articulation_constraint_max: Capacity of rows involving articulated bodies (mimic and
                 connect rows, contacts, enabled joint limits, joint velocity limits, joint friction
                 and, with ``drive_mode="rows"``, joint drives) per world. Rows beyond it are
-                dropped and reported, see :attr:`constraint_overflow`.
+                dropped and reported, see :attr:`constraint_overflow`. On CUDA the matrix-free
+                sweep keeps these rows and the world's response DOFs (six per free body) in 48 KiB
+                of shared memory, about 12,000 together; a larger shape raises :class:`ValueError`
+                unless ``iterations`` and ``velocity_iterations`` are both 0.
             free_body_constraint_max: Capacity of free-body rows per world: free-body contact rows
                 and free-body velocity-limit rows. Under the ``"propagation"`` response free-body
                 contacts use the propagation rows, so
                 it sizes only the velocity-limit rows. Rows beyond it are dropped and reported, see
-                :attr:`constraint_overflow`.
+                :attr:`constraint_overflow`. On CUDA, once these rows no longer fit the sweep's
+                shared memory beside ``articulation_constraint_max`` and the world's response DOFs
+                (about 12,000 in total), the sweep keeps their impulses in global memory: the
+                results are the same, each sweep is slower, and ``solve_mode="colored"`` with the
+                ``"propagation"`` response is usually faster for such large worlds. The CUDA sweep
+                indexes at most 8,388,608 rows per world and 357,913,941 over all worlds; a larger value
+                raises :class:`ValueError` on CUDA.
             propagation_constraint_max: Capacity of the propagation row family per world in the
                 ``"propagation"`` response, which holds every contact
                 row except those between two links of one articulation; these stay dense unless
@@ -2586,6 +2607,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._free_body_constraint_max = int(free_body_constraint_max)
         if self._free_body_constraint_max < 1:
             raise ValueError("free_body_constraint_max must be >= 1")
+        # The CUDA sweep packs each row's parent beside its type; the CPU sweep reads the unpacked rows.
+        max_free_parent = (2**31 - 1) >> MF_META_ROW_TYPE_BITS
+        if model.device.is_cuda and self._free_body_constraint_max - 1 > max_free_parent:
+            raise ValueError(f"free_body_constraint_max must be at most {max_free_parent + 1} on CUDA")
         self.warn_constraint_overflow = warn_constraint_overflow
         self._row_watermark = bool(row_watermark)
         self._row_watermarks = (
@@ -2932,6 +2957,38 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._hinv_jt_diag_sizes = frozenset()
         self._setup_local_solves(model)
         self._setup_paired_response(model)
+
+        self._uses_mf_gs_sweep = (
+            self._world_count > 0
+            and self._max_world_dofs > 0
+            and self._sparse_mass_matrix_size is None
+            and not self._sparse_diagonal_contact_solve
+        )
+        if model.device.is_cuda:
+            # The CUDA sweeps index every world's free-body rows, six floats each, with 32-bit offsets.
+            free_body_rows = self._free_body_constraint_max if self._has_free_rigid_bodies else 1
+            if self._world_count * free_body_rows * 6 > 2**31:
+                raise ValueError(
+                    f"free_body_constraint_max={free_body_rows} with {self._world_count} worlds exceeds "
+                    f"{2**31 // 6} free-body rows in total on CUDA"
+                )
+            # Only a solve that runs a sweep compiles it; the impulses can stream, the dense rows and DOFs cannot.
+            min_bytes = _mfgs_block_shared_bytes(
+                self._articulation_constraint_max,
+                0,
+                self._max_world_dofs,
+                shared_metadata=False,
+                has_drive_rows=self._has_drive_rows,
+                fuse_vel_limits=self._velocity_limits_fused,
+                stream_mf_lambda=True,
+            )
+            runs_sweep = self._iterations > 0 or self._velocity_iterations > 0
+            if self._uses_mf_gs_sweep and runs_sweep and min_bytes > _STATIC_SHARED_MEMORY_BYTES:
+                raise ValueError(
+                    f"articulation_constraint_max={self._articulation_constraint_max} with {self._max_world_dofs} "
+                    f"DOFs per world needs {min_bytes} B of sweep shared memory, over the "
+                    f"{_STATIC_SHARED_MEMORY_BYTES} B limit."
+                )
 
         self._allocate_common_buffers(model)
         self._allocate_buffers(model)
@@ -6237,7 +6294,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mf_phi = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
         # Packed metadata of the fused solve (int4 per row):
         #   .x = (dof_a << 16) | (dof_b & 0xFFFF), .y = eff_mass_inv bits,
-        #   .z = rhs bits, .w = row_type | (row_parent << 16)
+        #   .z = rhs bits, .w = row_type | (row_parent << MF_META_ROW_TYPE_BITS)
         self._mf_meta_packed = wp.zeros((worlds, rows * 4), dtype=wp.int32, device=device)
         self._mf_row_rebound_velocity = wp.zeros((worlds, rows), dtype=wp.float32, device=device)
         self._mf_row_w = wp.ones(
@@ -6404,32 +6461,27 @@ class SolverSteel(SolverBase, CouplingInterface):
             if self._sparse_diagonal_contact_solve
             else None
         )
-        if (
-            self._world_count > 0
-            and self._max_world_dofs > 0
-            and self._sparse_mass_matrix_size is None
-            and not self._sparse_diagonal_contact_solve
-        ):
+        if self._uses_mf_gs_sweep:
             mf_rows = self._mf_meta_packed.shape[1] // 4
-            shared_metadata = _use_resident_mfgs_metadata(
-                self._articulation_constraint_max,
-                mf_rows,
-                self._max_world_dofs,
-                int(getattr(model.device, "max_shared_memory_per_block", 0)),
-                has_drive_rows=self._has_drive_rows,
-                fuse_vel_limits=self._velocity_limits_fused,
-            )
-            row_phases = self._propagation_active or self._row_schedule != "interleaved"
-            mfgs_shape = (
-                self._articulation_constraint_max,
-                mf_rows,
-                self._max_world_dofs,
-                int(getattr(model.device, "max_shared_memory_per_block", 0)),
-            )
-            mfgs_metadata = {
-                "shared_metadata": shared_metadata,
+            mfgs_dims = (self._articulation_constraint_max, mf_rows, self._max_world_dofs)
+            mfgs_shape = (*mfgs_dims, int(getattr(model.device, "max_shared_memory_per_block", 0)))
+            mfgs_rows = {
                 "has_drive_rows": self._has_drive_rows,
                 "fuse_vel_limits": self._velocity_limits_fused,
+            }
+            # Free-body impulses stay in global memory once one float per free-body row no longer fits the block.
+            self._mfgs_stream_mf_lambda = (
+                _mfgs_block_shared_bytes(*mfgs_dims, shared_metadata=False, **mfgs_rows) > _STATIC_SHARED_MEMORY_BYTES
+            )
+            shared_metadata = _use_resident_mfgs_metadata(
+                *mfgs_shape, stream_mf_lambda=self._mfgs_stream_mf_lambda, **mfgs_rows
+            )
+            self._mfgs_shared_metadata = shared_metadata
+            row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            mfgs_metadata = {
+                "shared_metadata": shared_metadata,
+                "stream_mf_lambda": self._mfgs_stream_mf_lambda,
+                **mfgs_rows,
             }
             mfgs_residency = {"world_count": self._world_count, "sm_count": int(getattr(model.device, "sm_count", 0))}
             # The lists come first: without them each torsion row rescans every dense row, a cost that grows with
@@ -6465,6 +6517,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
                 pair_cache=self._mfgs_pair_cache,
+                stream_mf_lambda=self._mfgs_stream_mf_lambda,
                 torsion_links=self._mfgs_torsion_links,
                 nesterov_momentum=self._nesterov_momentum,
             )
@@ -14196,7 +14249,7 @@ def _get_pack_mf_meta_kernel(free_body_constraint_max: int, device_arch: str) ->
         packed.x = (da << 16) | (db & 0xFFFF);
         packed.y = __float_as_int(diag);
         packed.z = __float_as_int(rhs_val);
-        packed.w = rt | (par << 16);
+        packed.w = rt | (par << {MF_META_ROW_TYPE_BITS});
         *reinterpret_cast<int4*>(&mf_meta.data[off_meta + i * 4]) = packed;
     }}
 #endif
@@ -14916,7 +14969,7 @@ def _get_pgs_solve_local_owned_kernel(
             const int dof_b = (packed_dofs << 16) >> 16;
             const float inverse_diagonal = __int_as_float(meta.y);
             const int packed_type_parent = meta.w;
-            const int mf_row_type = packed_type_parent & 0xFFFF;
+            const int mf_row_type = packed_type_parent & {MF_META_ROW_TYPE_MASK};
             if (mf_row_type == {int(PGS_CONSTRAINT_TYPE_FRICTION)}
                 && global_iteration < friction_start_iteration) {{
                 s_mf_lambda[mf_row] = 0.0f;
@@ -14938,16 +14991,16 @@ def _get_pgs_solve_local_owned_kernel(
             if (mf_row_type == {int(PGS_CONSTRAINT_TYPE_CONTACT)}) {{
                 if (new_impulse_mf < 0.0f) new_impulse_mf = 0.0f;
             }} else if (mf_row_type == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
-                const int parent_mf = packed_type_parent >> 16;
+                const int parent_mf = packed_type_parent >> {MF_META_ROW_TYPE_BITS};
                 if (mf_row != parent_mf + 1) {{
                     new_impulse_mf = old_impulse_mf;
                 }} else {{
                     float lambda_n_mf = s_mf_lambda[parent_mf];
                     for (int patch_row =
-                             (mf_meta.data[mf_meta_offset + parent_mf * 4 + 3] >> 16);
+                             (mf_meta.data[mf_meta_offset + parent_mf * 4 + 3] >> {MF_META_ROW_TYPE_BITS});
                          patch_row >= 0 && patch_row != parent_mf;
                          patch_row =
-                             (mf_meta.data[mf_meta_offset + patch_row * 4 + 3] >> 16))
+                             (mf_meta.data[mf_meta_offset + patch_row * 4 + 3] >> {MF_META_ROW_TYPE_BITS}))
                         lambda_n_mf += s_mf_lambda[patch_row];
                     const float radius_mf = fmaxf(
                         mf_row_mu.data[mf_offset + mf_row] * lambda_n_mf, 0.0f);
@@ -15362,6 +15415,7 @@ def _get_pgs_solve_mf_gs_kernel(
     contact_compliance: bool = False,
     row_phase: int | None = None,
     pair_cache: bool = False,
+    stream_mf_lambda: bool = False,
     torsion_links: bool = False,
     nesterov_momentum: bool = False,
 ) -> "wp.Kernel":
@@ -15418,6 +15472,8 @@ def _get_pgs_solve_mf_gs_kernel(
         row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
         pair_cache: Set up each dense friction pair's 2x2 operator once per launch, and with streamed metadata keep a
             compact shared copy of the row types and parents.
+        stream_mf_lambda: Keep the free-body impulses in global memory instead of shared memory; the results
+            are the same.
         torsion_links: Find the contact torsion rows and their members through shared row lists built once
             per launch (``contact_torsion.torque_links_source``); the results are the same.
         nesterov_momentum: Extrapolate the impulses with Nesterov momentum at the start of every sweep
@@ -15800,9 +15856,9 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_friction_radius = f"""            float radius = 0.0f;
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
                 float lambda_n = s_lam_mf[mf_par];
-                for (int patch_row = (mf_meta.data[off_meta + mf_par * 4 + 3] >> 16);
+                for (int patch_row = (mf_meta.data[off_meta + mf_par * 4 + 3] >> {MF_META_ROW_TYPE_BITS});
                      patch_row >= 0 && patch_row != mf_par;
-                     patch_row = (mf_meta.data[off_meta + patch_row * 4 + 3] >> 16))
+                     patch_row = (mf_meta.data[off_meta + patch_row * 4 + 3] >> {MF_META_ROW_TYPE_BITS}))
                     lambda_n += s_lam_mf[patch_row];
                 radius = fmaxf(mf_row_mu.data[off_mf + i] * lambda_n, 0.0f);
                 // A zero disk with no carried impulse cannot change the velocity.
@@ -15883,7 +15939,7 @@ def _get_pgs_solve_mf_gs_kernel(
             }}
             for (int i = lane; i < m_mf; i += 32) {{
                 float lam = s_lam_mf[i];
-                float y = (mf_meta.data[off_meta + i * 4 + 3] & 0xFFFF) == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)} ? lam : lam + beta * (lam - mom_prev_m[i]);
+                float y = (mf_meta.data[off_meta + i * 4 + 3] & {MF_META_ROW_TYPE_MASK}) == {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)} ? lam : lam + beta * (lam - mom_prev_m[i]);
                 mom_prev_m[i] = lam;
                 mom_e_m[i] = y - lam;
                 s_lam_mf[i] = y;
@@ -16054,7 +16110,7 @@ def _get_pgs_solve_mf_gs_kernel(
             float cur_MiJtb = pre_MiJtb;
             // The first row of a friction pair also solves the second, so the sweep steps over it.
             next_i = i + 1;
-            if ((meta.w & 0xFFFF) == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i == (meta.w >> 16) + 1) next_i = i + 2;
+            if ((meta.w & {MF_META_ROW_TYPE_MASK}) == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i == (meta.w >> {MF_META_ROW_TYPE_BITS}) + 1) next_i = i + 2;
             if (next_i < mf_main_end) {{
                 int next_mf6 = mf6_base + next_i * 6;
                 pre_meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + next_i * 4]);
@@ -16072,8 +16128,8 @@ def _get_pgs_solve_mf_gs_kernel(
             int dof_b = (meta.x << 16) >> 16;
             float mf_diag = __int_as_float(meta.y);
             int packed_tp = meta.w;
-            int mf_rt = packed_tp & 0xFFFF;
-            int mf_par = packed_tp >> 16;
+            int mf_rt = packed_tp & {MF_META_ROW_TYPE_MASK};
+            int mf_par = packed_tp >> {MF_META_ROW_TYPE_BITS};
             if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && global_iter < friction_start_iteration) {{
                 s_lam_mf[i] = 0.0f;
                 if (next_i == i + 2) s_lam_mf[i + 1] = 0.0f;
@@ -16121,7 +16177,7 @@ def _get_pgs_solve_mf_gs_kernel(
 {fused_velocity_clamp_pass}
         for (int i = mf_contact_end; i < m_mf; i++) {{
             int4 meta = *reinterpret_cast<const int4*>(&mf_meta.data[off_meta + i * 4]);
-            if ((meta.w & 0xFFFF) != {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) continue;
+            if ((meta.w & {MF_META_ROW_TYPE_MASK}) != {int(PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)}) continue;
             int dof_a = meta.x >> 16;
             int dof_b = (meta.x << 16) >> 16;
             float mf_diag = __int_as_float(meta.y);
@@ -16222,6 +16278,15 @@ def _get_pgs_solve_mf_gs_kernel(
         # Every later row type or parent read comes from the compact shared copy.
         snippet = re.sub(r"world_row_type\.data\[off_dense \+ ([^\]]+)\]", r"s_row_type[\1]", snippet)
         snippet = re.sub(r"world_row_parent\.data\[off_dense \+ ([^\]]+)\]", r"s_row_parent[\1]", snippet)
+
+    if stream_mf_lambda:
+        snippet = snippet.replace(
+            f"    __shared__ float s_lam_mf[{M_MF}];",
+            "    volatile float* g_lam_mf = (volatile float*)(&mf_impulses.data[off_mf]);",
+        )
+        snippet = re.sub(r"s_lam_mf\[([^\]]*)\]", r"g_lam_mf[\1]", snippet)
+        if "s_lam_mf" in snippet:
+            raise RuntimeError("streaming the free-body impulses left a reference to the shared array")
 
     helpers = (
         FRICTION_PAIR_CUDA
@@ -16408,7 +16473,7 @@ def _get_pgs_solve_mf_gs_kernel(
         pair_cache,
         torsion_links,
         nesterov_momentum,
-    )
+    ) + ("_stream" if stream_mf_lambda else "")
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(pgs_solve_mf_gs)
