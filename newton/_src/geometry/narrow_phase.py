@@ -150,6 +150,13 @@ def _append_pair_compacted(
         work_items[index] = value
 
 
+@wp.func
+def _mesh_sdf_matches_sweep_geometry(index: int, properties: int, scale: wp.vec3) -> bool:
+    return index < 0 or (
+        (properties & MeshProperties.SDF_FROM_MESH) != 0 and wp.min(scale) == 1.0 and wp.max(scale) == 1.0
+    )
+
+
 @wp.struct
 class ContactWriterData:
     contact_max: int
@@ -750,10 +757,14 @@ def create_narrow_phase_primitive_kernel(
                         and is_mesh_b
                         and max_speculative_extension > 0.0
                         and collision_update_dt > 0.0
-                        and shape_sdf_index[shape_a] < 0
-                        and shape_sdf_index[shape_b] < 0
                         and (shape_mesh_properties[shape_a] & MeshProperties.WATERTIGHT) != 0
                         and (shape_mesh_properties[shape_b] & MeshProperties.WATERTIGHT) != 0
+                        and _mesh_sdf_matches_sweep_geometry(
+                            shape_sdf_index[shape_a], shape_mesh_properties[shape_a], scale_a
+                        )
+                        and _mesh_sdf_matches_sweep_geometry(
+                            shape_sdf_index[shape_b], shape_mesh_properties[shape_b], scale_b
+                        )
                         and wp.length_sq(shape_angular_velocity[shape_a]) == 0.0
                         and wp.length_sq(shape_angular_velocity[shape_b]) == 0.0
                     ):

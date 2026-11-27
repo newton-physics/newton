@@ -1735,10 +1735,11 @@ Speculation changes when a contact is retained, not its geometry: contact points
 at their current separation rather than a predicted impact pose. Mesh and SDF contact
 reduction preserves representative close-clearance and early-impact candidates.
 
-For two closed meshes using BVH distance queries and moving without rotation,
-Newton also checks the swept bounds in one mesh's frame. If the meshes start
-separated along a box axis, the triangle BVH can rule out a hit even when the
-swept boxes overlap. These checks include the authored gap and contact margins
+For two closed meshes moving without rotation, Newton can also check the swept
+bounds in one mesh's frame. If the meshes start separated along a box axis, the
+triangle BVH can rule out a hit even when the swept boxes overlap. This applies
+to BVH distance queries and to unit-scale meshes with a parity SDF baked from
+their own geometry. These checks include the authored gap and contact margins
 and use the same constant-velocity prediction horizon as speculative contacts.
 
 .. note::

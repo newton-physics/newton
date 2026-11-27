@@ -1353,8 +1353,8 @@ def test_speculative_mesh_sweep_rejects_flyby(test, device):
         test.assertEqual(count > 0, side_speed == 0.0, f"Wall-tangent speed {side_speed} m/s")
 
 
-def test_speculative_mesh_sweep_keeps_opening_clear(test, device):
-    """Reject traversal through a mesh opening and keep a collision with its side."""
+def test_speculative_mesh_sweep_keeps_opening_clear(test, device, *, field="bvh"):
+    """Reject flybys through mesh openings while honoring independently supplied fields."""
     box = newton.Mesh.create_box(0.025, duplicate_vertices=False)
     post = newton.Mesh.create_box(0.025, 0.06, 0.15, duplicate_vertices=False)
     offset = np.array([0.0, 0.11, 0.0], dtype=np.float32)
@@ -1362,6 +1362,13 @@ def test_speculative_mesh_sweep_keeps_opening_clear(test, device):
         np.concatenate((post.vertices - offset, post.vertices + offset)),
         np.concatenate((post.indices, post.indices + len(post.vertices))),
     )
+    if field == "custom":
+        solid = newton.Mesh.create_box(0.025, 0.17, 0.15, duplicate_vertices=False)
+        target.sdf = solid.build_sdf(max_resolution=64, device=device)
+    elif field == "baked":
+        target.build_sdf(max_resolution=64, device=device)
+    if field != "bvh":
+        box.build_sdf(max_resolution=64, device=device)
     cfg = newton.ModelBuilder.ShapeConfig(gap=0.0, margin=0.0)
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     body = builder.add_body(xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0)))
@@ -1377,7 +1384,7 @@ def test_speculative_mesh_sweep_keeps_opening_clear(test, device):
         state.body_q.fill_(wp.transform(wp.vec3(-0.2, y, 0.0)))
         pipeline.collide(state, contacts, dt=0.03)
         count = int(contacts.rigid_contact_count.numpy()[0])
-        test.assertEqual(count > 0, y != 0.0, f"Initial y position {y} m")
+        test.assertEqual(count > 0, y != 0.0 or field == "custom", f"Initial y position {y} m")
 
 
 def test_speculative_axial_shapes_reach_triangle_mesh(test, device):
@@ -1966,6 +1973,20 @@ add_function_test(
     "test_speculative_mesh_sweep_keeps_opening_clear",
     test_speculative_mesh_sweep_keeps_opening_clear,
     devices=get_test_devices(),
+)
+add_function_test(
+    TestSpeculativeMeshContacts,
+    "test_speculative_mesh_sweep_keeps_baked_opening_clear",
+    test_speculative_mesh_sweep_keeps_opening_clear,
+    devices=get_cuda_test_devices(),
+    field="baked",
+)
+add_function_test(
+    TestSpeculativeMeshContacts,
+    "test_speculative_mesh_sweep_preserves_custom_sdf",
+    test_speculative_mesh_sweep_keeps_opening_clear,
+    devices=get_cuda_test_devices(),
+    field="custom",
 )
 add_function_test(
     TestSpeculativeMeshContacts,
