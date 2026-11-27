@@ -175,7 +175,7 @@ def test_semi_implicit_reset_reanchors_hinge(test, device):
     """SolverBase.reset re-anchors winding from body poses for selected worlds."""
     model = _build_hinge_model(device, revolute=True, target_ke=0.0, target_kd=0.0)
     solver = newton.solvers.SolverSemiImplicit(model)
-    state, output = model.state(), model.state()
+    state = model.state()
     state.joint_q.fill_(7.0)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     solver.reset(state)
