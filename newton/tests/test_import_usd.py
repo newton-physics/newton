@@ -3008,6 +3008,217 @@ def Xform "Root" (
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_label[joint_id], "my_custom_joint")
 
+    @requires("pxr.Usd")
+    def test_cameras_import_with_render_product_resolution(self):
+        """Import UsdGeom.Camera prims and resolve render-product resolutions through RenderSettings."""
+        from pxr import Usd
+
+        from newton._src.utils.import_usd import _usd_render_product_resolutions  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float physics:mass = 1
+
+        def Xform "Mount"
+        {
+            double3 xformOp:translate = (0.5, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Camera "Inherited"
+            {
+                float focalLength = 24
+                float horizontalAperture = 36
+                float verticalAperture = 24
+                float2 clippingRange = (0.05, 20)
+            }
+        }
+    }
+
+    def Camera "Overridden" {}
+    def Camera "Standalone" {}
+    def Camera "Unauthored" {}
+    def Camera "Elsewhere" {}
+    def Camera "Shared" {}
+    def Camera "Agreeing" {}
+    def Camera "WidePixels" {}
+    def Camera "Stretched" {}
+}
+
+def Scope "Render"
+{
+    def RenderSettings "Settings"
+    {
+        rel camera = </World/Inherited>
+        int2 resolution = (320, 240)
+        rel products = [</Render/Inherits>, </Render/Overrides>]
+    }
+
+    def RenderProduct "Inherits"
+    {
+        rel camera = </World/Body/Mount/Inherited>
+    }
+
+    def RenderProduct "Overrides"
+    {
+        rel camera = </World/Overridden>
+        int2 resolution = (64, 48)
+        uniform token aspectRatioConformPolicy = "adjustApertureWidth"
+    }
+
+    def RenderProduct "Alone"
+    {
+        rel camera = </World/Standalone>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "NoResolution"
+    {
+        rel camera = </World/Unauthored>
+    }
+
+    def RenderProduct "SharedSmall"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (640, 480)
+        uniform token aspectRatioConformPolicy = "cropAperture"
+    }
+
+    def RenderProduct "SharedLarge"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (1920, 1080)
+    }
+
+    def RenderProduct "AgreeingA"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "AgreeingB"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "Wide"
+    {
+        rel camera = </World/WidePixels>
+        int2 resolution = (100, 100)
+        float pixelAspectRatio = 2
+    }
+
+    def RenderProduct "Stretch"
+    {
+        rel camera = </World/Stretched>
+        int2 resolution = (100, 100)
+        uniform token aspectRatioConformPolicy = "adjustPixelAspectRatio"
+    }
+}
+
+def Scope "Elsewhere"
+{
+    def RenderProduct "Product"
+    {
+        rel camera = </World/Elsewhere>
+        int2 resolution = (32, 16)
+    }
+}
+"""
+        )
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as logs:
+            builder.add_usd(stage)
+        cameras = {label: index for index, label in enumerate(builder.camera_label)}
+        several = [line for line in logs.output if "several RenderProducts" in line]
+        self.assertEqual(len(several), 1)
+        self.assertIn("/World/Shared", several[0])
+
+        mounted = cameras["/World/Body/Mount/Inherited"]
+        self.assertEqual(builder.camera_body[mounted], 0)
+        np.testing.assert_allclose(np.asarray(builder.camera_transform[mounted])[:3], [0.5, 0.0, 0.0], atol=1e-6)
+        # Lens lengths are tenths of a scene unit; the clip range is in scene units.
+        self.assertAlmostEqual(builder.camera_focal_length[mounted], 2.4, places=5)
+        # The 36 x 24 aperture is expanded to the 4:3 product resolution (expandAperture fallback).
+        np.testing.assert_allclose(builder.camera_aperture[mounted], (3.6, 2.7), atol=1e-6)
+        np.testing.assert_allclose(builder.camera_clipping_range[mounted], (0.05, 20.0), atol=1e-6)
+
+        # A product inherits an unauthored resolution from its settings, authored product values take
+        # precedence, standalone products use their own values, and schema fallbacks are ignored. Render
+        # products are found anywhere in the stage, not only below /Render.
+        formats = _usd_render_product_resolutions(stage)
+        self.assertEqual(formats["/World/Body/Mount/Inherited"][0], (320, 240))
+        self.assertEqual(formats["/World/Overridden"][0], (64, 48))
+        self.assertEqual(formats["/World/Standalone"][0], (200, 100))
+        self.assertNotIn("/World/Unauthored", formats)
+        self.assertEqual(formats["/World/Elsewhere"][0], (32, 16))
+        # The resolution only conforms the aperture; the model stores the product's pixel shape.
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Elsewhere"]], (3.05816, 1.52908), rtol=1e-5)
+        for label, index in cameras.items():
+            if label not in ("/World/WidePixels", "/World/Stretched"):
+                self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[index], 1.0, places=5, msg=label)
+
+        # Apertures are conformed to the product's image format with its conform policy; without a
+        # resolution the authored (here fallback) aperture is kept.
+        fallback = (2.0955, 1.52908)
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Overridden"]], (fallback[1] * 4.0 / 3.0, fallback[1]), rtol=1e-5
+        )
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Standalone"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
+        )
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Unauthored"]], fallback, rtol=1e-5)
+
+        # Products with different image formats leave the authored aperture and no resolution; products
+        # that agree are used like one product.
+        self.assertIsNone(formats["/World/Shared"])
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Shared"]], fallback, rtol=1e-5)
+        self.assertEqual(formats["/World/Agreeing"][0], (200, 100))
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Agreeing"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
+        )
+
+        # An authored pixelAspectRatio is stored, and the conformed aperture spans the image with it.
+        # adjustPixelAspectRatio keeps the aperture and stretches the pixels instead.
+        wide = cameras["/World/WidePixels"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[wide], 2.0, places=5)
+        np.testing.assert_allclose(builder.camera_aperture[wide], (fallback[1] * 2.0, fallback[1]), rtol=1e-5)
+        stretched = cameras["/World/Stretched"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[stretched], fallback[0] / fallback[1], places=5)
+        np.testing.assert_allclose(builder.camera_aperture[stretched], fallback, rtol=1e-5)
+
+        # An unauthored clippingRange keeps the USD fallback (1, 1e6) in scene units.
+        np.testing.assert_allclose(builder.camera_clipping_range[cameras["/World/Shared"]], (1.0, 1.0e6), rtol=1e-6)
+
+    def test_conform_usd_aperture_policies(self):
+        """Conform a 3:2 aperture to a 1:1 image under each UsdRender aspect-ratio policy."""
+        from newton._src.utils.import_usd import _conform_usd_aperture  # noqa: PLC0415
+
+        expected = {
+            "expandAperture": (36.0, 36.0),
+            "cropAperture": (24.0, 24.0),
+            "adjustApertureWidth": (24.0, 24.0),
+            "adjustApertureHeight": (36.0, 36.0),
+            "adjustPixelAspectRatio": (36.0, 24.0),
+        }
+        for policy, aperture in expected.items():
+            with self.subTest(policy=policy):
+                np.testing.assert_allclose(_conform_usd_aperture(36.0, 24.0, (64, 64), policy, 1.0), aperture)
+        # Pixels twice as wide as tall make a square pixel grid a 2:1 image.
+        np.testing.assert_allclose(_conform_usd_aperture(36.0, 24.0, (64, 64), "expandAperture", 2.0), (48.0, 24.0))
+
 
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
     """Verify model based on the UsdPhysics Parsing Utils"""
@@ -5132,7 +5343,6 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
 
                 model = builder.finalize()
                 self.assertEqual(model.mujoco.equality_constraint_count, 3)
-                self.assertEqual(model.constraint_mimic_count, int(convert_equalities))
                 self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), int(register_mujoco))
 
                 if register_mujoco:
@@ -8805,7 +9015,6 @@ def Xform "Articulation" (
         path_joint_map = result["path_joint_map"]
         joint1_idx = path_joint_map["/World/Articulation/Joint1"]
         joint2_idx = path_joint_map["/World/Articulation/Joint2"]
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[joint2_idx], joint1_idx)
         # newton:mimicCoef0 is authored in degrees for an angular follower; Newton
         # mimic metadata uses joint coordinates, so it arrives in radians.
@@ -8977,7 +9186,6 @@ def Xform "Articulation" (
         follower_idx = result["path_joint_map"]["/World/Root/Follower"]
         self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
         self.assertEqual(builder.joint_dof_dim[follower_idx], (1, 1))
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
         self.assertTrue(
@@ -9215,8 +9423,7 @@ def Xform "Articulation" (
         self.assertEqual(model.mujoco.equality_constraint_count, 1)
         self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
 
-        # The default path additionally lowers a generic mimic constraint, which would
-        # otherwise enforce the coupling for every solver rather than only SolverMuJoCo.
+        # The default path authors the same row.
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(build_stage(), convert_mjc_equality_constraints=True)
@@ -9224,8 +9431,6 @@ def Xform "Articulation" (
 
         self.assertEqual(model.mujoco.equality_constraint_count, 1)
         self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
-        self.assertEqual(model.constraint_mimic_count, 1)
-        self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
 
     @requires("pxr.Usd")
     def test_mjc_equality_connect_site_parsing(self):
@@ -9729,7 +9934,7 @@ def Xform "Articulation" (
             joint2_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.6, 0.7, 0.004, 0.5, 1.5])
 
             connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/EqualityConnect")
-            connect.CreateBody0Rel().SetTargets([link1.GetPath()])
+            connect.CreateBody0Rel().SetTargets([root.GetPath()])
             connect.CreateBody1Rel().SetTargets([link2.GetPath()])
             connect.CreateLocalPos0Attr().Set(Gf.Vec3f(0.1, 0.2, 0.3))
             connect.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
@@ -9769,22 +9974,19 @@ def Xform "Articulation" (
 
         converted_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(converted_builder)
-        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
-            converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
+        converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
         self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
-        self.assertEqual(converted_model.constraint_mimic_count, 1)
         eq_types = converted_model.mujoco.equality_constraint_type.numpy()
         target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.CONNECT)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.WELD)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.JOINT)), 1)
         self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.JOINT)), 2)
-        self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.MIMIC)), 1)
         joint_eq = int(np.flatnonzero(eq_types == int(newton.solvers.SolverMuJoCo.EqType.JOINT))[0])
-        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
+        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.NONE))
         np.testing.assert_allclose(
             converted_model.mujoco.equality_constraint_polycoef.numpy()[joint_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
@@ -9921,6 +10123,28 @@ def Xform "Articulation" (
         load_physics_mock.assert_called_once()
         self.assertEqual(result["physics_scene_path"], "/Scene")
         self.assertEqual(result["scene_attributes"]["physics:gravityMagnitude"], 2.0)
+
+    @requires("pxr.Usd")
+    def test_scene_honors_ignore_paths(self):
+        """Skip an ignored scene, whether or not the pattern is a plain path."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/Ignored/Scene").CreateGravityMagnitudeAttr(2.0)
+        UsdPhysics.Scene.Define(stage, "/Kept").CreateGravityMagnitudeAttr(3.0)
+
+        for ignore_paths in (["/Ignored"], ["/Ignored.*"], [".*/Scene$"]):
+            with self.subTest(ignore_paths=ignore_paths):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, ignore_paths=ignore_paths)
+                self.assertEqual(result["physics_scene_path"], "/Kept")
+                self.assertAlmostEqual(float(wp.length(builder.gravity)), 3.0, places=5)
+
+        builder = newton.ModelBuilder()
+        default_gravity = builder.gravity
+        result = builder.add_usd(stage, ignore_paths=[".*Scene", "/Kept.*"])
+        self.assertIsNone(result["physics_scene_path"])
+        self.assertEqual(builder.gravity, default_gravity)
 
     @requires("pxr.Usd")
     def test_scene_gravity_enabled_parsing(self):
@@ -12620,10 +12844,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
-
         model = builder.finalize()
-        self.assertEqual(model.constraint_mimic_count, 0)
 
         follower_idx = model.joint_label.index("/Root/Robot/Joints/follower")
         leader_idx = model.joint_label.index("/Root/Robot/Joints/leader")
@@ -12671,7 +12892,6 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
         self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 

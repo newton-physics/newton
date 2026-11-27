@@ -207,7 +207,14 @@ formulation.
 - ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverMuJoCo`, and
-  :class:`~newton.solvers.SolverVBD`.
+  :class:`~newton.solvers.SolverVBD`. :class:`~newton.solvers.SolverSteel`
+  and :class:`~newton.solvers.SolverKamino` also use ``kd / ke`` when
+  :ref:`hydroelastic damping <hydroelastic-contact-damping>` is enabled with
+  ``HydroelasticSDF.Config(generate_damping=True)``; ``kh``
+  still sets hydroelastic stiffness. Enable ``contact_compliance=True``
+  for Steel, ``config.constraints.contact_compliance=True`` for Kamino
+  PADMM/SCC, or ``config.lox.contact_compliance=True`` for Kamino LOX.
+  These options default to ``False``.
 - ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
   :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
   :class:`~newton.solvers.SolverMuJoCo`
@@ -332,7 +339,7 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes| :sup:`3`
    * - ROD
      - |no|
      - |no|
@@ -344,6 +351,7 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
 | :sup:`2` See :ref:`kamino-rod-joints` for the supported rod joint properties.
+| :sup:`3` See :ref:`kamino-d6-joints` for the supported D6 axis and forward-kinematics configurations.
 
 **Joint properties**
 
@@ -489,7 +497,7 @@ motion; see :ref:`passive-joint-springs` for details.
      - :class:`~newton.solvers.SolverKamino`
    * - Equality constraints (CONNECT, WELD, JOINT)
      - |no|
-     - |no|
+     - |yes| :sup:`15`
      - |no|
      - |no|
      - |yes|
@@ -522,9 +530,10 @@ motion; see :ref:`passive-joint-springs` for details.
 | :sup:`10` Steel enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
 | :sup:`11` Steel clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
 | :sup:`12` Steel enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
-| :sup:`13` Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints, loop-closing REVOLUTE joints as point constraints plus two hinge-axis constraints, and loop-closing FIXED joints as point constraints plus three rotation constraints. The propagation contact response (``articulated_contact_response="propagation"``) rejects loop-closing joints and solves mimic rows iteratively.
+| :sup:`13` Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. MuJoCo joint equalities (``model.mujoco.equality_constraint_*`` rows of type ``JOINT``) between two REVOLUTE or PRISMATIC joints of one articulation are enforced the same way, using their constant and linear ``polycoef`` terms. It also enforces loop-closing BALL joints as point constraints, loop-closing REVOLUTE joints as point constraints plus two hinge-axis constraints, and loop-closing FIXED joints as point constraints plus three rotation constraints. The propagation contact response (``articulated_contact_response="propagation"``) rejects loop-closing joints and solves mimic rows iteratively.
 | :sup:`14` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
+| :sup:`15` Steel enforces JOINT equalities between two REVOLUTE or PRISMATIC joints of one articulation, using their constant and linear ``polycoef`` terms, and CONNECT and WELD equalities through the loop joints the MJCF and USD importers convert them to. It rejects any other enabled equality row.
 
 .. _Particle-body attachments:
 
@@ -546,7 +555,7 @@ attachment reaches its spring over several iterations. The penalty affects conve
 A finite ``stiffness`` [N/m] converges to a spring with ``damping`` [N·s/m], so a
 loaded attachment keeps a physical offset. Set ``stiffness=math.inf`` to request
 a hard point constraint; damping is ignored for hard attachments. Multipliers are
-retained across steps, scaled by ``rigid_avbd_gamma``. A finite iteration budget
+retained across steps, scaled by 0.999 per step by default. A finite iteration budget
 can leave constraint error, especially for heavy free bodies at large time steps;
 more iterations or smaller steps reduce it. Incompatible hard attachments cannot
 all be satisfied. Separated initial anchors can cause large correction impulses.

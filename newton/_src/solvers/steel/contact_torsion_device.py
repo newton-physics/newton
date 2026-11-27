@@ -906,7 +906,6 @@ class DeviceTorsionPreparation:
         self._saved_state = {
             "body_q": wp.empty(model.body_count, dtype=wp.transform, device=device),
             "body_qd": wp.empty(model.body_count, dtype=wp.spatial_vector, device=device),
-            "body_qdd": wp.empty(model.body_count, dtype=wp.spatial_vector, device=device),
             "joint_q": wp.empty(model.joint_coord_count, dtype=float, device=device),
             "joint_qd": wp.empty(model.joint_dof_count, dtype=float, device=device),
         }
@@ -920,7 +919,7 @@ class DeviceTorsionPreparation:
                 raise RuntimeError("Allocate the device torsion snapshots before graph capture")
             self._saved_state = {
                 name: wp.empty_like(getattr(state_in, name))
-                for name in ("body_q", "body_qd", "body_qdd", "joint_q", "joint_qd")
+                for name in ("body_q", "body_qd", "joint_q", "joint_qd")
                 if getattr(state_in, name, None) is not None
             }
         names = []
