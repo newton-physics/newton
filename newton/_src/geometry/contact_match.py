@@ -579,7 +579,9 @@ def _replay_matched_kernel(data: _ReplayData):
         p1_world = wp.transform_point(data.body_q[body1], p1_world)
 
     fresh_gap = wp.dot(p1_world - p0_world, data.normal[tid]) - (data.margin0[tid] + data.margin1[tid])
-    if fresh_gap > wp.float32(0.0):
+    # Separation within the match tolerance keeps the old witnesses, like planar drift:
+    # a resting contact that jitters open by microns must keep its friction anchor.
+    if fresh_gap > wp.float32(0.0) and fresh_gap * fresh_gap > data.pos_threshold_sq:
         return
 
     # A contact that travelled with one body keeps its identity but not its old witnesses

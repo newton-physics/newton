@@ -1977,6 +1977,7 @@ class CollisionPipeline:
                 body's world-oriented witness offset and in the world-space
                 witness separation stay within this threshold. A matched contact
                 keeps fresh geometry if either transported witness exceeds the
+                threshold or its fresh margin-aware gap opens wider than the
                 threshold; its identity is retained.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between

@@ -1383,6 +1383,54 @@ def test_sticky_rotating_body_far_from_origin(test, device):
         test.assertEqual(int(result.numpy()[0]), 0)
 
 
+def test_sticky_opening_within_threshold_replayed(test, device):
+    """Replay a contact that opens by less than the sticky threshold; keep fresh geometry beyond it."""
+    threshold = 0.0005
+    fields = ("point0", "point1", "offset0", "offset1", "normal")
+    for opening, expect_replay in ((0.0002, True), (0.002, False)):
+        with test.subTest(opening=opening), wp.ScopedDevice(device):
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg.gap = 0.01
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.099), wp.quat_identity()))
+            builder.add_shape_sphere(body=body, radius=0.1)
+            model = builder.finalize(device=device)
+            state = model.state()
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase="nxn",
+                contact_matching="sticky",
+                contact_matching_pos_threshold=threshold,
+            )
+            contacts = pipeline.contacts()
+            test.assertEqual(int(_collide_once(pipeline, state, contacts)), 1)
+            previous = {field: getattr(contacts, f"rigid_contact_{field}").numpy()[:1].copy() for field in fields}
+
+            # Lift the sphere off the plane and shift it by 0.1 mm, so the
+            # fresh plane witness differs from the saved one but stays within
+            # the match threshold.
+            state.body_q.assign([wp.transform(wp.vec3(0.0001, 0.0, 0.1 + opening), wp.quat_identity())])
+            reference = newton.CollisionPipeline(model, broad_phase="nxn")
+            reference_contacts = reference.contacts()
+            test.assertEqual(int(_collide_once(reference, state, reference_contacts)), 1)
+            fresh = {
+                field: getattr(reference_contacts, f"rigid_contact_{field}").numpy()[:1].copy() for field in fields
+            }
+            test.assertFalse(
+                np.array_equal(fresh["point0"], previous["point0"]) and np.array_equal(fresh["point1"], previous["point1"]),
+                "Precondition: the shift must change the fresh witnesses",
+            )
+
+            test.assertEqual(int(_collide_once(pipeline, state, contacts)), 1)
+            test.assertEqual(int(contacts.rigid_contact_match_index.numpy()[0]), 0)
+            for field in fields:
+                current = getattr(contacts, f"rigid_contact_{field}").numpy()[:1]
+                if expect_replay:
+                    np.testing.assert_array_equal(current, previous[field])
+                else:
+                    np.testing.assert_allclose(current, fresh[field], rtol=0.0, atol=1.0e-6)
+
+
 def _build_rolling_cylinder_scene(device, *, plane_first):
     """Build a penetrating cylinder-plane contact with either shape ordering."""
     builder = newton.ModelBuilder()
@@ -1447,7 +1495,9 @@ def _check_sticky_rotated_witness(test, device, *, plane_first, threshold, use_c
         gap -= reference_contacts.rigid_contact_margin0.numpy()[:count]
         gap -= reference_contacts.rigid_contact_margin1.numpy()[:count]
         penetrating = gap < -1.0e-5
-        separated = gap > 1.0e-5
+        # Rows that open wider than the threshold keep fresh geometry; rows
+        # within it may replay their witnesses.
+        separated = gap > threshold + 1.0e-5
         test.assertTrue(np.any(penetrating), "The scene must contain an unambiguously penetrating contact")
         drift = max(
             np.linalg.norm(previous[field][penetrating] - fresh[field][penetrating], axis=1).max()
@@ -1779,6 +1829,12 @@ add_function_test(
     TestContactMatchingSticky,
     "test_sticky_rotating_body_far_from_origin",
     test_sticky_rotating_body_far_from_origin,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_opening_within_threshold_replayed",
+    test_sticky_opening_within_threshold_replayed,
     devices=devices,
 )
 add_function_test(
