@@ -2033,6 +2033,20 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
 
 .. note::
 
+   :class:`~solvers.SolverSteel` with sleeping and ``sleep_skip_constraints=True`` skips
+   the rows of sleeping islands and reports each of their contacts' force from the
+   previous solver step. The force carries only on the same contacts buffer, when every
+   solver step requests ``CONTACT_F`` and the contact set is either unchanged since the
+   preceding solver step or comes from one collision pass matched to that step's recorded
+   contact set (``contact_matching="latest"``). Each step records the forces it reports,
+   carried ones included, so the force carries across consecutive sleeping steps. A second
+   collision pass between solver steps or a new contacts buffer drops those contacts to zero
+   until their island wakes. With ``sleep_skip_constraints=False``
+   the rows are solved and the forces are reported directly. See
+   :ref:`steel_sleep_observable`.
+
+.. note::
+
    :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
    (the default) does not conserve momentum at contacts.  The per-contact
    forces written to ``SolverBase.Observables.contact_f`` are
