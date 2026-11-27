@@ -281,7 +281,8 @@ remaining pose update spans :math:`h/2`. For compliant rows the coefficients are
 
 The impulse still spans the full timestep :math:`h`. These coefficients enforce
 the spring-damper law at the end of the step using the linearized constraint
-position. Moreau requires ``use_collision_detector=True`` so contacts are
+position. Moreau requires ``use_collision_detector=True`` or a solver-owned
+collision pipeline, ``SolverKamino(model, collision_pipeline=...)``, so contacts are
 evaluated at the midpoint. The existing fallback to Euler for external contacts
 also uses Euler compliance coefficients. Hard-row recovery retains its existing
 full-step coefficients under either integrator.

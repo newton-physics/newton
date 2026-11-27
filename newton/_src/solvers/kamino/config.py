@@ -457,7 +457,8 @@ class ConstraintStabilizationConfig(ConfigBase):
     the two shape materials. Compliance is added only to the normal row as
     ``1 / (dt * (k * position_dt + c))``, where ``position_dt`` is ``dt`` for
     Euler and ``dt / 2`` for Moreau's remaining pose update. Moreau evaluates the
-    violation at the midpoint and requires the internal collision detector.
+    violation at the midpoint and requires the internal collision detector or a
+    solver-owned collision pipeline.
     Non-positive or infinite stiffness retains hard contact.
     Compliant contacts obtain their bounce from the spring-damper and ignore
     material restitution. Tangential rows retain the existing Coulomb law.

@@ -112,6 +112,8 @@ class SolverKaminoImpl(SolverBase):
         model: ModelKamino,
         contacts: ContactsKamino | None = None,
         config: SolverKaminoImpl.Config | None = None,
+        *,
+        midpoint_detection: bool = False,
     ):
         """
         Initializes the Kamino physics solver for the given set of multi-body systems
@@ -124,6 +126,8 @@ class SolverKaminoImpl(SolverBase):
             model: The multi-body systems model to simulate.
             contacts: The contact data container for the simulation.
             config: Optional solver config.
+            midpoint_detection: Whether a detector is passed to :meth:`step` without
+                ``use_collision_detector``, allowing the ``"moreau"`` integrator.
         """
         # Ensure the input containers are valid
         if not isinstance(model, ModelKamino):
@@ -222,14 +226,15 @@ class SolverKaminoImpl(SolverBase):
         if self._config.integrator == "euler":
             self._integrator = IntegratorEuler(model=self._model, integrate_singular_bodies=integrate_singular_bodies)
         elif self._config.integrator == "moreau":
-            if self._config.use_collision_detector:
+            if self._config.use_collision_detector or midpoint_detection:
                 self._integrator = IntegratorMoreauJean(
                     model=self._model, integrate_singular_bodies=integrate_singular_bodies
                 )
             else:
                 logger.warning(
                     "Falling back to the 'euler' integrator: 'moreau' requires "
-                    "`use_collision_detector=True` to generate contacts at the mid-point."
+                    "`use_collision_detector=True` or a solver-owned collision pipeline "
+                    "to generate contacts at the mid-point."
                 )
                 self._integrator = IntegratorEuler(
                     model=self._model, integrate_singular_bodies=integrate_singular_bodies

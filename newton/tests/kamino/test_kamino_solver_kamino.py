@@ -729,29 +729,58 @@ class TestCollisionCapacityInitialization(NewtonTestCase):
         basics.build_sphere_on_plane(builder=builder, z_offset=0.3)
         model = builder.finalize(device=self.default_device, skip_validation_joints=True)
 
-        config = SolverKamino.Config(integrator="moreau", use_collision_detector=True)
-        solver = SolverKamino(model, config=config)
+        for native in (True, False):
+            with self.subTest(native=native):
+                pipeline = None if native else newton.CollisionPipeline(model)
+                config = SolverKamino.Config(integrator="moreau", use_collision_detector=native)
+                solver = SolverKamino(model, config=config, collision_pipeline=pipeline)
+                self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
-        detector = solver._collision_detector_kamino
-        contacts = solver._contacts_kamino
-        assert detector is not None
-        assert contacts is not None
-        assert contacts.model_active_contacts is not None
+                state_in = model.state()
+                state_out = model.state()
+                assert state_in.body_qd is not None
 
-        # Establish that the step-start configuration has no contacts.
-        detector.collide(data=solver._solver_kamino._data, contacts=contacts)
-        self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 0)
+                # Establish that the step-start configuration has no contacts.
+                if native:
+                    solver._collision_detector_kamino.collide(
+                        data=solver._solver_kamino._data, contacts=solver._contacts_kamino
+                    )
+                    self.assertEqual(int(solver._contacts_kamino.model_active_contacts.numpy()[0]), 0)
+                else:
+                    pipeline.collide(state_in, solver.contacts)
+                    self.assertEqual(int(solver.contacts.rigid_contact_count.numpy()[0]), 0)
 
-        state_in = model.state()
-        state_out = model.state()
+                # Over the first half-step, the sphere moves 0.35 m down and penetrates the plane.
+                state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+
+                solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+
+                # This contact exists only if detection uses the midpoint rather than state_in.
+                self.assertGreater(int(solver._contacts_kamino.model_active_contacts.numpy()[0]), 0)
+
+    def test_moreau_speculative_horizon_covers_next_half_step(self):
+        """Verify midpoint speculative contacts stop a ball that crosses a plate within a half-step."""
+        radius, plate_hz, speed, dt = 0.05, 0.01, 60.0, 0.005
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+        builder.rigid_gap = 1e-3
+        builder.add_shape_box(-1, hx=1.0, hy=1.0, hz=plate_hz)
+        ball = builder.add_body(xform=wp.transform((0.0, 0.0, 0.4), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=radius)
+        model = builder.finalize(device=self.default_device)
+
+        # Out of speculative range at one midpoint, through the plate before the next one.
+        config = SolverKamino.Config(integrator="moreau")
+        config.dynamics.cull_speculative_contacts = False
+        pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=1.0)
+        solver = SolverKamino(model, config=config, collision_pipeline=pipeline)
+        state_in, state_out = model.state(), model.state()
         assert state_in.body_qd is not None
-        # Over the first half-step, the sphere moves 0.35 m down and penetrates the plane.
-        state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+        state_in.body_qd.assign(np.array([[0.0, 0.0, -speed, 0.0, 0.0, 0.0]], dtype=np.float32))
+        for _ in range(10):
+            solver.step(state_in, state_out, control=None, contacts=None, dt=dt)
+            state_in, state_out = state_out, state_in
 
-        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
-
-        # This contact exists only if detection uses the midpoint rather than state_in.
-        self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
+        self.assertAlmostEqual(float(state_in.body_q.numpy()[0, 2]), plate_hz + radius, delta=1e-3)
 
     def test_contact_observables_use_input_pose(self):
         """Export wrenches and local geometry in the input frame, even for in-place steps."""
@@ -907,6 +936,238 @@ def _eval_tolerance_scaled_residual(
 ):
     i = wp.tid()
     out[i] = tolerance_scaled_residual(residual[i], tolerance[i])
+
+
+class TestSolverKaminoOwnedPipeline(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _make_model(self) -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.rigid_gap = 1e-2
+        builder.begin_world()
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.3), wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.1)
+        body = builder.add_body(xform=wp.transform((0.3, 0.0, 0.25), wp.quat_rpy(0.3, 0.2, 0.1)))
+        builder.add_shape_box(body, hx=0.1, hy=0.05, hz=0.05)
+        builder.end_world()
+        builder.add_ground_plane()
+        return builder.finalize(device=self.default_device)
+
+    def _make_solver(self, model, integrator, pipeline=None) -> SolverKamino:
+        config = SolverKamino.Config(integrator=integrator)
+        config.dynamics.cull_speculative_contacts = False
+        return SolverKamino(model, config=config, collision_pipeline=pipeline)
+
+    def test_euler_matches_external_pipeline(self):
+        """Match external detection when Euler owns the pipeline."""
+        trajectories = []
+        for owned in (False, True):
+            model = self._make_model()
+            pipeline = newton.CollisionPipeline(model)
+            solver = self._make_solver(model, "euler", pipeline if owned else None)
+            contacts = None if owned else pipeline.contacts()
+            state_in, state_out = model.state(), model.state()
+            for _ in range(60):
+                if not owned:
+                    pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, None, contacts, 0.005)
+                state_in, state_out = state_out, state_in
+            trajectories.append(state_in.body_q.numpy())
+        np.testing.assert_allclose(trajectories[1], trajectories[0], atol=1e-5)
+
+    def test_moreau_matches_internal_detection(self):
+        """Match the internal detector when Moreau-Jean owns the pipeline."""
+        results = []
+        for owned in (False, True):
+            model = self._make_model()
+            pipeline = newton.CollisionPipeline(model) if owned else None
+            config = SolverKamino.Config(integrator="moreau", use_collision_detector=not owned)
+            config.dynamics.cull_speculative_contacts = False
+            solver = SolverKamino(model, config=config, collision_pipeline=pipeline)
+            self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
+            state_in, state_out = model.state(), model.state()
+            for _ in range(200):
+                solver.step(state_in, state_out, None, None, 0.005)
+                state_in, state_out = state_out, state_in
+            results.append(state_in.body_q.numpy())
+        np.testing.assert_allclose(results[1], results[0], atol=1e-4)
+        self.assertAlmostEqual(float(results[1][0, 2]), 0.1, delta=1e-4)
+
+    def test_collision_schedules(self):
+        """Support user-driven detection and reject unsupported schedules and inputs."""
+        Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+        rigid = newton.solvers.SolverBase.CollisionSlot.RIGID
+        for integrator in ("euler", "moreau"):
+            with self.subTest(integrator=integrator):
+                model = self._make_model()
+                pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+                solver = self._make_solver(model, integrator, pipeline)
+                state_in, state_out = model.state(), model.state()
+
+                # Detect into the solver's buffer from outside the step; Moreau-Jean must detect at the mid-point.
+                solver.set_collision_frequency(collision_frequency_type={rigid: Frequency.NONE})
+                if integrator == "euler":
+                    for _ in range(200):
+                        pipeline.collide(state_in, solver.contacts)
+                        solver.step(state_in, state_out, None, None, 0.005)
+                        state_in, state_out = state_out, state_in
+                    self.assertAlmostEqual(float(state_in.body_q.numpy()[0, 2]), 0.1, delta=1e-4)
+                else:
+                    with self.assertRaisesRegex(NotImplementedError, "PRE_INIT"):
+                        solver.step(state_in, state_out, None, None, 0.005)
+
+                solver.set_collision_frequency(collision_frequency_type={rigid: Frequency.PRE_INIT})
+                with self.assertRaisesRegex(ValueError, "must be None"):
+                    solver.step(state_in, state_out, None, solver.contacts, 0.005)
+                for ftype in (Frequency.PRE_POST_INIT, Frequency.ITERATIONS):
+                    solver.set_collision_frequency(collision_frequency_type={rigid: ftype})
+                    with self.assertRaises(NotImplementedError):
+                        solver.step(state_in, state_out, None, None, 0.005)
+
+        model = self._make_model()
+        config = SolverKamino.Config(use_collision_detector=True)
+        with self.assertRaisesRegex(ValueError, "use_collision_detector"):
+            SolverKamino(model, config=config, collision_pipeline=newton.CollisionPipeline(model))
+
+    def test_graph_capture_with_toggled_detection(self):
+        """Match uncaptured steps when replaying graphs, alternating ones that do and do not detect under Euler."""
+        if not self.default_device.is_cuda or wp.config.verify_cuda:
+            self.skipTest("Requires CUDA graph capture")
+        Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+        rigid = newton.solvers.SolverBase.CollisionSlot.RIGID
+        for integrator, schedule in (
+            ("euler", (Frequency.PRE_INIT, Frequency.NONE)),
+            ("moreau", (Frequency.PRE_INIT,)),
+        ):
+            results = {}
+            for captured in (False, True):
+                model = self._make_model()
+                solver = self._make_solver(model, integrator, newton.CollisionPipeline(model))
+                state_in, state_out = model.state(), model.state()
+
+                def step(ftype, solver=solver, state_in=state_in, state_out=state_out):
+                    solver.set_collision_frequency(collision_frequency_type={rigid: ftype})
+                    solver.step(state_in, state_out, None, None, 0.005)
+                    wp.copy(state_in.body_q, state_out.body_q)
+                    wp.copy(state_in.body_qd, state_out.body_qd)
+
+                # Load kernels with one step per schedule, then restart from the initial poses.
+                q0, qd0 = state_in.body_q.numpy(), state_in.body_qd.numpy()
+                graphs = {}
+                for ftype in schedule:
+                    step(ftype)
+                    if captured:
+                        with wp.ScopedCapture() as capture:
+                            step(ftype)
+                        graphs[ftype] = capture.graph
+                state_in.body_q.assign(q0)
+                state_in.body_qd.assign(qd0)
+                for i in range(100):
+                    ftype = schedule[i % len(schedule)]
+                    if captured:
+                        wp.capture_launch(graphs[ftype])
+                    else:
+                        step(ftype)
+                results[captured] = state_in.body_q.numpy()
+            with self.subTest(integrator=integrator):
+                np.testing.assert_allclose(results[True], results[False], atol=1e-6)
+
+    def test_contact_observables(self):
+        """Report contact forces that match the momentum change when the solver owns the pipeline."""
+        for integrator in ("euler", "moreau"):
+            with self.subTest(integrator=integrator):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+                for x in (-0.095, 0.095):
+                    body = builder.add_body(
+                        xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
+                        mass=1.0,
+                        inertia=UNIT_INERTIA,
+                        lock_inertia=True,
+                    )
+                    builder.add_shape_sphere(body, radius=0.1)
+                model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+                solver = self._make_solver(model, integrator, newton.CollisionPipeline(model))
+                observables = solver.observables(
+                    contacts=solver.contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                )
+                state_in, state_out = model.state(), model.state()
+                qd_in = np.array([[1.0, 0.0, -0.2, 0.0, 0.0, 0.0], [-1.0, 0.0, 0.2, 0.0, 0.0, 0.0]], dtype=np.float32)
+                state_in.body_qd.assign(qd_in)
+                solver.step(state_in, state_out, None, None, 0.02, observables=observables)
+
+                # Sum the forces on body 0, which may be either shape of a contact.
+                count = int(solver.contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(count, 0)
+                shape_body = model.shape_body.numpy()
+                shape0 = solver.contacts.rigid_contact_shape0.numpy()[:count]
+                forces = observables.contact_f.numpy()[:count, :3]
+                force = sum(f if shape_body[s] == 0 else -f for s, f in zip(shape0, forces, strict=True))
+                expected = (state_out.body_qd.numpy()[0, :3] - qd_in[0, :3]) / 0.02
+                self.assertGreater(np.linalg.norm(expected), 1.0)
+                np.testing.assert_allclose(force, expected, atol=1e-3)
+
+    def test_moreau_contact_export_matches_internal_detection(self):
+        """Export midpoint contacts of rotating bodies in the input frames, like the internal detector."""
+        results = []
+        for owned in (False, True):
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+            SolverKamino.register_custom_attributes(builder)
+            for x in (-0.095, 0.095):
+                body = builder.add_body(
+                    xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
+                    mass=1.0,
+                    com=wp.vec3(0.01, 0.0, 0.0),
+                    inertia=UNIT_INERTIA,
+                    lock_inertia=True,
+                )
+                builder.add_shape_sphere(body, radius=0.1)
+            model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+            config = SolverKamino.Config(integrator="moreau", use_collision_detector=not owned)
+            config.dynamics.cull_speculative_contacts = False
+            solver = SolverKamino(
+                model, config=config, collision_pipeline=newton.CollisionPipeline(model) if owned else None
+            )
+            contacts = solver.contacts if owned else newton.CollisionPipeline(model).contacts()
+            observables = solver.observables(
+                contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+            )
+            state_in, state_out = model.state(), model.state()
+            state_in.body_qd.assign(
+                np.array([[1.0, 0.0, -0.2, 0.0, 30.0, 0.0], [-1.0, 0.0, 0.2, 0.0, -30.0, 0.0]], dtype=np.float32)
+            )
+            body_q_in = state_in.body_q.numpy()
+            solver.step(state_in, state_out, None, None if owned else contacts, 0.02, observables=observables)
+
+            # Reconstruct the world-space surface points on shape0 from the input poses.
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            self.assertEqual(count, 1)
+            shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
+            margin0 = float(contacts.rigid_contact_margin0.numpy()[0])
+            offset_scale = (margin0 - float(model.shape_margin.numpy()[shape0])) / margin0 if margin0 else 0.0
+            local = contacts.rigid_contact_point0.numpy()[0] + contacts.rigid_contact_offset0.numpy()[0] * offset_scale
+            body_q = body_q_in[model.shape_body.numpy()[shape0]]
+            pose = wp.transform(wp.vec3(*body_q[:3]), wp.quat(*body_q[3:]))
+            point = np.array(wp.transform_point(pose, wp.vec3(*local)))
+            results.append((shape0, point, observables.contact_f.numpy()[0]))
+
+        (shape_native, point_native, wrench_native), (shape_owned, point_owned, wrench_owned) = results
+        self.assertEqual(shape_owned, shape_native)
+        self.assertGreater(np.linalg.norm(wrench_native[3:]), 0.1)
+        np.testing.assert_allclose(point_owned, point_native, atol=1e-6)
+        np.testing.assert_allclose(wrench_owned, wrench_native, atol=1e-3)
+
+    def test_contact_capacity_follows_owned_pipeline(self):
+        """Size Kamino's contacts from an owned pipeline that does not publish its capacity."""
+        model = self._make_model()
+        model.rigid_contact_max = 1
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, publish_capacity=False)
+        solver = self._make_solver(model, "moreau", pipeline)
+        self.assertEqual(model.rigid_contact_max, 1)
+        self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 64)
 
 
 class TestSolverKaminoStatus(NewtonTestCase):

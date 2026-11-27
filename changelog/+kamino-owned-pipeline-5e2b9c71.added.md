@@ -1,0 +1,1 @@
+Add `collision_pipeline` to `SolverKamino`, so that it detects contacts itself with a Newton `CollisionPipeline` and supports the Moreau-Jean integrator (`Config.integrator="moreau"`) with Newton contacts, detecting at the step midpoint.

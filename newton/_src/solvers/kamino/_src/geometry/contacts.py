@@ -64,6 +64,7 @@ __all__ = [
     "convert_contacts_newton_to_kamino",
     "make_contact_frame_xnorm",
     "make_contact_frame_znorm",
+    "rebase_contacts_newton",
 ]
 
 
@@ -1380,6 +1381,9 @@ def _convert_existing_contacts_kamino_to_newton(
     kamino_remap: wp.array[wp.int32],
     newton_shape0: wp.array[wp.int32],
     newton_point0: wp.array[wp.vec3f],
+    newton_offset0: wp.array[wp.vec3f],
+    newton_margin0: wp.array[wp.float32],
+    shape_margin: wp.array[wp.float32],
     shape_body: wp.array[wp.int32],
     body_com: wp.array[wp.vec3f],
     body_q: wp.array[wp.transformf],
@@ -1406,7 +1410,8 @@ def _convert_existing_contacts_kamino_to_newton(
       so ``f_world_on_body0 = +quat_rotate(frame, reaction)``.
 
     The torque is the moment of the linear force about Newton's body0 CoM,
-    using the body-local ``newton_point0[cid_out]`` transformed to world space.
+    using the surface point reconstructed from the body-local ``newton_point0[cid_out]``
+    and its offset, as in :func:`convert_contacts_newton_to_kamino`.
     """
     # Ensure that the remap array is provided for this kernel
     assert kamino_remap, "`kamino_remap` is required for existing contacts to be remapped"
@@ -1449,10 +1454,12 @@ def _convert_existing_contacts_kamino_to_newton(
 
     # Torque about Newton's body0 CoM is the moment arm from CoM to the contact
     # point on body0 crossed with the linear force. Use Newton's preserved
-    # body-local ``point0`` to obtain the contact point on body0 in world space.
+    # body-local ``point0`` and offset to obtain the surface point on body0 in world space.
     if body_0_n >= 0:
         X_0 = body_q[body_0_n]
-        r_pt_world = wp.transform_point(X_0, newton_point0[cid_out])
+        margin_0 = newton_margin0[cid_out]
+        offset_scale0 = safe_div(margin_0 - shape_margin[shape_0_n], margin_0)
+        r_pt_world = contact_surface_point(X_0, newton_point0[cid_out], newton_offset0[cid_out] * offset_scale0)
         r_com_world = wp.transform_point(X_0, body_com[body_0_n])
         dr = r_pt_world - r_com_world
     else:
@@ -1461,6 +1468,39 @@ def _convert_existing_contacts_kamino_to_newton(
 
     # Store the converted contact data in the Newton format
     newton_force[cid_out] = wp.spatial_vector(f_0_world, tau_0_world)
+
+
+@wp.kernel
+def _rebase_newton_contacts(
+    # Inputs:
+    contact_count: wp.array[wp.int32],
+    shape0: wp.array[wp.int32],
+    shape1: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_q_from: wp.array[wp.transformf],
+    body_q_to: wp.array[wp.transformf],
+    # Outputs:
+    point0: wp.array[wp.vec3f],
+    point1: wp.array[wp.vec3f],
+    offset0: wp.array[wp.vec3f],
+    offset1: wp.array[wp.vec3f],
+):
+    """Re-expresses body-local contact witnesses from the ``body_q_from`` body frames in the ``body_q_to`` frames."""
+    cid = wp.tid()
+    if cid >= contact_count[0]:
+        return
+
+    # Keep each witness's world position and offset direction fixed
+    body_0 = shape_body[shape0[cid]]
+    if body_0 >= 0:
+        X_0 = wp.transform_inverse(body_q_to[body_0]) * body_q_from[body_0]
+        point0[cid] = wp.transform_point(X_0, point0[cid])
+        offset0[cid] = wp.transform_vector(X_0, offset0[cid])
+    body_1 = shape_body[shape1[cid]]
+    if body_1 >= 0:
+        X_1 = wp.transform_inverse(body_q_to[body_1]) * body_q_from[body_1]
+        point1[cid] = wp.transform_point(X_1, point1[cid])
+        offset1[cid] = wp.transform_vector(X_1, offset1[cid])
 
 
 ###
@@ -1860,6 +1900,9 @@ def convert_contacts_kamino_to_newton(
                 contacts_in.remap,
                 contacts_out.rigid_contact_shape0,
                 contacts_out.rigid_contact_point0,
+                contacts_out.rigid_contact_offset0,
+                contacts_out.rigid_contact_margin0,
+                model.shape_margin,
                 model.shape_body,
                 model.body_com,
                 state.body_q,
@@ -1867,3 +1910,45 @@ def convert_contacts_kamino_to_newton(
             outputs=[contacts_out_force],
             device=model.device,
         )
+
+
+def rebase_contacts_newton(
+    model: Model,
+    contacts: Contacts,
+    body_q_from: wp.array[wp.transformf],
+    body_q_to: wp.array[wp.transformf],
+) -> None:
+    """
+    Re-expresses the body-local witnesses of Newton contacts in other body frames.
+
+    Each contact keeps the world-space position of its witness points and the world-space
+    direction of its offsets, but expresses them in the ``body_q_to`` frames instead of
+    the ``body_q_from`` frames in which they were detected.
+
+    Args:
+        model: The model providing ``shape_body``.
+        contacts: The Newton contacts to update in place.
+        body_q_from: Body poses at which the contacts were detected.
+        body_q_to: Body poses in which to express the contacts.
+    """
+    if contacts.rigid_contact_max == 0:
+        return
+    wp.launch(
+        kernel=_rebase_newton_contacts,
+        dim=contacts.rigid_contact_max,
+        inputs=[
+            contacts.rigid_contact_count,
+            contacts.rigid_contact_shape0,
+            contacts.rigid_contact_shape1,
+            model.shape_body,
+            body_q_from,
+            body_q_to,
+        ],
+        outputs=[
+            contacts.rigid_contact_point0,
+            contacts.rigid_contact_point1,
+            contacts.rigid_contact_offset0,
+            contacts.rigid_contact_offset1,
+        ],
+        device=model.device,
+    )

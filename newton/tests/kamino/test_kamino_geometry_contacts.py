@@ -786,21 +786,26 @@ class TestGeometryContactConversions(NewtonTestCase):
         """Compute the expected torque produced by the existing-contacts K->N path.
 
         For each contact ``cid``, the kernel reconstructs the wrench as
-        ``tau = (r_pt_on_body0 - r_com_body0) x f_world`` (world coordinates).
+        ``tau = (r_pt_on_body0 - r_com_body0) x f_world`` (world coordinates),
+        where ``r_pt_on_body0`` is the surface point of shape0.
         Contacts whose ``body0`` is static produce zero torque.
         """
         nc = int(contacts.rigid_contact_count.numpy()[0])
         body_q = state.body_q.numpy()
         body_com = model.body_com.numpy()
         shape_body = model.shape_body.numpy()
+        shape_margin = model.shape_margin.numpy()
         shape0 = contacts.rigid_contact_shape0.numpy()[:nc]
         point0 = contacts.rigid_contact_point0.numpy()[:nc]
+        offset0 = contacts.rigid_contact_offset0.numpy()[:nc]
+        margin0 = contacts.rigid_contact_margin0.numpy()[:nc]
         out = np.zeros((nc, 3), dtype=np.float64)
         for i in range(nc):
             b0 = int(shape_body[int(shape0[i])])
             if b0 < 0:
                 continue
-            r_pt = _transform_point(body_q[b0], point0[i])
+            offset_scale = (margin0[i] - shape_margin[int(shape0[i])]) / margin0[i] if margin0[i] != 0.0 else 0.0
+            r_pt = _transform_point(body_q[b0], point0[i] + offset0[i] * offset_scale)
             r_com = _transform_point(body_q[b0], body_com[b0])
             out[i] = np.cross(r_pt - r_com, f_world)
         return out

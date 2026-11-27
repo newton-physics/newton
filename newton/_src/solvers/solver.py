@@ -655,7 +655,8 @@ class SolverBase:
     supports_collision_pipeline: bool = False
     """Whether this solver can own a :class:`~newton.CollisionPipeline` and drive detection itself.
 
-    Currently only :class:`~newton.solvers.SolverVBD` opts in; passing
+    Currently only :class:`~newton.solvers.SolverVBD` and
+    :class:`~newton.solvers.SolverKamino` opt in; passing
     ``collision_pipeline`` to any other solver raises ``ValueError`` (drive
     detection externally instead).
     """

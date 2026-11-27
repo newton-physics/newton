@@ -2080,6 +2080,16 @@ add_example_test(
                 "ldl": True,
             },
         },
+        {
+            "test_suffix": "scc_moreau_newton_contacts",
+            "test_options": {
+                "requires": ("git", "pxr.Usd"),
+                "num-frames": 120,
+                "dynamics-solver": "scc",
+                "use-kamino-contacts": False,
+                "integrator": "moreau",
+            },
+        },
     ],
     use_viewer=True,
 )
