@@ -1538,6 +1538,7 @@ class TestSteelPrivateApi(unittest.TestCase):
                 "velocity_drive_mode",
                 "contact_warmstart_decay",
                 "warn_constraint_overflow",
+                "raise_constraint_overflow",
                 "restitution_velocity_threshold",
                 "contact_speculative_scale",
                 "contact_gap_gate",

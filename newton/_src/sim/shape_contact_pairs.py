@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 # Bound enumeration and replicated replay scratch independently of scene size.
 _PAIR_CHUNK_SIZE = 262144
+# Column sentinels for per-shape sums: a value matching every partner, and one matching none.
+_ANY = -2
+_NONE = -3
 
 
 class _ShapeContactPairs:
@@ -148,6 +151,75 @@ class _ShapeContactPairs:
             weights[categories[first], categories[second]],
         )
         return counts
+
+    def sum_shape_pairs(
+        self,
+        shapes: np.ndarray,
+        partner_mask: np.ndarray | None = None,
+        *,
+        keys: np.ndarray | None = None,
+        categories: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Sum symmetric category weights over each listed shape's pairs with selected partners of equal key.
+
+        Counts per shape without enumerating pairs.
+        """
+        count = len(self.shape_body)
+        keys = np.zeros(count, dtype=np.int64) if keys is None else np.asarray(keys, dtype=np.int64)
+        categories = np.zeros(count, dtype=np.int64) if categories is None else np.asarray(categories, dtype=np.int64)
+        weights = np.ones((1, 1), dtype=np.int64) if weights is None else np.asarray(weights)
+        shapes = np.asarray(shapes, dtype=np.int64)
+        active = self._active()
+        partners = np.flatnonzero(self._active(partner_mask))
+        queries = np.unique(shapes)
+        queries = queries[active[queries]]
+        totals = np.zeros((count, len(weights)), dtype=np.int64)
+        if len(queries) and len(partners):
+            world = self.shape_world.astype(np.int64)
+            group = self.shape_group.astype(np.int64)
+            body = self.shape_body.astype(np.int64)
+            # Partner rows repeated with _ANY in the body and world columns, so that a query can match any body or
+            # world: rows of (key, body, world, group).
+            index = np.tile(partners, 4)
+            any_column = np.full(len(partners), _ANY, dtype=np.int64)
+            rows = np.stack(
+                [
+                    keys[index],
+                    np.concatenate([body[partners], any_column] * 2),
+                    np.concatenate([world[partners]] * 2 + [any_column] * 2),
+                    group[index],
+                ],
+                axis=1,
+            )
+            row_categories = categories[index]
+            negative = rows[:, 3] < 0
+            query_group = group[queries]
+            local = world[queries] >= 0
+            compatible = np.zeros((len(queries), len(weights)), dtype=np.int64)
+            # A local query pairs with its world and the globals, a global query with every world; partners on its
+            # own body are subtracted.
+            for query_world in (np.where(local, world[queries], _ANY), np.where(local, -1, _NONE)):
+                for query_body, sign in ((np.full(len(queries), _ANY), 1), (body[queries], -1)):
+                    query = np.stack([keys[queries], query_body, query_world, query_group], axis=1)
+                    same_group = _match_counts(rows, row_categories, query, len(weights))
+                    every = _match_counts(rows[:, :3], row_categories, query[:, :3], len(weights))
+                    negatives = _match_counts(rows[negative, :3], row_categories[negative], query[:, :3], len(weights))
+                    compatible += sign * np.where(
+                        (query_group > 0)[:, None], same_group + negatives, every - same_group
+                    )
+            totals[queries] = compatible
+            # Authored exclusions between compatible shapes.
+            first, second = self._active_filters(active)
+            selected = np.zeros(count, dtype=bool)
+            selected[partners] = True
+            listed = np.zeros(count, dtype=bool)
+            listed[queries] = True
+            for a, b in ((first, second), (second, first)):
+                keep = listed[a] & selected[b] & (keys[a] == keys[b])
+                np.subtract.at(totals, (a[keep], categories[b[keep]]), 1)
+        sums = np.einsum("sk,sk->s", totals, weights[categories])
+        return sums[shapes]
 
     def _store_pairs(self, output: np.ndarray, a: np.ndarray, b: np.ndarray) -> int:
         """Canonicalize candidate indices and remove authored exclusions."""
@@ -422,6 +494,38 @@ def _shape_contact_pair_counts(model: Model | ModelView, *, shape_mask: np.ndarr
     return counts
 
 
+def _shape_contact_pair_sums_per_shape(
+    model: Model | ModelView,
+    shapes: np.ndarray,
+    partner_mask: np.ndarray | None = None,
+    *,
+    keys: np.ndarray | None = None,
+    categories: np.ndarray | None = None,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """Sum symmetric category weights over each listed shape's pairs with selected partners of equal key.
+
+    Default pairs use finalized topology; supplied arrays use their full contents.
+    """
+    supplied, pairs = _shape_contact_pair_override(model)
+    if not supplied:
+        return _shape_contact_pair_topology(model).sum_shape_pairs(
+            shapes, partner_mask, keys=keys, categories=categories, weights=weights
+        )
+    count = model.shape_count
+    keys = np.zeros(count, dtype=np.int64) if keys is None else np.asarray(keys)
+    categories = np.zeros(count, dtype=np.int64) if categories is None else np.asarray(categories)
+    weights = np.ones((1, 1), dtype=np.int64) if weights is None else np.asarray(weights)
+    partner_mask = np.ones(count, dtype=bool) if partner_mask is None else np.asarray(partner_mask, dtype=bool)
+    sums = np.zeros(count, dtype=weights.dtype)
+    if pairs is not None:
+        pairs = pairs.numpy().reshape((-1, 2))
+        for a, b in ((pairs[:, 0], pairs[:, 1]), (pairs[:, 1], pairs[:, 0])):
+            keep = partner_mask[b] & (keys[a] == keys[b])
+            np.add.at(sums, a[keep], weights[categories[a[keep]], categories[b[keep]]])
+    return sums[np.asarray(shapes, dtype=np.int64)]
+
+
 def _shape_contact_pair_topology(model: Model | ModelView) -> _ShapeContactPairs:
     """Use the finalized Model topology inherited alongside the default pair list."""
     topology = model._shape_contact_pair_data
@@ -464,3 +568,17 @@ def _shape_contact_pair_count_for_mask(
         return int(_shape_contact_pair_counts(model, shape_mask=shape_mask).sum())
     pairs = shape_pairs.numpy().reshape((-1, 2))
     return int(np.count_nonzero(shape_mask[pairs[:, 0]] & shape_mask[pairs[:, 1]]))
+
+
+def _match_counts(rows: np.ndarray, row_categories: np.ndarray, queries: np.ndarray, category_count: int) -> np.ndarray:
+    """Count the rows equal to each query row, per category."""
+    # Factorize column by column into one integer code per row, so that rows sort as integers.
+    values = np.concatenate([rows, queries])
+    codes = np.zeros(len(values), dtype=np.int64)
+    for column in values.T:
+        _, column_codes = np.unique(column, return_inverse=True)
+        _, codes = np.unique(codes * (int(column_codes.max()) + 1) + column_codes, return_inverse=True)
+    table = np.bincount(
+        codes[: len(rows)] * category_count + row_categories, minlength=(int(codes.max()) + 1) * category_count
+    ).reshape(-1, category_count)
+    return table[codes[len(rows) :]]

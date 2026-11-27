@@ -301,7 +301,9 @@ def test_default_finite_limits_keep_rows_and_warn_at_capacity(test, device):
             test.assertEqual(float(model.joint_limit_upper.numpy()[0]), MAXVAL)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                solver = SolverSteel(model, enable_joint_limits=True, warn_constraint_overflow=False)
+                solver = SolverSteel(
+                    model, enable_joint_limits=True, articulation_constraint_max=32, warn_constraint_overflow=False
+                )
             messages = [str(w.message) for w in caught if "joint position limits" in str(w.message)]
             test.assertEqual(len(messages), int(expect_warning), messages)
             if expect_warning:

@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.collide import _estimate_rigid_contact_max_per_world
+from newton._src.sim.collide import _estimate_rigid_contact_max_per_world, _estimate_rigid_contacts_per_pair_world
 from newton._src.sim.model import _pack_shape_pair_codes, _ShapeCollisionFilterPairs
 from newton._src.sim.shape_contact_pairs import (
     _shape_contact_pair_count_for_mask,
@@ -408,6 +408,58 @@ class TestShapeContactPairs(unittest.TestCase):
                     self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100), estimate)
                     self.assertEqual(compute_required_contact_capacity(model), (2, counts[1:]))
                     self.assertEqual(model.shape_contact_pair_count, 2)
+
+    def test_per_world_contact_estimate_counts_masked_pairs(self):
+        """Count only the pairs whose two shapes are masked in each world's contact estimate."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        for _ in range(3):
+            builder.add_shape_sphere(builder.add_body())
+        builder.end_world()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        # Three sphere pairs and three sphere-ground pairs, all in world 0; no global pairs.
+        np.testing.assert_array_equal(_estimate_rigid_contacts_per_pair_world(model), [0, 30])
+        for mask, estimate in (
+            ([True, True, True, True], 30),
+            ([True, True, True, False], 15),
+            ([True, False, False, True], 5),
+            ([True, False, False, False], 0),
+        ):
+            with self.subTest(mask=mask):
+                contacts = _estimate_rigid_contacts_per_pair_world(model, np.array(mask))
+                np.testing.assert_array_equal(contacts, [0, estimate])
+
+    def test_per_shape_sums_match_enumerated_pairs(self):
+        """Sum each shape's weighted pairs with masked, equal-key partners as the enumerated pairs do."""
+        rng = np.random.default_rng(5)
+        weights = np.array([[5, 40], [40, 40]])
+        for trial in range(40):
+            count, worlds = int(rng.integers(2, 30)), int(rng.integers(1, 4))
+            first, second = rng.integers(0, count, 4), rng.integers(0, count, 4)
+            low, high = np.minimum(first, second), np.maximum(first, second)
+            filters = np.unique((low[low != high].astype(np.int64) << 32) | high[low != high])
+            flags = np.where(rng.random(count) < 0.9, int(newton.ShapeFlags.COLLIDE_SHAPES), 0)
+            topology = _ShapeContactPairs(
+                rng.integers(-1, 6, count),
+                np.sort(rng.integers(-1, worlds, count)),
+                rng.choice([-2, -1, 0, 1, 2], count),
+                flags,
+                filters,
+                worlds,
+            )
+            categories, keys = rng.integers(0, 2, count), rng.integers(0, 3, count)
+            partners = rng.random(count) < 0.7
+            shapes = rng.integers(0, count, count)
+            expected = np.zeros(count, dtype=np.int64)
+            selected = partners & topology._active()
+            for a, b in topology.build_pairs():
+                if keys[a] == keys[b]:
+                    expected[a] += weights[categories[a], categories[b]] * selected[b]
+                    expected[b] += weights[categories[a], categories[b]] * selected[a]
+            with self.subTest(trial=trial):
+                sums = topology.sum_shape_pairs(shapes, partners, keys=keys, categories=categories, weights=weights)
+                np.testing.assert_array_equal(sums, expected[shapes])
 
     def test_empty_models_and_filtered_scenes(self):
         """Return empty arrays for empty and fully excluded scenes."""

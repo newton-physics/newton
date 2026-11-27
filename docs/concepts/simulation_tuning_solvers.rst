@@ -248,7 +248,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_friction``,
        ``enable_joint_velocity_limits``, ``velocity_limit_activation_fraction``,
        ``articulation_constraint_max``, ``free_body_constraint_max``,
-       ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
+       ``propagation_constraint_max``, ``warn_constraint_overflow``,
+       ``raise_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
        ``reuse_kinematics``,
@@ -333,13 +334,28 @@ repository examples spend tuning effort, not a shared solver API.
        Joint drives are integrated implicitly by default, which keeps large
        drive gains stable at ordinary ``dt``; ``drive_mode="rows"`` solves
        them as PGS rows together with contacts and limits instead, and each
-       driven DOF then uses one row of ``articulation_constraint_max``. Rows beyond ``articulation_constraint_max``
-       (articulated bodies), ``free_body_constraint_max`` (free bodies) or
+       driven DOF then uses one row of ``articulation_constraint_max``. By default
+       ``articulation_constraint_max`` is sized from the model: the joint rows of the
+       busiest world plus three rows (four with contact torsion) per contact of the
+       collision pipeline's per-world estimate for the contacts that stay dense
+       (each contact counts toward the world that solves it: its articulation's world,
+       world 0 for a global articulation, whatever the worlds of its shapes),
+       between 32 and 256 rows unless the joint rows alone need more. With the
+       ``"immediate"`` response these are the contacts of articulated bodies. With
+       ``"propagation"`` only contacts between two links of the same articulation stay
+       dense, and contacts between different articulations use propagation rows; the
+       estimate counts every contact between two articulated bodies, an upper bound
+       when a world holds several articulations, and none when
+       ``propagation_same_articulation_rows`` is set. Rows beyond
+       ``articulation_constraint_max`` (articulated bodies),
+       ``free_body_constraint_max`` (free bodies) or
        ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
-       capacity and reset the world when it reports a world. To check a step
+       capacity and reset the world when it reports a world.
+       ``raise_constraint_overflow=True`` also makes a later eager ``step()``
+       raise, at the cost of a small host copy per step. To check a step
        without waiting for the steps queued after it, call
        ``snapshot_constraint_status()`` after that step and
        ``check_constraint_capacity(snapshot=True)`` later; check the last

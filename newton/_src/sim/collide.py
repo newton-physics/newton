@@ -64,6 +64,7 @@ from ..sim.shape_contact_pairs import (
     _shape_contact_pair_count_for_mask,
     _shape_contact_pair_counts,
     _shape_contact_pair_override,
+    _shape_contact_pair_sums_per_shape,
 )
 from ..sim.state import State
 
@@ -1060,15 +1061,42 @@ def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contac
     """
     if rigid_contact_max <= 0 or model.shape_contact_pair_count == 0:
         return 0
+    contacts = _estimate_rigid_contacts_per_pair_world(model)
+    return min(rigid_contact_max, int(contacts[0] + np.max(contacts[1:], initial=0)))
 
-    counts = _shape_contact_pair_counts(model)
+
+def _estimate_rigid_contacts_per_pair_world(
+    model: Model | ModelView, shape_mask: np.ndarray | None = None
+) -> np.ndarray:
+    """Estimate the contacts of the shape pairs of each world, global pairs (slot zero) first.
+
+    A pair belongs to the world of its local shape. ``shape_mask`` keeps only the pairs whose two shapes are selected.
+    """
     is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _variant_options(model))
-    primitive_counts = _shape_contact_pair_counts(model, shape_mask=~is_mesh) if is_mesh.any() else counts
-    contacts = (
+    counts = _shape_contact_pair_counts(model, shape_mask=shape_mask)
+    primitive = ~is_mesh if shape_mask is None else np.asarray(shape_mask, dtype=bool) & ~is_mesh
+    primitive_counts = _shape_contact_pair_counts(model, shape_mask=primitive) if is_mesh.any() else counts
+    return (
         primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
         + (counts - primitive_counts) * _RIGID_CONTACTS_PER_MESH_PAIR
     )
-    return min(rigid_contact_max, int(contacts[0] + np.max(contacts[1:], initial=0)))
+
+
+def _estimate_rigid_contacts_per_shape(
+    model: Model | ModelView, shapes: np.ndarray, partner_mask: np.ndarray | None = None, *, keys=None
+) -> np.ndarray:
+    """Estimate the contacts of each listed shape's pairs with the shapes ``partner_mask`` selects, of equal ``keys``."""
+    is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _variant_options(model))
+    weights = np.array(
+        [
+            [_RIGID_CONTACTS_PER_PRIMITIVE_PAIR, _RIGID_CONTACTS_PER_MESH_PAIR],
+            [_RIGID_CONTACTS_PER_MESH_PAIR, _RIGID_CONTACTS_PER_MESH_PAIR],
+        ],
+        dtype=np.int64,
+    )
+    return _shape_contact_pair_sums_per_shape(
+        model, shapes, partner_mask, keys=keys, categories=is_mesh.astype(np.int64), weights=weights
+    )
 
 
 # Mesh-like pairs (mesh, heightfield, planar SDF) feed the triangle-pair buffer and the
