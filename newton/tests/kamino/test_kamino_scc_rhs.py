@@ -4,6 +4,7 @@
 """Dense references for cached bilateral right-hand sides."""
 
 import unittest
+from itertools import product
 from types import SimpleNamespace
 from unittest import mock
 
@@ -237,8 +238,14 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                 coords = np.column_stack((rows, np.array([0, 0, 0, 6, 6, 6])))
                 raw = np.zeros((6, 6), dtype=np.float32)
                 raw[:, 0] = rows + 1
-                scale = np.linspace(0.5, 1.5, n + nu).astype(np.float32)
-                weighted = raw * scale[rows, None]
+                preconditioner = np.linspace(0.5, 1.5, n + nu).astype(np.float32)
+                # With decoupling, the bounded rows 2 and 3 have a body share, and the bilateral rows
+                # couple to bounded rows (see `update_decoupled_coupled_rows`).
+                share = np.array([1.0, 1.0, 0.3, 0.6, 1.0, 1.0], dtype=np.float32)
+                coupled_row = np.array([[n, n + 1], [n + 2, -1], [0, n + 1], [0, n], [1, -1], [-1, -1]])
+                coupled_coef = np.array(
+                    [[0.7, -0.4], [0.25, 0.0], [0.5, 0.2], [-0.3, 0.1], [0.6, 0.0], [0.0, 0.0]], dtype=np.float32
+                )
                 jacobian = SimpleNamespace(nzb_start=ints([0]), nzb_coords=ints(coords))
                 problem = SimpleNamespace(
                     delassus=SimpleNamespace(constraint_jacobian=jacobian),
@@ -246,12 +253,28 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                 )
                 path = SimpleNamespace(jacobians=SimpleNamespace(joint_constraint_nzb_count=ints([6])), device=device)
                 _build_sparse_bilateral_row_nzb_topology(path, problem)
-                dense_j = np.zeros((n + nu, 12))
-                for block, (row, col) in enumerate(coords):
-                    dense_j[row, col : col + 6] = raw[block] * scale[row]
-                expected = (dense_j @ dense_j.T)[:n, n:]
-                for compact in (False, True):
-                    with self.subTest(compact=compact):
+                for decoupled, compact in product((False, True), (False, True)):
+                    with self.subTest(decoupled=decoupled, compact=compact):
+                        # The row scale of the Jacobian includes the body share of decoupled joint rows
+                        scale = preconditioner * share if decoupled else preconditioner
+                        weighted = raw * scale[rows, None]
+                        dense_j = np.zeros((n + nu, 12))
+                        for block, (row, col) in enumerate(coords):
+                            dense_j[row, col : col + 6] = raw[block] * scale[row]
+                        expected = (dense_j @ dense_j.T)[:n, n:]
+                        if decoupled:
+                            for row in range(n):
+                                for col, coef in zip(coupled_row[row], coupled_coef[row], strict=True):
+                                    if col >= n:
+                                        expected[row, col - n] += coef * scale[col]
+                            decoupled_inputs = (
+                                wp.bool(True),
+                                wp.array(coupled_row, dtype=wp.int32, device=device),
+                                wp.array(coupled_coef, dtype=wp.float32, device=device),
+                                floats(scale),
+                            )
+                        else:
+                            decoupled_inputs = SparseDecoupledRows(device).disabled_inputs(floats(scale))
                         coupling = wp.full(n * stride + 7, -123.0, dtype=wp.float32, device=device)
                         wp.launch(
                             _assemble_sparse_bilateral_unilateral_coupling,
@@ -281,8 +304,7 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 coupling,
                                 3,
                                 compact,
-                                # No decoupled joint rows
-                                *SparseDecoupledRows(device).disabled_inputs(floats(scale)),
+                                *decoupled_inputs,
                             ],
                             device=device,
                         )
