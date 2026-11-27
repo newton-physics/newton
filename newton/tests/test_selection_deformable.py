@@ -16,7 +16,13 @@ import newton
 from newton.selection import ArticulationView, DeformableCurveView, DeformableSurfaceView, DeformableVolumeView
 from newton.solvers import SolverVBD
 from newton.solvers.experimental.coupled import SolverCoupled
-from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_test_anchored_cable, _add_volume
+from newton.tests._deformable_test_utils import (
+    _add_curve,
+    _add_point_set,
+    _add_surface,
+    _add_test_anchored_cable,
+    _add_volume,
+)
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -165,6 +171,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
         _add_test_cable(builder, label="object")
         _add_test_cloth(builder, label="object")
         _add_test_soft_body(builder, label="object")
+        _add_point_set(builder, label="object")
         scene = newton.ModelBuilder()
         scene.replicate(builder, 2)
         model = scene.finalize(device="cpu")
@@ -187,8 +194,9 @@ class TestDeformableFamilyViews(unittest.TestCase):
                 view.ranges(kind)
 
         for view_type, family, ranges in (
-            (newton.selection.DeformableSurfaceView, "surface", [(0, 4), (8, 12)]),
-            (newton.selection.DeformableVolumeView, "volume", [(4, 8), (12, 16)]),
+            (newton.selection.DeformableSurfaceView, "surface", [(0, 4), (12, 16)]),
+            (newton.selection.DeformableVolumeView, "volume", [(4, 8), (16, 20)]),
+            (newton.selection.DeformablePointSetView, "point_set", [(8, 12), (20, 24)]),
         ):
             with self.subTest(family=family):
                 view = view_type(model, "*")

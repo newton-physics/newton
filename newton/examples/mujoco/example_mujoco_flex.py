@@ -78,7 +78,9 @@ def build_world() -> newton.ModelBuilder:
 
     segment = CABLE_LENGTH / CABLE_SEGMENTS
     cable = [
-        builder.add_particle((0.45, -0.5 * CABLE_LENGTH + i * segment, 0.5), (0.0, 0.0, 0.0), 0.005, PARTICLE_RADIUS)
+        builder.add_particle(
+            (0.45, -0.5 * CABLE_LENGTH + i * segment, 0.5), (0.0, 0.0, 0.0), 0.005, radius=PARTICLE_RADIUS
+        )
         for i in range(CABLE_SEGMENTS + 1)
     ]
     start = builder.spring_count

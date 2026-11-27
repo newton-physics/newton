@@ -25,5 +25,6 @@ See :ref:`selection-api` for an example and the supported array and mask shapes.
    :template: class.rst
 
    DeformableCurveView
+   DeformablePointSetView
    DeformableSurfaceView
    DeformableVolumeView

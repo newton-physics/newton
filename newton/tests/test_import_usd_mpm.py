@@ -99,6 +99,32 @@ class TestImportUsdMPMFixtures(unittest.TestCase):
         np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [5.0, 5.0, 1.0e15], rtol=1.0e-6)
         np.testing.assert_allclose(model.mpm.friction.numpy(), [0.6, 0.6, 0.2], rtol=1.0e-6)
 
+    def test_points_prims_record_point_sets_through_composition(self):
+        """Record each imported Points prim as a point set and offset it into a replicated scene."""
+        fixture = pathlib.Path(__file__).parent / "assets" / "mpm_two_prims.usda"
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
+
+        sand, snow = "/World/TranslatedAndScaled/Sand", "/World/Snow"
+        self.assertEqual(builder.point_set_label, [sand, snow])
+        self.assertEqual(
+            list(zip(builder._point_set_particle_start, builder._point_set_particle_end, strict=True)),
+            [result["path_particle_map"][sand], result["path_particle_map"][snow]],
+        )
+
+        scene = newton.ModelBuilder()
+        scene.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0)
+        scene.replicate(builder, 2)
+        model = scene.finalize(device="cpu")
+
+        self.assertEqual(model.point_set_label, [sand, snow, sand, snow])
+        np.testing.assert_array_equal(model.point_set_world.numpy(), [0, 0, 1, 1])
+        np.testing.assert_array_equal(model.point_set_particle_start.numpy(), [1, 3, 4, 6])
+        np.testing.assert_array_equal(model.point_set_particle_end.numpy(), [3, 4, 6, 7])
+        view = newton.selection.DeformablePointSetView(model, snow)
+        self.assertEqual((view.worlds, view.ranges("particle")), ([0, 1], [(3, 4), (6, 7)]))
+        np.testing.assert_allclose(view.get_particle_positions(model).numpy(), [[[0.0, 0.1, 0.0]]] * 2, atol=1.0e-7)
+
     def test_imports_checked_in_material_subset_fixture(self):
         """Parse checked-in point-subset bindings and parent-material fallback."""
         fixture = pathlib.Path(__file__).parent / "assets" / "mpm_material_subsets.usda"

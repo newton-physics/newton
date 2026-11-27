@@ -207,7 +207,12 @@ class TestGenerateApiClassTemplates(unittest.TestCase):
         self.assertIn("   ArticulationView\n", summaries[0])
         self.assertNotIn(":template:", summaries[0])
         self.assertIn("   :template: class.rst\n", summaries[1])
-        for name in ("DeformableCurveView", "DeformableSurfaceView", "DeformableVolumeView"):
+        for name in (
+            "DeformableCurveView",
+            "DeformablePointSetView",
+            "DeformableSurfaceView",
+            "DeformableVolumeView",
+        ):
             with self.subTest(view=name):
                 self.assertIn(f"   {name}\n", summaries[1])
                 self.assertEqual(page.count(f"   {name}\n"), 1)

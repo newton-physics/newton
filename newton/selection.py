@@ -9,6 +9,7 @@ See :ref:`selection-api` for an example and the supported array and mask shapes.
 from ._src.utils.selection import (
     ArticulationView,
     DeformableCurveView,
+    DeformablePointSetView,
     DeformableSurfaceView,
     DeformableVolumeView,
 )
@@ -16,6 +17,7 @@ from ._src.utils.selection import (
 __all__ = [
     "ArticulationView",
     "DeformableCurveView",
+    "DeformablePointSetView",
     "DeformableSurfaceView",
     "DeformableVolumeView",
 ]

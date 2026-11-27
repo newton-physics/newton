@@ -23,10 +23,13 @@ The views are available from :mod:`newton.selection`:
   cloth, and accesses their particle positions and velocities.
 * :class:`~newton.selection.DeformableVolumeView` selects volumes, such as
   tetrahedral soft bodies, and accesses their particle positions and velocities.
+* :class:`~newton.selection.DeformablePointSetView` selects point sets, such as
+  granular or snow materials, and accesses their particle positions and
+  velocities.
 
 .. experimental::
 
-   The three deformable view classes may change while the API is developed.
+   The four deformable view classes may change while the API is developed.
 
 Patterns can be exact labels, globs such as ``"cloth*"``, lists of globs, or
 compiled regular expressions. See :ref:`label-matching` for matching rules.
