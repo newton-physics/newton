@@ -71,6 +71,7 @@ from ..geometry.contact_reduction_global import (
 )
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.flags import ShapeFlags
+from ..geometry.heightfield_recovery import create_heightfield_recovery
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
     MESH_SDF_BLOCK_DIM,
@@ -2054,6 +2055,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
         use_precomputed_center=True,
         penetration_refiner=create_triangle_prism_penetration_refiner(support_func),
     )
+    recover_heightfield = create_heightfield_recovery(support_func, writer_func)
 
     @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_process_mesh_triangle_contacts_kernel(
@@ -2145,6 +2147,23 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
             if wp.static(convex_support_acceleration):
                 data_provider.support_lut = support_lut
                 data_provider.support_vertex_offsets = support_vertex_offsets
+            if type_a == GeoType.HFIELD and wp.static(recover_heightfield)(
+                shape_data_a,
+                shape_data_b,
+                hfd,
+                heightfield_elevations,
+                X_ws_a,
+                pos_a,
+                pos_b,
+                quat_b,
+                triple,
+                margin_offset_a,
+                margin_offset_b,
+                gap_sum,
+                data_provider,
+                writer_data,
+            ):
+                continue
             wp.static(compute_contacts)(
                 shape_data_a,
                 shape_data_b,

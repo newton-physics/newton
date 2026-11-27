@@ -4,7 +4,9 @@
 import warp as wp
 
 from ...geometry import ParticleFlags
+from ...geometry.heightfield_recovery import HEIGHTFIELD_RECOVERY_SPEED
 from ...geometry.sdf_planar_recovery import MeshRecoveryData, active_recovery_contact, recovery_step_depth
+from ...geometry.types import GeoType
 from ...math import (
     vec_abs,
     vec_max,
@@ -1976,6 +1978,7 @@ def _solve_body_contact_positions(
     body_m_inv: wp.array[float],
     body_I_inv: wp.array[wp.mat33],
     shape_body: wp.array[int],
+    shape_type: wp.array[int],
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
@@ -2116,14 +2119,21 @@ def _solve_body_contact_positions(
     angular_b = wp.cross(r_b, n)
 
     correction = d
-    if recovery_slot >= 0:
+    heightfield = bool(False)
+    if shape_type:
+        heightfield = (shape_a >= 0 and shape_type[shape_a] == GeoType.HFIELD) or (
+            shape_b >= 0 and shape_type[shape_b] == GeoType.HFIELD
+        )
+    if recovery_slot >= 0 or heightfield:
         va = wp.vec3(0.0)
         vb = wp.vec3(0.0)
         if body_a >= 0:
             va = velocity_at_point(body_qd[body_a], r_a)
         if body_b >= 0:
             vb = velocity_at_point(body_qd[body_b], r_b)
-        target = recovery_step_depth(recovery.contacts[recovery_slot].thickness, -d)
+        target = wp.min(-d, HEIGHTFIELD_RECOVERY_SPEED * dt)
+        if recovery_slot >= 0:
+            target = recovery_step_depth(recovery.contacts[recovery_slot].thickness, -d)
         correction = wp.max(d, wp.min(0.0, wp.dot(n, vb - va) * dt - target))
         if correction == 0.0:
             return wp.spatial_vector(), wp.spatial_vector(), 0
@@ -2241,6 +2251,7 @@ def solve_body_contact_positions(
     body_m_inv: wp.array[float],
     body_I_inv: wp.array[wp.mat33],
     shape_body: wp.array[int],
+    shape_type: wp.array[int],
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
@@ -2277,6 +2288,7 @@ def solve_body_contact_positions(
         body_m_inv,
         body_I_inv,
         shape_body,
+        shape_type,
         contact_count,
         contact_point0,
         contact_point1,
@@ -2326,6 +2338,7 @@ def solve_body_contact_positions_per_contact(
     body_m_inv: wp.array[float],
     body_I_inv: wp.array[wp.mat33],
     shape_body: wp.array[int],
+    shape_type: wp.array[int],
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
@@ -2367,6 +2380,7 @@ def solve_body_contact_positions_per_contact(
         body_m_inv,
         body_I_inv,
         shape_body,
+        shape_type,
         contact_count,
         contact_point0,
         contact_point1,

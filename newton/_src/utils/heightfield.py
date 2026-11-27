@@ -285,7 +285,15 @@ def heightfield_point_below(hfd: HeightfieldData, elevation_data: wp.array[wp.fl
 
     Interpolates the surface height on the same triangle split as :func:`_heightfield_surface_query`.
     """
-    if hfd.nrow <= 1 or hfd.ncol <= 1 or pos[2] >= hfd.max_z or wp.abs(pos[0]) > hfd.hx or wp.abs(pos[1]) > hfd.hy:
+    if (
+        hfd.nrow <= 1
+        or hfd.ncol <= 1
+        or hfd.hx <= 0.0
+        or hfd.hy <= 0.0
+        or pos[2] >= wp.max(hfd.min_z, hfd.max_z)
+        or wp.abs(pos[0]) > hfd.hx
+        or wp.abs(pos[1]) > hfd.hy
+    ):
         return False
     col_f = (pos[0] + hfd.hx) * wp.float32(hfd.ncol - 1) / (2.0 * hfd.hx)
     row_f = (pos[1] + hfd.hy) * wp.float32(hfd.nrow - 1) / (2.0 * hfd.hy)

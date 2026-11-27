@@ -803,6 +803,75 @@ class TestHeightfield(unittest.TestCase):
         self.assertGreater(float(np.dot(normal[deepest], expected_normal)), 0.999)
         self.assertAlmostEqual(float(point0[deepest][2] - slope * point0[deepest][0]), 0.0, places=5)
 
+    def test_heightfield_recovers_buried_sphere(self):
+        """Recover from deep burial using the finite surface on flat and steep terrain."""
+        radius = 0.034
+        grid = np.linspace(-1.0, 1.0, 21, dtype=np.float32)
+        for slope, depth, valley in ((0.0, 1.1, False), (40.0, 0.95, False), (40.0, 1.1, False), (40.0, 0.06, True)):
+            with self.subTest(slope=slope, depth=depth, valley=valley):
+                builder = newton.ModelBuilder()
+                builder.rigid_gap = 0.002
+                heightfield = Heightfield(np.tile(slope * (np.abs(grid) if valley else grid), (21, 1)), 21, 21)
+                builder.add_shape_heightfield(heightfield=heightfield)
+                x = 0.0 if valley or slope == 0.0 else 0.037
+                y = 0.0 if slope == 0.0 else 0.012
+                body = builder.add_body(xform=wp.transform((x, y, slope * x - depth), wp.quat_identity()))
+                builder.add_shape_sphere(body=body, radius=radius)
+                model = builder.finalize()
+                state = model.state()
+                expected_lift = depth + radius * np.hypot(slope, 1.0)
+                for reduce_contacts in (False, True):
+                    distance, normal, point0 = self._get_contact_kinematics(
+                        model, state, reduce_contacts=reduce_contacts
+                    )
+                    self.assertGreater(len(distance), 0)
+                    deepest = int(np.argmin(distance))
+                    self.assertAlmostEqual(float(distance[deepest]), -expected_lift, places=3)
+                    np.testing.assert_allclose(normal[deepest], (0.0, 0.0, 1.0), atol=1.0e-6)
+                    point_x = float(point0[deepest, 0])
+                    top = slope * (abs(point_x) if valley else point_x)
+                    self.assertAlmostEqual(float(point0[deepest, 2]) - top, 0.0, places=4)
+
+    def test_heightfield_recovers_sphere_touching_top_edge(self):
+        """Recover a sphere that intersects the real rim and ignore a sphere below it."""
+        builder = newton.ModelBuilder()
+        self._add_flat_heightfield(builder)
+        radius = 0.034
+        body = builder.add_body(xform=wp.transform((1.01, 0.025, -0.01), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=radius)
+        model = builder.finalize()
+        state = model.state()
+        distance, normal, point0 = self._get_contact_kinematics(model, state)
+        self.assertGreater(len(distance), 0)
+        deepest = int(np.argmin(distance))
+        self.assertAlmostEqual(float(distance[deepest]), -0.01 - np.sqrt(radius**2 - 0.01**2), places=3)
+        np.testing.assert_allclose(normal[deepest], (0.0, 0.0, 1.0), atol=1.0e-6)
+        np.testing.assert_allclose(point0[deepest, (0, 2)], (1.0, 0.0), atol=1.0e-5)
+
+        state.body_q.assign(np.array(((1.01, 0.025, -0.06, 0.0, 0.0, 0.0, 1.0),), dtype=np.float32))
+        distance, _, _ = self._get_contact_kinematics(model, state)
+        self.assertTrue(np.all(distance >= 0.0))
+
+    def test_heightfield_xpbd_limits_push_out_speed(self):
+        """Lift a buried sphere without launching it in a single step."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        self._add_flat_heightfield(builder)
+        depth = 0.06
+        body = builder.add_body(xform=wp.transform((0.037, 0.012, -depth), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=0.034)
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model, reduce_contacts=False)
+        contacts = pipeline.contacts()
+        solver = newton.solvers.SolverXPBD(model)
+        state_0, state_1 = model.state(), model.state()
+        dt = 1.0 / 240.0
+
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, dt)
+        lift = float(state_1.body_q.numpy()[body, 2]) + depth
+        self.assertGreater(lift, 0.0)
+        self.assertLessEqual(lift / dt, 1.001)
+
     def test_heightfield_rotated_penetration_uses_surface(self):
         """Verify penetration follows a transformed heightfield surface normal."""
         radius = 0.05
