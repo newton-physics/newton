@@ -106,8 +106,21 @@ class TestKaminoBilateralRHS(NewtonTestCase):
             previous = rng.normal(size=bvio + n + 2).astype(np.float32)
             inverse_storage = inverse.ravel()
             body = jacobian[n:].astype(np.float64).T @ impulses[pvio + n : pvio + rows].astype(np.float64)
-            expected_rhs = -scale[bvio : bvio + n] * (weighted.astype(np.float64) @ body + free[pvio : pvio + n])
-            expected_solution = inverse.astype(np.float64).T @ expected_rhs
+            # With decoupling, each bilateral row couples to up to two unilateral rows, relative to
+            # their entries of the row-scaled impulses (see `update_decoupled_coupled_rows`).
+            num_vec = pvio + rows + 2
+            row_scale = rng.uniform(0.01, 1.5, size=num_vec).astype(np.float32)
+            coupled_row = np.full((num_vec, 2), -1, dtype=np.int32)
+            coupled_coef = np.zeros((num_vec, 2), dtype=np.float32)
+            if rows > n:
+                coupled_row[pvio : pvio + n, 0] = n + np.arange(n) % (rows - n)
+                coupled_row[pvio : pvio + n : 2, 1] = n + (np.arange(0, n, 2) + 1) % (rows - n)
+                coupled_coef[pvio : pvio + n] = rng.normal(size=(n, 2)) * (coupled_row[pvio : pvio + n] >= 0)
+            coupling = np.zeros(n)
+            for row in range(n):
+                for col, coef in zip(coupled_row[pvio + row], coupled_coef[pvio + row], strict=True):
+                    if col >= 0:
+                        coupling[row] += coef * row_scale[pvio + col] * impulses[pvio + col]
             coords = [(row, col) for row in range(n) for col in range(0, body_dofs, 6)]
             blocks = [weighted[row, col : col + 6] for row, col in coords]
             for column_major in (False, True):
@@ -117,8 +130,20 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                 else:
                     transpose_coords = [(row, col) for row in range(rows) for col in range(0, body_dofs, 6)]
                     transpose_values = [jacobian[row, col : col + 6] for row, col in transpose_coords]
-                for active, row_storage in ((False, False), (True, False), (True, True)):
-                    with self.subTest(n=n, column_major=column_major, active=active, row_storage=row_storage):
+                for active, row_storage, decoupled in (
+                    (False, False, False),
+                    (True, False, False),
+                    (True, True, False),
+                    (True, False, True),
+                ):
+                    with self.subTest(
+                        n=n, column_major=column_major, active=active, row_storage=row_storage, decoupled=decoupled
+                    ):
+                        value = weighted.astype(np.float64) @ body + free[pvio : pvio + n]
+                        if decoupled:
+                            value = value + coupling
+                        expected_rhs = -scale[bvio : bvio + n] * value
+                        expected_solution = inverse.astype(np.float64).T @ expected_rhs
 
                         def ints(values):
                             return wp.array(values, dtype=wp.int32, device=device)
@@ -166,8 +191,16 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 ints(coords),
                                 wp.array(blocks, dtype=vec6f, device=device),
                                 int(row_storage),  # world_start
-                                # No decoupled joint rows
-                                *SparseDecoupledRows(device).disabled_inputs(floats(scale)),
+                                *(
+                                    (
+                                        wp.bool(True),
+                                        wp.array(coupled_row, dtype=wp.int32, device=device),
+                                        floats(coupled_coef),
+                                        floats(row_scale),
+                                    )
+                                    if decoupled
+                                    else SparseDecoupledRows(device).disabled_inputs(floats(scale))
+                                ),
                             ],
                             device=device,
                             block_dim=128,

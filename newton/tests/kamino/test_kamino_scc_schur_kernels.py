@@ -278,6 +278,13 @@ class TestKaminoFullSchurAssembly(NewtonTestCase):
 
     def test_dense_oracle(self):
         """Cover mixed row types, capacity boundaries, and inactive worlds."""
+        self._check_dense_oracle(decoupled=False)
+
+    def test_dense_oracle_with_decoupled_joint_rows(self):
+        """Add the joint-space couplings of decoupled bounded joint rows to the compact operator and velocities."""
+        self._check_dense_oracle(decoupled=True)
+
+    def _check_dense_oracle(self, decoupled: bool):
         rng = np.random.default_rng(123)
         cases = [
             (33, 3, 2, 2, 16),
@@ -320,6 +327,9 @@ class TestKaminoFullSchurAssembly(NewtonTestCase):
                 "compact_q",
                 "body_space",
                 "solution_lambdas",
+                "coupled_row",
+                "coupled_coef",
+                "jacobian_row_scale",
             )
         }
         expected_s, expected_q = [], []
@@ -376,11 +386,31 @@ class TestKaminoFullSchurAssembly(NewtonTestCase):
             p, vf, eta, lambdas, q = rng.normal(size=(5, n + nu)).astype(np.float32)
             body = rng.normal(size=12).astype(np.float32)
             schur = rng.normal(size=n * stride).astype(np.float32)
+            # With decoupling, each bounded row couples to a joint dynamics row and to another
+            # bounded row, relative to their entries of the row-scaled impulses.
+            coupled_row = np.full((n + nu, 2), -1, dtype=np.int32)
+            coupled_coef = np.zeros((n + nu, 2), dtype=np.float32)
+            row_scale = np.ones(n + nu, dtype=np.float32)
+            if decoupled:
+                row_scale = rng.uniform(0.01, 1.5, size=n + nu).astype(np.float32)
+                for row in range(nb):
+                    coupled_row[n + row, 0] = row % n
+                    if row ^ 1 < nb:
+                        coupled_row[n + row, 1] = n + (row ^ 1)
+                    coupled_coef[n + row] = rng.normal(size=2) * (coupled_row[n + row] >= 0)
+            coupling = np.zeros((nu, nu))
+            coupled_velocity = np.zeros(nu)
+            for row in range(nb):
+                for col, coef in zip(coupled_row[n + row], coupled_coef[n + row], strict=True):
+                    if col >= 0:
+                        coupled_velocity[row] += coef * row_scale[col] * lambdas[col]
+                    if col >= n:
+                        coupling[row, col - n] += coef * row_scale[col]
             expected_matrix, expected_velocity = schur.copy(), q.copy()
             if 0 < nu <= 512 and nu * nu <= n * stride:
-                operator = (weighted @ jacobian.T) * p[None, n:] + np.diag(eta[n:])
+                operator = (weighted @ jacobian.T) * p[None, n:] + np.diag(eta[n:]) + coupling
                 expected_matrix[: nu * nu] -= operator.T.ravel()
-                expected_velocity[n:] = weighted @ body + eta[n:] * lambdas[n:] + vf[n:]
+                expected_velocity[n:] = weighted @ body + eta[n:] * lambdas[n:] + vf[n:] + coupled_velocity
             expected_s.extend(expected_matrix)
             expected_q.extend(expected_velocity)
             for name, values in (
@@ -391,20 +421,14 @@ class TestKaminoFullSchurAssembly(NewtonTestCase):
                 ("compact_q", q),
                 ("body_space", body),
                 ("compact_schur", schur),
+                ("coupled_row", coupled_row),
+                ("coupled_coef", coupled_coef),
+                ("jacobian_row_scale", row_scale),
             ):
                 data[name].extend(values)
 
         for device in wp.get_devices():
-            arrays = {}
-            # No decoupled joint rows: the row scale is the preconditioner
-            arrays.update(
-                zip(
-                    ("has_coupled_rows", "coupled_row", "coupled_coef"),
-                    SparseDecoupledRows(device).disabled_inputs(None)[:3],
-                    strict=True,
-                )
-            )
-            data["jacobian_row_scale"] = data["problem_P"]
+            arrays = {"has_coupled_rows": wp.bool(decoupled)}
             for arg in kernel.adj.args:
                 name = arg.label
                 if name in arrays:
