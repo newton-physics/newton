@@ -239,7 +239,11 @@ class TestImportUsdPhysics(unittest.TestCase):
         set_state(connect(prismatic, "Slider"), "linear", 0.25, 0.5)
 
         d6 = connect(UsdPhysics.Joint.Define(stage, "/World/D6"), "Gimbal")
-        # Newton creates D6 DOFs only for axes with a limit; rotX is the rotational DOF.
+        # Keep rotX as the only DOF by explicitly locking the other five axes.
+        for axis in ("transX", "transY", "transZ", "rotY", "rotZ"):
+            locked = UsdPhysics.LimitAPI.Apply(d6, axis)
+            locked.CreateLowAttr(0.0)
+            locked.CreateHighAttr(0.0)
         limit = UsdPhysics.LimitAPI.Apply(d6, "rotX")
         limit.CreateLowAttr().Set(-180.0)
         limit.CreateHighAttr().Set(180.0)
@@ -5095,10 +5099,11 @@ def Xform "Articulation" (
         joint = UsdPhysics.Joint.Define(stage, "/World/Articulation/Joint")
         joint.CreateBody0Rel().SetTargets([parent.GetPath()])
         joint.CreateBody1Rel().SetTargets([child.GetPath()])
-        for axis in ("transX", "rotZ"):
+        for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
             limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
-            limit.CreateLowAttr().Set(-1.0)
-            limit.CreateHighAttr().Set(1.0)
+            free = axis in ("transX", "rotZ")
+            limit.CreateLowAttr().Set(-1.0 if free else 0.0)
+            limit.CreateHighAttr().Set(1.0 if free else 0.0)
         joint.GetPrim().CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Float, custom=True).Set(0.75)
 
         builder = newton.ModelBuilder()
@@ -9162,10 +9167,11 @@ def Xform "Articulation" (
             j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
             j.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
             j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-            for axis in ("transX", "rotZ"):
+            for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
                 limit = UsdPhysics.LimitAPI.Apply(j.GetPrim(), axis)
-                limit.CreateLowAttr().Set(-1.0)
-                limit.CreateHighAttr().Set(1.0)
+                free = axis in ("transX", "rotZ")
+                limit.CreateLowAttr().Set(-1.0 if free else 0.0)
+                limit.CreateHighAttr().Set(1.0 if free else 0.0)
             return j
 
         leader = joint("/World/Root/Leader", root, links[0])
@@ -13572,6 +13578,31 @@ class TestOverrideRootXform(unittest.TestCase):
             atol=1e-4,
             err_msg="Root body rotation must match USD prim orientation",
         )
+
+    @requires("pxr.Usd")
+    def test_world_d6_articulation_root(self):
+        """Keep an unauthored D6 articulation root fixed and preserve authored motion."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass.CreateMassAttr(1.0)
+        mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+        joint = UsdPhysics.Joint.Define(stage, "/Robot/RootJoint")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+
+        for driven, expected in ((False, (0, 0)), (True, (3, 3))):
+            with self.subTest(driven=driven):
+                if driven:
+                    UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "transX").CreateStiffnessAttr(10.0)
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage)
+                index = result["path_joint_map"][str(joint.GetPath())]
+                self.assertEqual(builder.joint_dof_dim[index], expected)
 
     @requires("pxr.Usd")
     def test_world_joint_override_root_xform(self):

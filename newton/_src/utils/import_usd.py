@@ -1482,6 +1482,15 @@ def parse_usd(
     # PhysicsScene ``mjc:flag:filterparent``; resolved below once the scene prim is known.
     scene_filter_parent = True
 
+    articulation_paths, articulation_descs = ret_dict.get(UsdPhysics.ObjectType.Articulation, ((), ()))
+    articulation_entries = list(zip(articulation_paths, articulation_descs, strict=False))
+    articulation_root_prims = {
+        root
+        for path, desc in articulation_entries
+        if desc.isValid and not any(re.match(pattern, str(path)) for pattern in ignore_paths)
+        for root in desc.rootPrims
+    }
+
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
         incoming_xform: wp.transform | None = None,
@@ -1516,6 +1525,7 @@ def parse_usd(
             _should_write_solreflimit_gain_baseline=_should_write_solreflimit_gain_baseline,
             resolve_joint_parent_child=resolve_joint_parent_child,
             scene_filter_parent=scene_filter_parent,
+            articulation_root=joint_desc.primPath in articulation_root_prims,
         )
 
     def parse_merged_joints(
@@ -2040,11 +2050,7 @@ def parse_usd(
     ]
     authored_articulation_root_paths.sort(key=len, reverse=True)
 
-    if UsdPhysics.ObjectType.Articulation in ret_dict:
-        paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
-
-        articulation_entries = list(zip(paths, articulation_descs, strict=False))
-
+    if articulation_entries:
         _parse_articulations(
             builder,
             stage,
