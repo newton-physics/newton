@@ -621,6 +621,18 @@ def _reset_solver_status(
 
 
 @wp.kernel
+def _reset_shape_friction_rejected(
+    world_mask: wp.array[wp.bool],
+    shape_mu_invalid_world: wp.array[wp.bool],
+    shape_friction_rejected: wp.array[wp.bool],
+):
+    """Reset the shape-friction rejection record of selected worlds to the worlds of currently flagged shapes."""
+    tid = wp.tid()
+    if not world_mask or world_mask[tid]:
+        shape_friction_rejected[tid] = shape_mu_invalid_world[tid]
+
+
+@wp.kernel
 def _invalidate_fk_id_worlds(
     world_mask: wp.array[wp.bool],
     world_count: int,
@@ -3658,8 +3670,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
-            # Without articulations no step solves contacts, so only the current flags remain.
-            wp.copy(self._shape_friction_rejected, self._shape_mu_invalid_world)
+            wp.launch(
+                _reset_shape_friction_rejected,
+                dim=self._shape_friction_rejected.shape[0],
+                inputs=[world_mask, self._shape_mu_invalid_world],
+                outputs=[self._shape_friction_rejected],
+                device=self.model.device,
+            )
             self._retake_status_snapshot()
             return
 

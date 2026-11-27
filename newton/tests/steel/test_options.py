@@ -451,22 +451,28 @@ def test_scaled_friction_overflow_is_rejected(test, device):
 
 def test_rejected_shape_friction_is_reported_until_its_worlds_reset(test, device):
     """Report the worlds of a rejected shape after valid coefficients return, until a reset selects them."""
-    model = _build_contact_scene(device)
-    solver = SolverSteel(model)
-    state = model.state()
-    shape = int(np.flatnonzero(model.shape_world.numpy() == 1)[0])
-    mu = model.shape_material_mu.numpy()
-    mu[shape] = np.inf
-    model.shape_material_mu.assign(mu)
-    with test.assertRaisesRegex(ValueError, f"not finite for shape {shape}"):
+    static = newton.ModelBuilder()
+    for _ in range(2):
+        static.begin_world()
+        static.add_ground_plane()
+        static.end_world()
+    # The second model has no articulations, so its reset takes a separate path.
+    for model in (_build_contact_scene(device), static.finalize(device=device)):
+        solver = SolverSteel(model)
+        state = model.state()
+        shape = int(np.flatnonzero(model.shape_world.numpy() == 1)[0])
+        mu = model.shape_material_mu.numpy()
+        mu[shape] = np.inf
+        model.shape_material_mu.assign(mu)
+        with test.assertRaisesRegex(ValueError, f"not finite for shape {shape}"):
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        model.shape_material_mu.fill_(0.6)
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-    model.shape_material_mu.fill_(0.6)
-    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-    for selected in ([True, False, True], [False, True, False]):
-        with test.assertRaisesRegex(RuntimeError, r"not finite in worlds \[1\]"):
-            solver.check_constraint_capacity()
-        solver.reset(state, world_mask=wp.array(selected, dtype=wp.bool, device=device))
-    solver.check_constraint_capacity()
+        for selected in ([True, False, True], [False, True, False]):
+            with test.assertRaisesRegex(RuntimeError, r"not finite in worlds \[1\]"):
+                solver.check_constraint_capacity()
+            solver.reset(state, world_mask=wp.array(selected, dtype=wp.bool, device=device))
+        solver.check_constraint_capacity()
 
     # A global shape collides in every world.
     scene = newton.ModelBuilder()
