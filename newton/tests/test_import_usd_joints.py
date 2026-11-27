@@ -1723,6 +1723,17 @@ def Xform "Articulation" (
     @requires("pxr.Usd")
     def test_joint_filtering(self):
         """Filter ignored joints and bodies and rebuild the affected articulations."""
+        from pxr import Usd, UsdPhysics
+
+        asset = os.path.join(os.path.dirname(__file__), "assets", "four_link_chain_articulation.usda")
+
+        def disable_joint(joint_path):
+            stage = Usd.Stage.Open(asset)
+            stage.SetEditTarget(stage.GetSessionLayer())
+            UsdPhysics.Joint(stage.GetPrimAtPath(joint_path)).CreateJointEnabledAttr(False)
+            return stage
+
+        joint_disabled = disable_joint("/Articulation/Joint2")
 
         def test_filtering(
             msg,
@@ -1732,12 +1743,16 @@ def Xform "Articulation" (
             expected_joint_types,
             expected_body_keys,
             expected_joint_keys,
+            expected_articulation_keys=None,
+            source=asset,
+            **kwargs,
         ):
             builder = newton.ModelBuilder()
             builder.add_usd(
-                os.path.join(os.path.dirname(__file__), "assets", "four_link_chain_articulation.usda"),
+                source,
                 ignore_paths=ignore_paths,
                 bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                **kwargs,
             )
             self.assertEqual(
                 builder.joint_count,
@@ -1764,6 +1779,8 @@ def Xform "Articulation" (
                 expected_joint_keys,
                 f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_label}",
             )
+            if expected_articulation_keys is not None:
+                self.assertEqual(builder.articulation_label, expected_articulation_keys, msg)
 
         for bodies_follow_joint_ordering in [True, False]:
             test_filtering(
@@ -1860,6 +1877,111 @@ def Xform "Articulation" (
                 expected_joint_types=[newton.JointType.FREE, newton.JointType.REVOLUTE, newton.JointType.REVOLUTE],
                 expected_body_keys=["/Articulation/Body1", "/Articulation/Body2", "/Articulation/Body3"],
                 expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3"],
+            )
+
+            # A path without ".*" is excluded by the USD parser but must filter like a regular expression.
+            test_filtering(
+                "filter out the first body by its path",
+                ignore_paths=["/Articulation/Body0"],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.FREE, newton.JointType.REVOLUTE, newton.JointType.REVOLUTE],
+                expected_body_keys=["/Articulation/Body1", "/Articulation/Body2", "/Articulation/Body3"],
+                expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3"],
+            )
+
+            # a missing joint in the middle of the chain splits off a floating articulation
+            for msg, ignore_paths, source in (
+                ("filter out a middle joint", [".*Joint2"], asset),
+                ("filter out a middle joint by its path", ["/Articulation/Joint2"], asset),
+                ("disable a middle joint", [], joint_disabled),
+            ):
+                test_filtering(
+                    msg,
+                    ignore_paths=ignore_paths,
+                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                    expected_articulation_count=2,
+                    expected_joint_types=[
+                        newton.JointType.FIXED,
+                        newton.JointType.REVOLUTE,
+                        newton.JointType.FREE,
+                        newton.JointType.REVOLUTE,
+                    ],
+                    expected_body_keys=[
+                        "/Articulation/Body0",
+                        "/Articulation/Body1",
+                        "/Articulation/Body2",
+                        "/Articulation/Body3",
+                    ],
+                    expected_joint_keys=[
+                        "/Articulation/Joint0",
+                        "/Articulation/Joint1",
+                        "joint_3",
+                        "/Articulation/Joint3",
+                    ],
+                    expected_articulation_keys=["/Articulation", "/Articulation/Body2"],
+                    source=source,
+                )
+
+            # USD does not list a link that only has a joint to the world among the articulated bodies
+            test_filtering(
+                "disable the joint behind the first body",
+                ignore_paths=[],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=2,
+                expected_joint_types=[
+                    newton.JointType.FIXED,
+                    newton.JointType.FREE,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.REVOLUTE,
+                ],
+                expected_body_keys=[
+                    "/Articulation/Body0",
+                    "/Articulation/Body1",
+                    "/Articulation/Body2",
+                    "/Articulation/Body3",
+                ],
+                expected_joint_keys=["/Articulation/Joint0", "joint_2", "/Articulation/Joint2", "/Articulation/Joint3"],
+                expected_articulation_keys=["/Articulation", "/Articulation/Body1"],
+                source=disable_joint("/Articulation/Joint1"),
+            )
+
+            # a missing body in the middle of the chain leaves the body behind it floating
+            for ignore_paths in ([".*Body2"], ["/Articulation/Body2"]):
+                test_filtering(
+                    "filter out a middle body",
+                    ignore_paths=ignore_paths,
+                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                    expected_articulation_count=2,
+                    expected_joint_types=[newton.JointType.FIXED, newton.JointType.REVOLUTE, newton.JointType.FREE],
+                    expected_body_keys=["/Articulation/Body0", "/Articulation/Body1", "/Articulation/Body3"],
+                    expected_joint_keys=["/Articulation/Joint0", "/Articulation/Joint1", "joint_3"],
+                    expected_articulation_keys=["/Articulation", "/Articulation/Body3"],
+                )
+
+        # The temporary legacy flag keeps the joint to a body ignored by its path, attached to the world,
+        # and drops the body behind an ignored one.
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            test_filtering(
+                "legacy: filter out the first body by its path",
+                ignore_paths=["/Articulation/Body0"],
+                bodies_follow_joint_ordering=True,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.REVOLUTE] * 3,
+                expected_body_keys=["/Articulation/Body1", "/Articulation/Body2", "/Articulation/Body3"],
+                expected_joint_keys=["/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/Joint3"],
+                legacy_ignore_paths=True,
+            )
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            test_filtering(
+                "legacy: filter out a middle body",
+                ignore_paths=[".*Body2"],
+                bodies_follow_joint_ordering=True,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.FIXED, newton.JointType.REVOLUTE],
+                expected_body_keys=["/Articulation/Body0", "/Articulation/Body1"],
+                expected_joint_keys=["/Articulation/Joint0", "/Articulation/Joint1"],
+                legacy_ignore_paths=True,
             )
 
     @requires("pxr.Usd")

@@ -8,7 +8,8 @@ Defines configurations for :class:`SolverKamino`.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, Literal
 
 import numpy as np
@@ -32,6 +33,135 @@ __all__ = [
     "SCCAPGDConfig",
     "SCCSolverConfig",
 ]
+
+_DYNAMICS_SOLVER_USD = "newton:kamino:dynamicsSolver"
+_SCC_SCENE_API = "NewtonKaminoSccSceneAPI"
+_SCC_BILATERAL_SOLVER_USD = "newton:kamino:scc:bilateral:numericalSolver"
+_SCC_BILATERAL_TOKENS = {"lltb": "LLTB", "lltbrcm": "LLTBRCM"}
+_SCC_SCENE_SETTINGS = {
+    "warmstart_mode": (str, "warmstarting"),
+    "bilateral_solver_type": (str, "bilateral:numericalSolver"),
+    "unilateral_solver": (str, "unilateral:numericalSolver"),
+    "omega": (wp.float32, "unilateral:pgs:omega"),
+    "inequality_sweeps_per_iteration": (wp.int32, "unilateral:pgs:sweepsPerIteration"),
+    "apgd_max_iterations": (wp.int32, "unilateral:apgd:maxIterations"),
+    "apgd_max_nonlinear_corrections": (wp.int32, "unilateral:apgd:maxNonlinearCorrections"),
+    "apgd_tolerance": (wp.float32, "unilateral:apgd:tolerance"),
+    "tolerance": (wp.float32, "tolerance"),
+}
+
+
+def _read_scene_setting(value: Any, context: dict[str, Any]) -> Any:
+    """Read authored scene defaults without treating time samples as settings."""
+    from pxr import Usd
+
+    attr = context["prim"].GetAttribute(context["attr"].usd_attribute_name)
+    if attr.GetResolveInfo(Usd.TimeCode.Default()).GetSource() == Usd.ResolveInfoSourceDefault:
+        return value
+    return None
+
+
+def _read_scene_fallback(_value: Any, context: dict[str, Any], *, usd_name: str) -> Any:
+    """Capture a composed schema fallback separately from an authored setting."""
+    from pxr import Usd
+
+    from ...usd.utils import has_applied_api_schema  # noqa: PLC0415
+
+    prim = context["prim"]
+    attr = prim.GetAttribute(usd_name)
+    time = Usd.TimeCode.Default()
+    source = attr.GetResolveInfo(time).GetSource() if attr else Usd.ResolveInfoSourceNone
+    if (
+        usd_name == _DYNAMICS_SOLVER_USD
+        and source != Usd.ResolveInfoSourceDefault
+        and has_applied_api_schema(prim, _SCC_SCENE_API)
+        and not Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(_SCC_SCENE_API)
+    ):
+        raise ImportError(
+            f"Importing the SCC solver selection on {prim.GetPath()} requires a version of "
+            f"newton-usd-schemas that provides {_SCC_SCENE_API}."
+        )
+    if source == Usd.ResolveInfoSourceFallback:
+        return attr.Get(time)
+    return None
+
+
+def _finalize_scene_setting(_builder: ModelBuilder, model: Model, attr: ModelBuilder.CustomAttribute) -> None:
+    # Registered ONCE attributes normally allocate a default row, which would mask
+    # a Python fallback and make an omitted field indistinguishable from false or zero.
+    if 0 in attr.values:
+        model.add_attribute(
+            attr.name, attr.build_array(1, model.device), attr.frequency, attr.assignment, attr.namespace
+        )
+
+
+def _register_scene_setting(
+    builder: ModelBuilder, name: str, dtype: type, usd_name: str, *, fallback: bool = False
+) -> None:
+    attribute = ModelBuilder.CustomAttribute(
+        name=name,
+        frequency=Model.AttributeFrequency.ONCE,
+        assignment=Model.AttributeAssignment.MODEL,
+        dtype=dtype,
+        namespace="kamino",
+        usd_attribute_name="*" if fallback else usd_name,
+        usd_value_transformer=partial(_read_scene_fallback, usd_name=usd_name) if fallback else _read_scene_setting,
+    )
+    builder.add_custom_attribute(attribute)
+    builder._add_custom_attribute_model_finalizer(attribute.key, _finalize_scene_setting)
+
+
+def _model_scene_setting(model: Model, name: str) -> Any:
+    setting = getattr(getattr(model, "kamino", None), name, None)
+    if isinstance(setting, wp.array):
+        return setting.numpy()[0].item()
+    return setting[0] if setting is not None else None
+
+
+def _register_dynamics_solver_settings(builder: ModelBuilder) -> None:
+    _register_scene_setting(builder, "dynamics_solver", str, _DYNAMICS_SOLVER_USD)
+    _register_scene_setting(builder, "dynamics_solver_fallback", str, _DYNAMICS_SOLVER_USD, fallback=True)
+
+
+def _scene_dynamics_solver(model: Model, *, use_schema_fallback: bool) -> str | None:
+    authored = _model_scene_setting(model, "dynamics_solver")
+    if authored is not None and authored not in {"padmm", "scc"}:
+        raise ValueError(f'{_DYNAMICS_SOLVER_USD} must be "padmm" or "scc", got {authored!r}.')
+    if authored is not None:
+        return authored
+    if use_schema_fallback:
+        return _model_scene_setting(model, "dynamics_solver_fallback")
+    return None
+
+
+def _apply_scc_scene_settings(model: Model, values: dict[str, Any]) -> None:
+    settings = {
+        name: value for name in _SCC_SCENE_SETTINGS if (value := _model_scene_setting(model, f"scc_{name}")) is not None
+    }
+    bilateral = settings.pop("bilateral_solver_type", None)
+    if bilateral is None and "bilateral_solver_type" not in values:
+        bilateral = _model_scene_setting(model, "scc_bilateral_solver_fallback")
+    if bilateral is not None:
+        if bilateral not in _SCC_BILATERAL_TOKENS:
+            raise ValueError(f'{_SCC_BILATERAL_SOLVER_USD} must be "lltb" or "lltbrcm", got {bilateral!r}.')
+        values["bilateral_solver_type"] = _SCC_BILATERAL_TOKENS[bilateral]
+
+    for name in ("unilateral_solver", "warmstart_mode", "tolerance"):
+        if name in settings:
+            values[name] = settings[name]
+
+    unilateral = values.get("unilateral_solver", "pgs")
+    if unilateral == "pgs":
+        for name in ("omega", "inequality_sweeps_per_iteration"):
+            if name in settings:
+                values[name] = settings[name]
+    elif unilateral == "apgd":
+        apgd_settings = {
+            name.removeprefix("apgd_"): value for name, value in settings.items() if name.startswith("apgd_")
+        }
+        if apgd_settings:
+            fallback = values.get("apgd", SCCAPGDConfig())
+            values["apgd"] = replace(fallback, **apgd_settings)
 
 
 ###
@@ -394,6 +524,11 @@ class ConstraintStabilizationConfig(ConfigBase):
                 usd_attribute_name="newton:kamino:constraints:gamma",
             )
         )
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            stem, *suffix = name.split("_")
+            usd_name = "newton:kamino:constraints:" + stem + "".join(word.title() for word in suffix)
+            dtype = wp.bool if name.endswith("_compliance") else wp.float32
+            _register_scene_setting(builder, f"constraints_{name}", dtype, usd_name)
 
     @override
     @staticmethod
@@ -405,7 +540,6 @@ class ConstraintStabilizationConfig(ConfigBase):
         Args:
             model: The Newton model from which to parse configurations.
         """
-        # Retain legacy model precedence; new recovery settings are Python-only.
         values = dict(kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None:
@@ -413,6 +547,10 @@ class ConstraintStabilizationConfig(ConfigBase):
                 attribute = getattr(kamino_attrs, f"constraints_{name}", None)
                 if attribute is not None:
                     values[name] = float(attribute.numpy()[0])
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
+            value = _model_scene_setting(model, f"constraints_{name}")
+            if value is not None:
+                values[name] = None if name.endswith("_time") and value == -math.inf else value
         return ConstraintStabilizationConfig(**values)
 
     @override
@@ -991,8 +1129,8 @@ class SCCAPGDConfig:
     bilateral rows during the unilateral solve and recovers their impulses
     afterward.
 
-    These runtime solver controls are Python-only; they do not author a
-    material model or add USD schema attributes.
+    The SCC scene schema exposes the iteration and correction budgets and
+    the residual tolerance.
     CUDA execution requires a Warp build and CUDA driver supporting CUDA
     12.4+ conditional graphs. Capture the solve for GPU-only loop control;
     uncaptured CUDA execution reads conditions back to the host.
@@ -1199,29 +1337,30 @@ class SCCSolverConfig:
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
-        """Register SCC custom attributes supported by the Kamino USD schema.
-
-        SCC-specific tuning options are currently Python-only. The shared
-        ``max_solver_iterations`` attribute is registered by
-        :class:`PADMMSolverConfig` and parsed by every dynamics solver.
-        """
+        """Register the SCC tuning fields on NewtonKaminoSccSceneAPI."""
+        for name, (dtype, suffix) in _SCC_SCENE_SETTINGS.items():
+            _register_scene_setting(builder, f"scc_{name}", dtype, f"newton:kamino:scc:{suffix}")
+        # USD assets keep the schema's LLTB fallback even if Newton changes its runtime default.
+        _register_scene_setting(builder, "scc_bilateral_solver_fallback", str, _SCC_BILATERAL_SOLVER_USD, fallback=True)
 
     @override
     @staticmethod
-    def from_model(model: Model, **kwargs: dict[str, Any]) -> SCCSolverConfig:
+    def from_model(model: Model, *, use_scene_settings: bool = True, **kwargs: Any) -> SCCSolverConfig:
         """Creates a :class:`SCCSolverConfig` from model attributes if available.
 
         Args:
             model: The Newton model from which to parse configurations.
+            use_scene_settings: Whether to read SCC-specific settings.
         """
-        cfg = SCCSolverConfig(**kwargs)
+        values = dict(kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
             max_alternating_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
             if max_alternating_iterations >= 0:
-                cfg.max_alternating_iterations = max_alternating_iterations
-        cfg.validate()
-        return cfg
+                values["max_alternating_iterations"] = max_alternating_iterations
+        if use_scene_settings:
+            _apply_scc_scene_settings(model, values)
+        return SCCSolverConfig(**values)
 
     @override
     def validate(self) -> None:

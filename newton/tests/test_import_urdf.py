@@ -787,6 +787,15 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
         assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
 
+        # A continuous joint ignores lower and upper but keeps the effort limit
+        builder = newton.ModelBuilder()
+        parse_urdf(JOINT_URDF.replace('type="revolute"', 'type="continuous"'), builder)
+
+        self.assertEqual(builder.joint_type[-1], newton.JointType.REVOLUTE)
+        self.assertEqual(builder.joint_limit_lower[-1], builder.default_joint_cfg.limit_lower)
+        self.assertEqual(builder.joint_limit_upper[-1], builder.default_joint_cfg.limit_upper)
+        self.assertAlmostEqual(builder.joint_effort_limit[-1], 6.78)
+
     def test_floating_massless_fixed_root_default_preserves_topology(self):
         builder = newton.ModelBuilder()
         builder.add_urdf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF, floating=True, up_axis="Z")
@@ -2400,7 +2409,6 @@ class TestMimicConstraints(unittest.TestCase):
         leader_idx = model.joint_label.index("mimic_test/leader_joint")
         follower_idx = model.joint_label.index("mimic_test/follower_joint")
 
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[follower_idx], (0.5, 2.0))
 
@@ -2472,7 +2480,6 @@ class TestMimicConstraints(unittest.TestCase):
             builder.add_urdf(urdf, joint_ordering=None)
 
         # No mimic relationship should be created because the follower joint was skipped.
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
         self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 
