@@ -3099,10 +3099,13 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.65), wp.quat_identity()))
             builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=1.0e4))
             model = builder.finalize()
-            solver = SolverMuJoCo(model, njmax=100, nconmax=20)
+            solver = SolverMuJoCo(model, njmax=100, nconmax=20, use_mujoco_contacts=False)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
             state_0, state_1, control = model.state(), model.state(), model.control()
             for _ in range(100):
-                solver.step(state_0, state_1, control, None, 0.002)
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, 0.002)
                 state_0, state_1 = state_1, state_0
             body_q = state_0.body_q.numpy()
             gaps.append(float(body_q[box, 2] - body_q[platform, 2]) - 0.15)
@@ -6380,10 +6383,13 @@ class TestMuJoCoContactForce(unittest.TestCase):
     def test_geometry_export(self):
         """Keep geometry-only contact export available without a deprecation warning."""
         model, _ = self._build_box_on_ground()
-        solver = SolverMuJoCo(model)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
+        input_contacts = pipeline.contacts()
         contacts = pipeline.contacts()
-        solver.step(model.state(), model.state(), None, None, 0.002)
+        state = model.state()
+        pipeline.collide(state, input_contacts)
+        solver.step(state, model.state(), None, input_contacts, 0.002)
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             solver.update_contacts(contacts)
@@ -6493,6 +6499,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         avg: int = 10,
         *,
         use_mujoco_cpu: bool = False,
+        use_mujoco_contacts: bool = False,
         integrator: str | None = None,
     ):
         """Run simulation, settle, then average total contact force over *avg* steps.
@@ -6501,7 +6508,14 @@ class TestMuJoCoContactForce(unittest.TestCase):
             force: Averaged total linear contact force, shape (3,).
             shape0: Shape index of shape0 in the first contact.
         """
-        solver = SolverMuJoCo(model, cone=cone, use_mujoco_cpu=use_mujoco_cpu, integrator=integrator)
+        native_contacts = use_mujoco_cpu or use_mujoco_contacts
+        solver = SolverMuJoCo(
+            model,
+            cone=cone,
+            use_mujoco_cpu=use_mujoco_cpu,
+            use_mujoco_contacts=native_contacts,
+            integrator=integrator,
+        )
 
         self.assertEqual(solver.get_max_contact_count(), solver.mjw_data.naconmax)
         state_in = model.state()
@@ -6521,6 +6535,8 @@ class TestMuJoCoContactForce(unittest.TestCase):
         dt = 0.002
         for _ in range(settle):
             state_in.clear_forces()
+            if not native_contacts:
+                collision_pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
@@ -6532,25 +6548,35 @@ class TestMuJoCoContactForce(unittest.TestCase):
         force_acc = np.zeros(3)
         for _ in range(avg):
             state_in.clear_forces()
+            if not native_contacts:
+                collision_pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
-            nacon = solver.mj_data.ncon if use_mujoco_cpu else int(solver.mjw_data.nacon.numpy()[0])
-            if nacon > 0:
-                f = observables.contact_f.numpy()[:nacon, :3]
+            count = solver.mj_data.ncon if use_mujoco_cpu else int(contacts.rigid_contact_count.numpy()[0])
+            if count > 0:
+                f = observables.contact_f.numpy()[:count, :3]
                 force_acc += np.sum(f, axis=0)
 
         # These condim=3 contacts exert a force at the contact point, so the
         # torque about shape0's COM is entirely due to the moment arm.
+        wrenches = observables.contact_f.numpy()[:count]
         if use_mujoco_cpu:
-            positions = solver.mj_data.contact.pos[:nacon]
-            bodies = solver.mj_model.geom_bodyid[solver.mj_data.contact.geom[:nacon, 0]]
+            positions = solver.mj_data.contact.pos[:count]
+            bodies = solver.mj_model.geom_bodyid[solver.mj_data.contact.geom[:count, 0]]
             reference = solver.mj_data.xipos[bodies]
         else:
-            positions = solver.mjw_data.contact.pos.numpy()[:nacon]
-            bodies = solver.mjw_model.geom_bodyid.numpy()[solver.mjw_data.contact.geom.numpy()[:nacon, 0]]
+            indices = slice(count)
+            if not native_contacts:
+                # Wrenches follow Newton input rows. MuJoCo compacts its rows independently.
+                nacon = int(solver.mjw_data.nacon.numpy()[0])
+                indices = solver._contact_tid_to_cid.numpy()[:count]
+                mapped = (indices >= 0) & (indices < nacon)
+                indices = indices[mapped]
+                wrenches = wrenches[mapped]
+            positions = solver.mjw_data.contact.pos.numpy()[indices]
+            bodies = solver.mjw_model.geom_bodyid.numpy()[solver.mjw_data.contact.geom.numpy()[indices, 0]]
             reference = solver.mjw_data.xipos.numpy()[0, bodies]
-        wrenches = observables.contact_f.numpy()[:nacon]
         np.testing.assert_allclose(wrenches[:, 3:], np.cross(positions - reference, wrenches[:, :3]), atol=1e-5)
         total_force = force_acc / avg
         shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
@@ -6590,9 +6616,9 @@ class TestMuJoCoContactForce(unittest.TestCase):
                 np.testing.assert_allclose(force[1], 0.0, atol=1.0)
 
     def test_elliptic_cone_weight(self):
-        """Box weight via elliptic cone contacts must match mg."""
+        """Match box weight to mg using native MuJoCo Warp elliptic contacts."""
         model, ground_shape = self._build_box_on_ground(friction=0.5)
-        force, shape0 = self._run_and_collect_forces(model, cone="elliptic")
+        force, shape0 = self._run_and_collect_forces(model, cone="elliptic", use_mujoco_contacts=True)
         expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
         # Horizontal forces should be near zero for a resting box.
@@ -16397,19 +16423,20 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
 class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
     """Contact generation and simulation with per-world mesh layouts."""
 
-    def _step_once(self, model, solver, native):
+    def _step_once(self, model, solver, *, native=False):
         """Run one step from the initial state and return MuJoCo's contact world ids and distances."""
         state, state_next = model.state(), model.state()
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
+        contacts = None
         if not native:
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
         solver.step(state, state_next, model.control(), contacts, 0.002)
         count = int(solver.mjw_data.nacon.numpy()[0])
         return solver.mjw_data.contact.worldid.numpy()[:count], solver.mjw_data.contact.dist.numpy()[:count]
 
     def test_parent_filter_in_per_world_mesh_layout(self):
-        """Per-slot masks carry Newton's parent-child filters; MuJoCo's own rule is off here as well."""
+        """Apply exported parent-child collision masks during native detection."""
         import mujoco
 
         def hull_world_with_finger(count, filter_parent):
@@ -16446,7 +16473,7 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
                 builder.add_world(hull_world_with_finger(2, filter_parent))
                 builder.add_world(hull_world_with_finger(3, filter_parent))
                 model = builder.finalize()
-                solver = SolverMuJoCo(model, nconmax=32, njmax=64)
+                solver = SolverMuJoCo(model, nconmax=32, njmax=64, use_mujoco_contacts=True)
                 self.assertEqual(solver.mjw_model.nmesh, 2)
                 self.assertEqual(solver.mj_model.nexclude, 0)
                 self.assertTrue(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
@@ -16472,7 +16499,7 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
                 model = builder.finalize()
                 solver = SolverMuJoCo(model, use_mujoco_contacts=False)
                 self.assertEqual(solver.mj_model.ngeom, 2)
-                worlds, _ = self._step_once(model, solver, native=False)
+                worlds, _ = self._step_once(model, solver)
                 self.assertGreater(len(worlds), 0)
                 np.testing.assert_array_equal(worlds, colliding_world)
                 with self.assertRaisesRegex(ValueError, "collision flags with native MuJoCo contacts"):
@@ -16480,49 +16507,48 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
 
     def test_mesh_selection_drives_contacts(self):
         """Collide each world with its own mesh asset, including scale-only differences."""
-        for native in (False, True):
-            for by_scale in (False, True):
-                with self.subTest(native=native, by_scale=by_scale):
-                    builder = newton.ModelBuilder()
-                    builder.add_ground_plane()
-                    # Only world 1's taller mesh reaches 0.05 below the ground at this height.
-                    builder.add_world(_build_hull_world(1, z=0.15))
-                    builder.add_world(_build_hull_world(1, z=0.15, half_height=0.1 if by_scale else 0.2))
-                    model = builder.finalize()
-                    if by_scale:
-                        scales = model.shape_scale.numpy()
-                        scales[np.flatnonzero(model.shape_world.numpy() == 1)[0]] = (1.0, 1.0, 2.0)
-                        model.shape_scale.assign(scales)
-                    solver = SolverMuJoCo(model, use_mujoco_contacts=native, nconmax=32, njmax=64)
-                    self.assertEqual(solver.mjw_model.nmesh, 2)
-                    worlds, dist = self._step_once(model, solver, native)
-                    np.testing.assert_array_equal(worlds[dist < 0.0], 1)
-                    np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
+        for by_scale in (False, True):
+            with self.subTest(by_scale=by_scale):
+                builder = newton.ModelBuilder()
+                builder.add_ground_plane()
+                # Only world 1's taller mesh reaches 0.05 below the ground at this height.
+                builder.add_world(_build_hull_world(1, z=0.15))
+                builder.add_world(_build_hull_world(1, z=0.15, half_height=0.1 if by_scale else 0.2))
+                model = builder.finalize()
+                if by_scale:
+                    scales = model.shape_scale.numpy()
+                    scales[np.flatnonzero(model.shape_world.numpy() == 1)[0]] = (1.0, 1.0, 2.0)
+                    model.shape_scale.assign(scales)
+                solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=32, njmax=64)
+                self.assertEqual(solver.mjw_model.nmesh, 2)
+                worlds, dist = self._step_once(model, solver)
+                np.testing.assert_array_equal(worlds[dist < 0.0], 1)
+                np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
 
     def test_cone_size_drives_contacts(self):
         """Collide each world with a cone mesh tessellated from its own radius and half-height."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        # Only world 1's longer cone reaches 0.05 below the ground at this height.
+        for half_height in (0.1, 0.2):
+            world = newton.ModelBuilder()
+            body = world.add_link(
+                xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
+                mass=1.0,
+                inertia=wp.mat33(np.eye(3) * 0.01),
+            )
+            joint = world.add_joint_free(child=body)
+            world.add_articulation([joint])
+            world.add_shape_cone(
+                body, radius=0.1, half_height=half_height, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
+            )
+            builder.add_world(world)
+        model = builder.finalize()
         for native in (False, True):
             with self.subTest(native=native):
-                builder = newton.ModelBuilder()
-                builder.add_ground_plane()
-                # Only world 1's longer cone reaches 0.05 below the ground at this height.
-                for half_height in (0.1, 0.2):
-                    world = newton.ModelBuilder()
-                    body = world.add_link(
-                        xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
-                        mass=1.0,
-                        inertia=wp.mat33(np.eye(3) * 0.01),
-                    )
-                    joint = world.add_joint_free(child=body)
-                    world.add_articulation([joint])
-                    world.add_shape_cone(
-                        body, radius=0.1, half_height=half_height, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
-                    )
-                    builder.add_world(world)
-                model = builder.finalize()
                 solver = SolverMuJoCo(model, use_mujoco_contacts=native, nconmax=32, njmax=64)
                 self.assertEqual(solver.mjw_model.nmesh, 2)
-                worlds, dist = self._step_once(model, solver, native)
+                worlds, dist = self._step_once(model, solver, native=native)
                 np.testing.assert_array_equal(worlds[dist < 0.0], 1)
                 np.testing.assert_allclose(dist[worlds == 1].min(), -0.05, atol=1.0e-3)
 
@@ -16537,7 +16563,7 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
         scales[0] *= 2.0
         model.shape_scale.assign(scales)
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-        self._step_once(model, solver, native=False)
+        self._step_once(model, solver)
 
     def test_empty_mesh_slots_do_not_contact(self):
         """Prevent absent slots inside a mesh floor from generating physical constraints."""
@@ -16569,17 +16595,15 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
                 self.assertEqual(int(solver.mjw_data.nefc.numpy()[0]), 0)
 
     def test_different_hull_counts(self):
-        """Rest unequal decompositions on all hulls with both contact pipelines."""
-        self._simulate(False, (2, 5))
-        self._simulate(True, (2, 5))
-        # A mesh floor routes native contacts through catalog collision data for assets absent from the template.
-        self._simulate(True, (5, 2), mesh_floor=True)
+        """Rest unequal decompositions on all hulls with Newton contacts."""
+        self._simulate((2, 5))
+        self._simulate((5, 2), mesh_floor=True)
 
     def test_replicated_mesh_worlds(self):
         """Preserve contacts and property updates when every world shares the same mesh assets."""
-        self._simulate(True, (5, 5), replicated=True)
+        self._simulate((5, 5), replicated=True)
 
-    def _simulate(self, native, counts, *, mesh_floor=False, replicated=False):
+    def _simulate(self, counts, *, mesh_floor=False, replicated=False):
         builder = newton.ModelBuilder()
         if mesh_floor:
             builder.add_shape_convex_hull(
@@ -16594,7 +16618,7 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
         builder.add_world(first)
         builder.add_world(first if replicated else _build_hull_world(counts[1], offset=-0.21, z=0.1))
         model = builder.finalize()
-        solver = SolverMuJoCo(model, use_mujoco_contacts=native, nconmax=64, njmax=128)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=64, njmax=128)
         self.assertEqual(solver.mj_model.ngeom, max(counts) + 1)
         self.assertEqual(solver.mjw_model.nmesh, (1 if replicated else 2) + int(mesh_floor))
         mapping = solver.mjc_geom_to_newton_shape.numpy()
@@ -16612,20 +16636,13 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
         state, state_next = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         control = model.control()
-        if native:
-            pipeline = newton.CollisionPipeline(
-                model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
-            )
-        else:
-            pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
 
         def step():
-            if not native:
-                pipeline.collide(state, contacts)
+            pipeline.collide(state, contacts)
             solver.step(state, state_next, control, contacts, 0.002)
-            if not native:
-                pipeline.collide(state_next, contacts)
+            pipeline.collide(state_next, contacts)
             solver.step(state_next, state, control, contacts, 0.002)
 
         step()
@@ -16640,18 +16657,18 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
         np.testing.assert_allclose(state.body_q.numpy()[:, 2], 0.1, atol=0.005)
         self.assertTrue(np.isfinite(state.body_q.numpy()).all())
         self.assertFalse(np.any(solver.mjw_data.overflow.numpy()))
-        if native:
-            observables = solver.observables({SolverMuJoCo.ObservableKind.CONTACT_F}, contacts=contacts)
-            # Single-point hull-on-hull contacts rock slightly, so average the support force.
-            normal_force = 0.0
-            for _ in range(10):
-                solver.step(state, state_next, control, contacts, 0.002, observables=observables)
-                state, state_next = state_next, state
-                count = int(contacts.rigid_contact_count.numpy()[0])
-                for field in (contacts.rigid_contact_shape0, contacts.rigid_contact_shape1):
-                    self.assertTrue(np.all(np.isin(field.numpy()[:count], mapping[mapping >= 0])))
-                normal_force += observables.contact_f.numpy()[:count, 2].sum() / 10
-            np.testing.assert_allclose(normal_force, -2.0 * 9.81, rtol=0.05)
+        observables = solver.observables({SolverMuJoCo.ObservableKind.CONTACT_F}, contacts=contacts)
+        # Average the support force as the hulls settle.
+        normal_force = 0.0
+        for _ in range(10):
+            pipeline.collide(state, contacts)
+            solver.step(state, state_next, control, contacts, 0.002, observables=observables)
+            state, state_next = state_next, state
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            # Report the force on the floor regardless of the input shape order.
+            floor_sign = np.where(contacts.rigid_contact_shape0.numpy()[:count] == 0, 1, -1)
+            normal_force += np.dot(floor_sign, observables.contact_f.numpy()[:count, 2]) / 10
+        np.testing.assert_allclose(normal_force, -2.0 * 9.81, rtol=0.05)
         ncon = int(solver.mjw_data.nacon.numpy()[0])
         worlds = solver.mjw_data.contact.worldid.numpy()[:ncon]
         geoms = solver.mjw_data.contact.geom.numpy()[:ncon]
@@ -16659,6 +16676,13 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
             touched = np.unique(geoms[worlds == w])
             self.assertEqual(len(touched), count + 1)
             self.assertTrue(np.all(mapping[w, touched] >= 0))
+        if counts[0] != counts[1]:
+            # step() preserves the input geometry. Export the solved rows to exercise the reverse mapping.
+            exported = newton.Contacts(solver.get_max_contact_count(), 0, device=model.device)
+            solver.update_contacts(exported)
+            self.assertEqual(int(exported.rigid_contact_count.numpy()[0]), ncon)
+            np.testing.assert_array_equal(exported.rigid_contact_shape0.numpy()[:ncon], mapping[worlds, geoms[:, 0]])
+            np.testing.assert_array_equal(exported.rigid_contact_shape1.numpy()[:ncon], mapping[worlds, geoms[:, 1]])
 
 
 @requires(*MUJOCO_MODULES)
