@@ -435,11 +435,22 @@ def trim_in_place(
 
 
 @wp.func
+def line_side_radius(geom: Any, feature_count: int) -> float:
+    """Radius [m] about the line of a capsule's or cylinder's side feature, else zero."""
+    if feature_count == 2 and (
+        geom.shape_type == int(GeoType.CAPSULE) or (geom.shape_type == int(GeoType.CYLINDER) and geom.scale[2] == 0.0)
+    ):
+        return geom.scale[0]
+    return 0.0
+
+
+@wp.func
 def trim_all_in_place(
     trim_poly: wp.array[wp.vec2],
     trim_poly_count: int,
     loop: wp.array[wp.vec2],
     loop_count: int,
+    lateral_radius: float,
 ) -> int:
     """
     Trim a polygon using all edges of another polygon (Sutherland-Hodgman clipping).
@@ -451,6 +462,8 @@ def trim_all_in_place(
         trim_poly_count: Number of vertices in the trimming polygon.
         loop: Array of vertices in the loop to be trimmed (2D).
         loop_count: Number of vertices in the loop.
+        lateral_radius: Sum of the radii [m] with which two line features curve
+            away across their lines, such as cylinder sides; zero for sharp edges.
 
     Returns:
         New number of vertices in the trimmed loop.
@@ -498,8 +511,13 @@ def trim_all_in_place(
                 closest = float(0.0)
                 if separation_lo * separation_hi > 0.0:
                     closest = wp.min(wp.abs(separation_lo), wp.abs(separation_hi))
-                band_lo = (-(closest + EPS) - offset) / slope
-                band_hi = (closest + EPS - offset) / slope
+                # Sharp edges part as fast as their lines; rounded sides only
+                # curve away, by the square of the lateral offset.
+                width = closest + EPS
+                if lateral_radius > 0.0:
+                    width = wp.sqrt(closest * closest + 2.0 * lateral_radius * EPS)
+                band_lo = (-width - offset) / slope
+                band_hi = (width - offset) / slope
                 overlap = (hi - lo) * wp.sqrt(length_sq)
                 lo = wp.max(lo, wp.min(band_lo, band_hi))
                 hi = wp.min(hi, wp.max(band_lo, band_hi))
@@ -820,8 +838,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         is_line_side = geom.shape_type == int(GeoType.CAPSULE) or (
             geom.shape_type == int(GeoType.CYLINDER) and geom.scale[2] == 0.0
         )
-        if is_line_side and wp.abs(normal[2]) <= 1.0e-4:
-            # Allow GJK/MPR normal error in rotated frames. Radial
+        if is_line_side and wp.abs(normal[2]) < SIN_TILT_ANGLE:
+            # The perturbed directions reach both ends of the side, also for
+            # nearly parallel axes and GJK/MPR normal error. Radial
             # perturbations must not turn a side segment into a polygon.
             radial = wp.normalize(wp.vec3(normal[0], normal[1], 0.0)) * geom.scale[0]
             point[0] = radial[0]
@@ -933,7 +952,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         )
 
         redundant = bool(False)
-        loop_count = trim_all_in_place(m_a, m_a_count, m_b, m_b_count)
+        loop_count = trim_all_in_place(
+            m_a, m_a_count, m_b, m_b_count, line_side_radius(geom_a, m_a_count) + line_side_radius(geom_b, m_b_count)
+        )
 
         loop_count = remove_zero_length_edges(m_b, loop_count, merge_distance)
 

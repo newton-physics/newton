@@ -1,0 +1,1 @@
+Fix touching cylinder and capsule sides whose axes are a fraction of a degree apart collapsing to a single contact point that moves along the sides between steps; their contacts now span the whole line, so packed standing cylinders such as bottles settle instead of rocking.

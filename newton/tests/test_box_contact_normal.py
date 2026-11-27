@@ -792,6 +792,76 @@ add_function_test(
 )
 
 
+def test_nearly_parallel_cylinder_line_contact(test, device, *, split=False):
+    """Span the whole side line of touching cylinders whose axes are tilted or twisted slightly.
+
+    Standing bottles touch along their sides with axes a fraction of a degree
+    apart. A single point, or points that move along the side from pose to
+    pose, leave the bottles without support against rocking.
+    """
+    radius, half_height = 0.03, 0.06
+    poses = []
+    for twist, tilt in product((-0.4, -0.1, 0.1, 0.4), (-0.2, 0.0, 0.2)):
+        rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.radians(twist))) * wp.quat_from_axis_angle(
+            wp.vec3(0.0, 1.0, 0.0), float(np.radians(tilt))
+        )
+        poses.append(rotation)
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(gap=0.002)
+    pairs = []
+    for i, rotation in enumerate(poses):
+        origin = wp.vec3(0.0, float(i), 0.0)
+        a = builder.add_body(xform=wp.transform(origin))
+        b = builder.add_body(xform=wp.transform(origin + wp.vec3(2.0 * radius - 2.0e-4, 0.0, 0.0), rotation))
+        pairs.append(
+            tuple(builder.add_shape_cylinder(body, radius=radius, half_height=half_height, cfg=cfg) for body in (a, b))
+        )
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
+    state, contacts = model.state(), pipeline.contacts()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    point0 = contacts.rigid_contact_point0.numpy()[:count]
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+    for (a, b), rotation in zip(pairs, poses, strict=True):
+        with test.subTest(rotation=rotation):
+            rows = np.flatnonzero((shape0 == a) | (shape0 == b))
+            test.assertGreaterEqual(len(rows), 2)
+            # Heights of the contact points along the side, in the first cylinder's frame.
+            heights = []
+            for k in rows:
+                q = body_q[shape_body[shape0[k]]]
+                heights.append(wp.transform_point(wp.transform(q[:3], q[3:]), wp.vec3(*point0[k]))[2])
+            np.testing.assert_allclose([min(heights), max(heights)], [-half_height, half_height], atol=2.0e-3)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_nearly_parallel_cylinder_line_contact",
+    test_nearly_parallel_cylinder_line_contact,
+    devices=get_test_devices(),
+)
+
+
+def test_nearly_parallel_cylinder_line_contact_split(test, device):
+    """Span nearly parallel cylinder sides through the split CUDA kernels."""
+    if not device.is_cuda:
+        test.skipTest("Split collision kernels run only on CUDA")
+    with patch("newton._src.sim.collide._SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD", 0):
+        test_nearly_parallel_cylinder_line_contact(test, device, split=True)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_nearly_parallel_cylinder_line_contact_split",
+    test_nearly_parallel_cylinder_line_contact_split,
+    devices=get_test_devices(),
+)
+
+
 def test_crossed_plank_sliver_contact(test, device, *, split=False):
     """Collapse the sliver left by crossed planks to a line contact.
 
@@ -907,7 +977,7 @@ add_function_test(
 
 @wp.kernel(enable_backward=False)
 def _trim_lines_kernel(trim: wp.array[wp.vec2], loop: wp.array[wp.vec2], count: wp.array[int]):
-    count[0] = trim_all_in_place(trim, 2, loop, 2)
+    count[0] = trim_all_in_place(trim, 2, loop, 2, 0.0)
 
 
 def test_offset_line_contacts_across_parallel_threshold(test, device):
