@@ -473,14 +473,28 @@ class TestSolverKaminoLOXContacts(NewtonTestCase):
                 )
                 solver = self._solver(model)
                 state_in, state_out, control = model.state(), model.state(), model.control()
-                for _ in range(3):
-                    contacts = self._collide(model, state_in)
+                pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+                contacts = pipeline.contacts()
+                # Hold the input pose fixed so both contacts remain within the matching threshold.
+                for _ in range(2):
+                    pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, control, contacts, dt=0.01)
-                    state_in, state_out = state_out, state_in
+                native = solver._contacts_kamino
+                count = int(native.model_active_contacts.numpy()[0])
+                self.assertEqual(count, 2)
+                self.assertTrue(np.all(native.data.matched_slots.numpy()[:count] >= 0))
+
+                angular = solver._solver_kamino.solver_fd.problem.data.contact_rows.angular_warmstarter
+                if friction_mode == SLIDING_TORSIONAL_ROLLING:
+                    cached_worlds = angular.world.numpy()[:count].copy()
+                    np.testing.assert_array_equal(np.sort(cached_worlds), [0, 1])
+                    self.assertTrue(np.all(np.linalg.norm(angular.torque.numpy()[:count], axis=1) > 0.0))
 
                 mask = wp.array([True, False, False], dtype=wp.bool, device=self.default_device)
                 solver.reset(state_in, world_mask=mask)
-                contacts = self._collide(model, state_in)
+                if friction_mode == SLIDING_TORSIONAL_ROLLING:
+                    np.testing.assert_array_equal(angular.world.numpy()[:count], np.where(cached_worlds == 0, -1, 1))
+
                 results = []
                 for candidate in (solver, self._solver(model)):
                     candidate.step(state_in, state_out, control, contacts, dt=0.01)

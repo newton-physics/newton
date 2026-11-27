@@ -812,17 +812,23 @@ class SolverKaminoImpl(SolverBase):
         #  - Optionally calls limit and contact detection to generate unilateral constraints
         #  - Solves the forward dynamics sub-problem to compute constraint reactions
         #  - Integrates the state forward in time
-        self._integrator.integrate(
-            forward=self._solve_forward_dynamics,
-            model=self._model,
-            data=self._data,
-            state_in=state_in,
-            state_out=state_out,
-            control=control,
-            limits=self._limits,
-            contacts=contacts,
-            detector=detector,
-        )
+        try:
+            self._integrator.integrate(
+                forward=self._solve_forward_dynamics,
+                model=self._model,
+                data=self._data,
+                state_in=state_in,
+                state_out=state_out,
+                control=control,
+                limits=self._limits,
+                contacts=contacts,
+                detector=detector,
+            )
+        except BaseException:
+            if self._ws_contacts is not None and not contacts_matched:
+                # Matching may have advanced before the solve cached its reactions.
+                self._ws_contacts.reset_matching()
+            raise
         if self._carry_welded_bodies:
             self._solver_fd.carry_welded_bodies()
 

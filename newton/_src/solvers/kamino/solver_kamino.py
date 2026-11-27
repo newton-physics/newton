@@ -1363,16 +1363,21 @@ class SolverKamino(SolverBase, CouplingInterface):
             # the input twist until integration completes, including in-place steps.
             wp.copy(body_qdd, state_in.body_qd)
 
-        # Step the physics solver
-        self._solver_kamino.step(
-            state_in=state_in_kamino,
-            state_out=state_out_kamino,
-            control=self._control_kamino,
-            contacts=self._contacts_kamino,
-            detector=self._detector,
-            dt=dt,
-            contacts_matched=contact_stream != 0,
-        )
+        try:
+            self._solver_kamino.step(
+                state_in=state_in_kamino,
+                state_out=state_out_kamino,
+                control=self._control_kamino,
+                contacts=self._contacts_kamino,
+                detector=self._detector,
+                dt=dt,
+                contacts_matched=contact_stream != 0,
+            )
+        except BaseException:
+            if self._contact_match_map is not None:
+                # The reaction cache may already contain rows from the failed step.
+                self._contact_match_map.update(self._contacts_kamino, 0)
+            raise
 
         if self._contact_match_map is not None:
             self._contact_match_map.update(self._contacts_kamino, contact_stream)

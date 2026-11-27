@@ -1818,6 +1818,20 @@ class TestSolverKaminoImpl(NewtonTestCase):
         self.assertGreater(count, 0)
         np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], -1)
 
+        def fail_after_solve(*_args):
+            raise RuntimeError("post-step callback failed")
+
+        with (
+            mock.patch.object(solver._solver_kamino, "_post_step_cb", fail_after_solve),
+            self.assertRaisesRegex(RuntimeError, "post-step callback failed"),
+        ):
+            solver.step(state_in, state_out, None, contacts, 1e-3)
+        # Retry with fresh input and the same contacts, whose old slot map is no longer usable.
+        solver.step(model.state(), state_out, None, contacts, 1e-3)
+        count = int(native.model_active_contacts.numpy()[0])
+        self.assertGreater(count, 0)
+        np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], -1)
+
     def test_11_warmstart_contacts_without_pipeline_matches(self):
         """Match contacts that arrive without pipeline matches and warm-start them."""
         single = newton.ModelBuilder()
@@ -1828,23 +1842,30 @@ class TestSolverKaminoImpl(NewtonTestCase):
         builder.replicate(single, 2)
         model = builder.finalize(device=self.default_device)
 
-        for use_collision_detector in (True, False):
-            with self.subTest(use_collision_detector=use_collision_detector):
+        for source in ("native", "disabled", "reused_buffer"):
+            with self.subTest(source=source):
+                use_collision_detector = source == "native"
                 solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=use_collision_detector))
                 pipeline = None if use_collision_detector else newton.CollisionPipeline(model)
                 contacts = None if pipeline is None else pipeline.contacts()
+                if source == "reused_buffer":
+                    contacts = newton.CollisionPipeline(model, contact_matching="latest").contacts()
                 state_in, state_out = model.state(), model.state()
-                for _ in range(2):
+                native = solver._contacts_kamino
+                for step in range(2):
                     if pipeline is not None:
                         pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, None, contacts, 1e-3)
                     state_in, state_out = state_out, state_in
+                    count = int(native.model_active_contacts.numpy()[0])
+                    self.assertEqual(count, 2)
+                    if step == 0:
+                        previous_world = native.wid.numpy()[:count].copy()
 
                 # The second step matched every contact of the first step.
-                native = solver._contacts_kamino
-                count = int(native.model_active_contacts.numpy()[0])
-                self.assertEqual(count, 2)
-                np.testing.assert_array_equal(np.sort(native.data.matched_slots.numpy()[:count]), [0, 1])
+                matched_slots = native.data.matched_slots.numpy()[:count]
+                np.testing.assert_array_equal(np.sort(matched_slots), [0, 1])
+                np.testing.assert_array_equal(previous_world[matched_slots], native.wid.numpy()[:count])
 
                 # Matching the solved contacts against themselves restores each solved reaction in its own slot.
                 solved = native.reaction.numpy()[:count].copy()
@@ -1853,6 +1874,21 @@ class TestSolverKaminoImpl(NewtonTestCase):
                 np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], [0, 1])
                 np.testing.assert_allclose(native.reaction.numpy()[:count], solved, rtol=1e-6)
                 self.assertTrue(np.all(solved[:, 2] > 0.0))
+
+                # A failure between matching and caching reactions must discard the fallback history.
+                with (
+                    mock.patch.object(
+                        solver._solver_kamino, "_forward_dynamics", side_effect=RuntimeError("solve failed")
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "solve failed"),
+                ):
+                    solver.step(state_in, state_out, None, contacts, 1e-3)
+                retry_state = model.state()
+                if pipeline is not None:
+                    pipeline.collide(retry_state, contacts)
+                solver.step(retry_state, state_out, None, contacts, 1e-3)
+                self.assertEqual(int(native.model_active_contacts.numpy()[0]), count)
+                np.testing.assert_array_equal(native.data.matched_slots.numpy()[:count], -1)
 
     ###
     # Test Step Operations

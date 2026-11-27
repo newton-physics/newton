@@ -74,7 +74,10 @@ indices when they refer to the last contact set Kamino solved. If collision
 detection advances past that set, contacts without a valid match start with
 zero reaction. When the pipeline has contact matching disabled or Kamino uses
 its native collision detector, Kamino matches contacts against the previous
-step using the default thresholds.
+step using the default thresholds. This replaces the experimental
+``contact_warmstart_method`` setting for PADMM, SCC, and LOX. Reactions from
+contacts that disappear are discarded, including tangential force previously
+redistributed across the remaining contacts of a pair.
 
 .. deprecated:: 1.9
 

@@ -327,7 +327,12 @@ class ContactMatchMap:
             In that case ``matched_slots`` is left for :class:`WarmstarterContacts` to fill.
         """
         matched_slots = contacts.data.matched_slots
-        if source is None or source.rigid_contact_match_index is None or source.rigid_contact_max == 0:
+        if (
+            source is None
+            or source.contact_matching_mode == "disabled"
+            or source.rigid_contact_match_index is None
+            or source.rigid_contact_max == 0
+        ):
             return 0
         stream = self._streams.get(source)
         if stream is None:
@@ -357,7 +362,7 @@ class ContactMatchMap:
         return stream
 
     def update(self, contacts: ContactsKamino, stream: int) -> None:
-        """Record the source slots for the newly solved contact set."""
+        """Record the source slots for the newly solved contact set, or invalidate them with stream zero."""
         if stream == 0:
             self._previous_stream.zero_()
             return
@@ -574,7 +579,7 @@ class WarmstarterContacts:
         """
         if matched:
             # The pipeline owns this step's history, so a later fallback must not match against an older one.
-            self._matcher.reset()
+            self.reset_matching()
         else:
             self.match(contacts)
         wp.launch(
@@ -600,6 +605,10 @@ class WarmstarterContacts:
         wp.copy(self.frame, contacts.frame)
         wp.copy(self.reaction, contacts.reaction)
         wp.copy(self.velocity, contacts.velocity)
+
+    def reset_matching(self) -> None:
+        """Discard the fallback contact layout without changing the reaction cache."""
+        self._matcher.reset()
 
     def reset(self, world_mask: wp.array[wp.bool] | None = None) -> None:
         wp.launch(
