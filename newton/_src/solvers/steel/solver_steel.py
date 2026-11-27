@@ -2068,7 +2068,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 and, with ``drive_mode="rows"``, joint drives) per world. Rows beyond it are
                 dropped and reported, see :attr:`constraint_overflow`. On CUDA the matrix-free
                 sweep keeps these rows and the world's response DOFs (six per free body) in 48 KiB
-                of shared memory, about 12,000 together; a larger shape raises :class:`ValueError`.
+                of shared memory, about 12,000 together; a larger shape raises :class:`ValueError`
+                unless ``iterations`` and ``velocity_iterations`` are both 0.
             free_body_constraint_max: Capacity of free-body rows per world: free-body contact rows
                 and free-body velocity-limit rows. Under the ``"propagation"`` response free-body
                 contacts use the propagation rows, so
@@ -2078,8 +2079,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 (about 12,000 in total), the sweep keeps their impulses in global memory: the
                 results are the same, each sweep is slower, and ``solve_mode="colored"`` with the
                 ``"propagation"`` response is usually faster for such large worlds. The CUDA sweep
-                indexes at most 8,388,608 rows per world; a larger value raises :class:`ValueError` on
-                CUDA.
+                indexes at most 8,388,608 rows per world and 357,913,941 over all worlds; a larger value
+                raises :class:`ValueError` on CUDA.
             propagation_constraint_max: Capacity of the propagation row family per world in the
                 ``"propagation"`` response, which holds every contact
                 row except those between two links of one articulation; these stay dense unless
@@ -2956,6 +2957,38 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._hinv_jt_diag_sizes = frozenset()
         self._setup_local_solves(model)
         self._setup_paired_response(model)
+
+        self._uses_mf_gs_sweep = (
+            self._world_count > 0
+            and self._max_world_dofs > 0
+            and self._sparse_mass_matrix_size is None
+            and not self._sparse_diagonal_contact_solve
+        )
+        if model.device.is_cuda:
+            # The CUDA sweeps index every world's free-body rows, six floats each, with 32-bit offsets.
+            free_body_rows = self._free_body_constraint_max if self._has_free_rigid_bodies else 1
+            if self._world_count * free_body_rows * 6 > 2**31:
+                raise ValueError(
+                    f"free_body_constraint_max={free_body_rows} with {self._world_count} worlds exceeds "
+                    f"{2**31 // 6} free-body rows in total on CUDA"
+                )
+            # Only a solve that runs a sweep compiles it; the impulses can stream, the dense rows and DOFs cannot.
+            min_bytes = _mfgs_block_shared_bytes(
+                self._articulation_constraint_max,
+                0,
+                self._max_world_dofs,
+                shared_metadata=False,
+                has_drive_rows=self._has_drive_rows,
+                fuse_vel_limits=self._velocity_limits_fused,
+                stream_mf_lambda=True,
+            )
+            runs_sweep = self._iterations > 0 or self._velocity_iterations > 0
+            if self._uses_mf_gs_sweep and runs_sweep and min_bytes > _STATIC_SHARED_MEMORY_BYTES:
+                raise ValueError(
+                    f"articulation_constraint_max={self._articulation_constraint_max} with {self._max_world_dofs} "
+                    f"DOFs per world needs {min_bytes} B of sweep shared memory, over the "
+                    f"{_STATIC_SHARED_MEMORY_BYTES} B limit."
+                )
 
         self._allocate_common_buffers(model)
         self._allocate_buffers(model)
@@ -6428,12 +6461,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             if self._sparse_diagonal_contact_solve
             else None
         )
-        if (
-            self._world_count > 0
-            and self._max_world_dofs > 0
-            and self._sparse_mass_matrix_size is None
-            and not self._sparse_diagonal_contact_solve
-        ):
+        if self._uses_mf_gs_sweep:
             mf_rows = self._mf_meta_packed.shape[1] // 4
             mfgs_dims = (self._articulation_constraint_max, mf_rows, self._max_world_dofs)
             mfgs_shape = (*mfgs_dims, int(getattr(model.device, "max_shared_memory_per_block", 0)))
@@ -6445,12 +6473,6 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._mfgs_stream_mf_lambda = (
                 _mfgs_block_shared_bytes(*mfgs_dims, shared_metadata=False, **mfgs_rows) > _STATIC_SHARED_MEMORY_BYTES
             )
-            min_bytes = _mfgs_block_shared_bytes(*mfgs_dims, shared_metadata=False, stream_mf_lambda=True, **mfgs_rows)
-            if model.device.is_cuda and min_bytes > _STATIC_SHARED_MEMORY_BYTES:
-                raise ValueError(
-                    f"articulation_constraint_max={mfgs_dims[0]} with {mfgs_dims[2]} DOFs per world needs {min_bytes} B "
-                    f"of sweep shared memory, over the {_STATIC_SHARED_MEMORY_BYTES} B limit."
-                )
             shared_metadata = _use_resident_mfgs_metadata(
                 *mfgs_shape, stream_mf_lambda=self._mfgs_stream_mf_lambda, **mfgs_rows
             )

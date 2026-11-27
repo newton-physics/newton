@@ -1128,6 +1128,11 @@ def test_sweep_shared_memory_fits_static_limit(test, device):
             test.assertTrue(np.isfinite(body_q).all())
     with test.assertRaisesRegex(ValueError, "articulation_constraint_max=16384"):
         SolverSteel(model, articulation_constraint_max=16384)
+    with test.assertRaisesRegex(ValueError, "articulation_constraint_max=16384"):
+        SolverSteel(model, iterations=0, velocity_iterations=1, articulation_constraint_max=16384)
+    # A solve without sweeps never compiles the sweep, so its shared memory does not limit the shape.
+    _, body_q, _ = _rollout(model, steps=2, iterations=0, articulation_constraint_max=16384)
+    test.assertTrue(np.isfinite(body_q).all())
 
 
 def test_free_body_rows_past_16_bit_parent_index(test, device):
@@ -1164,6 +1169,9 @@ def test_free_body_rows_past_16_bit_parent_index(test, device):
     np.testing.assert_array_less(np.abs(state_0.body_qd.numpy()[:, 0]), 0.1)
     with test.assertRaisesRegex(ValueError, "free_body_constraint_max must be at most 8388608 on CUDA"):
         SolverSteel(model, free_body_constraint_max=(1 << 23) + 1)
+    # 43 worlds of 2**23 rows hold more than 2**31 floats in the six-wide free-body arrays.
+    with test.assertRaisesRegex(ValueError, "exceeds 357913941 free-body rows in total on CUDA"):
+        SolverSteel(_box_on_ground(device, worlds=43), free_body_constraint_max=1 << 23)
 
 
 def test_cpu_free_body_capacity_past_the_cuda_index_limit(test, device):
