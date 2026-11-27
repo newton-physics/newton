@@ -415,7 +415,8 @@ def _mujoco_accepted_inertia(inertia: np.ndarray) -> np.ndarray:
     upper = np.triu(inertia.astype(np.float64))
     symmetric = upper + np.triu(upper, 1).T
     moments, axes, axes_quat = np.zeros(3), np.zeros(9), np.zeros(4)
-    import_mujoco_module().mju_eig3(moments, axes, axes_quat, symmetric.flatten())
+    mujoco = import_mujoco_module()
+    mujoco.mju_eig3(moments, axes, axes_quat, symmetric.flatten())
     largest, middle, smallest = moments
     excess = largest - middle - smallest
     # Newton's validation accepts an excess up to `tolerance`. It checks float32 moments, so the exact excess it
@@ -424,7 +425,7 @@ def _mujoco_accepted_inertia(inertia: np.ndarray) -> np.ndarray:
     rounding = np.finfo(np.float32).eps * largest
     tolerance = max(rounding, _INERTIA_ABS_FLOOR)
     # A moment MuJoCo rejects as too small is not a rounding miss, so it stays an error.
-    if smallest > MJ_MINVAL and middle + smallest < largest and excess <= 4.0 * tolerance:
+    if smallest > mujoco.mjMINVAL and middle + smallest < largest and excess <= 4.0 * tolerance:
         # Adding s to every moment shrinks C - A - B by s. The extra eps * C covers MuJoCo's rounding.
         return inertia + (excess + rounding) * np.eye(3)
     return inertia
