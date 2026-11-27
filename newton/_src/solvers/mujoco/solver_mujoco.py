@@ -649,8 +649,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count + 1,)``.
 
         Entries follow the Newton world whose options each MuJoCo world uses. A single
-        MuJoCo world reports in entry ``0`` when world ``0`` owns bodies, also if it
-        simulates global bodies too, and otherwise in the final entry, for global world
+        MuJoCo world reports in entry ``0`` when world ``0`` owns bodies or flex particles,
+        also if it simulates global entities too, and otherwise in the final entry, for global world
         ``-1``, as in models built without :meth:`~newton.ModelBuilder.begin_world`.
         Separate MuJoCo worlds leave the final entry zero.
         """
@@ -7380,17 +7380,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"separate_worlds=False is only supported for single-world models; got world_count={model.world_count}."
             )
 
-        self._option_world = self._resolve_option_world(model, separate_worlds)
+        flex_particle_world = particle_world[self._flex_particles] if len(particle_world) else particle_world
+        self._option_world = self._resolve_option_world(model, separate_worlds, flex_particle_world)
 
         if not separate_worlds and self._option_world == 0:
-            # The single MuJoCo world uses world 0's gravity, which kinematic bodies ignore.
+            # The single MuJoCo world uses world 0's gravity, which kinematic bodies and static flex particles ignore.
             kinematic = (model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+            global_dynamic = np.any((model.body_world.numpy() == -1) & ~kinematic)
+            if len(particle_world):
+                active = model.particle_flags.numpy() & int(ParticleFlags.ACTIVE) != 0
+                simulated = self._flex_particles & active & (model.particle_mass.numpy() > 0.0)
+                global_dynamic |= np.any(particle_world[simulated] == -1)
             gravity = model.gravity.numpy()
-            if np.any((model.body_world.numpy() == -1) & ~kinematic) and not np.array_equal(gravity[0], gravity[-1]):
+            if global_dynamic and not np.array_equal(gravity[0], gravity[-1]):
                 raise ValueError(
-                    "SolverMuJoCo simulates the bodies of global world -1 and world 0 in one MuJoCo world, which "
-                    f"has one gravity, but got {gravity[-1]} for global world -1 and {gravity[0]} for world 0. "
-                    "Set both to the same value, or move the dynamic global bodies into world 0."
+                    "SolverMuJoCo simulates the bodies and flex particles of global world -1 and world 0 in one "
+                    f"MuJoCo world, which has one gravity, but got {gravity[-1]} for global world -1 and "
+                    f"{gravity[0]} for world 0. Set both to the same value, or move the dynamic global bodies and "
+                    "flex particles into world 0."
                 )
 
         # Validate model compatibility with separate_worlds mode
@@ -11986,17 +11993,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
 
     @staticmethod
-    def _resolve_option_world(model: Model, separate_worlds: bool) -> int:
+    def _resolve_option_world(model: Model, separate_worlds: bool, flex_particle_world: np.ndarray) -> int:
         """Return the Newton world whose ``WORLD``-frequency options configure MuJoCo world 0.
 
         Separate MuJoCo worlds map to Newton worlds by index. A single MuJoCo world
         simulates world ``0`` and global entities, so it uses world ``0`` when that
-        world owns bodies and global world ``-1`` otherwise, such as in models built
-        without :meth:`~newton.ModelBuilder.begin_world`.
+        world owns bodies or flex particles and global world ``-1`` otherwise, such as
+        in models built without :meth:`~newton.ModelBuilder.begin_world`.
         """
-        if separate_worlds or model.body_count == 0:
+        if separate_worlds:
             return 0
-        return 0 if bool(np.any(model.body_world.numpy() == 0)) else -1
+        if model.body_count and np.any(model.body_world.numpy() == 0):
+            return 0
+        return 0 if np.any(flex_particle_world == 0) else -1
 
     def _option_worlds(self, model: Model, separate_worlds: bool) -> np.ndarray:
         """Return the ``WORLD``-frequency entries MuJoCo reads, one per MuJoCo world."""
