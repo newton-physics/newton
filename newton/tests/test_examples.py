@@ -784,6 +784,20 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_viscoelastic_release",
+    devices=test_devices,
+    use_viewer=True,
+    test_suffix="disabled_branch",
+    # a branch with a relaxation time but no stiffness is disabled and must not fail the moment check
+    test_options={
+        "num-frames": 100,
+        "release-time": 0.1,
+        "visco-bend-stiffness": [1.48, 0.0],
+        "visco-tau": [0.12, 5.6],
+    },
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_cross_slide_table",
     devices=test_devices,
     use_viewer=True,

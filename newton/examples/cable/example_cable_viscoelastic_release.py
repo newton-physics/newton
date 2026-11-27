@@ -260,7 +260,14 @@ class Example:
 
         if self.with_visco:
             moments = self.solver.joint_visco_moment_prev.numpy()[self.rod_joints]  # (joint, branch, 3)
-            active = np.flatnonzero(self.solver.joint_visco_tau.numpy()[self.rod_joints[0]] > 0.0)
+            joint = self.rod_joints[0]
+            active = np.flatnonzero(
+                (self.solver.joint_visco_tau.numpy()[joint] > 0.0)
+                & (
+                    (self.solver.joint_visco_bend_ke.numpy()[joint] > 0.0)
+                    | (self.solver.joint_visco_twist_ke.numpy()[joint] > 0.0)
+                )
+            )
             branch_moment = np.linalg.norm(moments[:, active], axis=-1).max(axis=0)
             if np.any(branch_moment <= 1.0e-6):
                 raise ValueError(f"A viscoelastic cable branch produced no moment: {branch_moment}.")
