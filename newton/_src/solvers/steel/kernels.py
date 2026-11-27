@@ -1840,7 +1840,6 @@ def refresh_masked_body_inertia(
     mass_update_mask: wp.array[int],
     body_q_com: wp.array[wp.transform],
     articulation_origin: wp.array[wp.vec3],
-    body_I_m: wp.array[wp.spatial_matrix],
     body_mass: wp.array[float],
     body_inertia: wp.array[wp.mat33],
     write_body_inertia_terms: int,
@@ -1863,9 +1862,10 @@ def refresh_masked_body_inertia(
         wp.transform_get_translation(X_sm) - articulation_origin[articulation],
         wp.transform_get_rotation(X_sm),
     )
-    body_I_s[child] = transform_spatial_inertia(X_sm_local, body_I_m[child])
+    # Match write_body_dynamics arithmetic so fused and unfused factorization see the same symmetric matrix.
+    com, inertia_origin = transform_com_inertia_terms(X_sm_local, body_mass[child], body_inertia[child])
+    body_I_s[child] = assemble_com_spatial_inertia(body_mass[child], com, inertia_origin)
     if write_body_inertia_terms != 0:
-        com, inertia_origin = transform_com_inertia_terms(X_sm_local, body_mass[child], body_inertia[child])
         body_inertia_terms[child, 0] = com[0]
         body_inertia_terms[child, 1] = com[1]
         body_inertia_terms[child, 2] = com[2]
@@ -3458,16 +3458,18 @@ def eval_rigid_tau_and_augmented_drives(
 
 @wp.kernel
 def build_mass_update_mask(
-    global_flag: int,
+    interval: int,
     dt: float,
+    mass_update_phase: wp.array[int],
     mass_update_requested: wp.array[int],
     articulation_active: wp.array[int],
     mass_update_mask: wp.array[int],
     mass_factor_dt: wp.array[float],
 ):
-    """Refresh active factors whose timestep differs, including during graph replay."""
+    """Advance the refresh cadence and check active factors, including during graph replay."""
     tid = wp.tid()
-    flag = 1 if global_flag != 0 else 0
+    phase = mass_update_phase[tid]
+    flag = 1 if phase == 0 else 0
     # Ignore float-rounding jitter, but retain relative sensitivity for tiny timesteps.
     factor_dt = mass_factor_dt[tid]
     dt_changed = wp.abs(factor_dt - dt) > 1.0e-6 * wp.max(wp.abs(factor_dt), wp.abs(dt))
@@ -3478,6 +3480,7 @@ def build_mass_update_mask(
     mass_update_mask[tid] = flag
     if flag != 0:
         mass_factor_dt[tid] = dt
+    mass_update_phase[tid] = (phase + 1) % interval
 
 
 # =============================================================================

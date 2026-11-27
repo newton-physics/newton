@@ -1687,7 +1687,6 @@ def test_cuda_cold_capture_reports_errors_until_reset(test, device):
     _, solver, model, state, contacts = fixture(
         0.01, device=device, contact_torsion_device=True, iterations=16, step=False
     )
-    test.assertEqual(solver._step, 0)
     output = model.state()
     with wp.ScopedCapture(device=model.device) as capture:
         solver.step(state, output, model.control(), contacts, 0.0025)
