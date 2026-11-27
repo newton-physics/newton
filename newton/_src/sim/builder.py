@@ -163,6 +163,27 @@ def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None
     return mean + (volumes[:, None] * tris.sum(axis=1)).sum(axis=0) / (4.0 * total)
 
 
+def _group_rows(*columns: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Group the rows that hold equal values in every column.
+
+    Args:
+        *columns: One-dimensional arrays of equal length, one entry per row.
+
+    Returns:
+        The index of the first row of each group, shape [group_count], and the
+        group of each row, shape [row_count].
+    """
+    order = np.lexsort(columns)
+    starts_group = np.zeros(len(order), dtype=bool)
+    starts_group[:1] = True
+    for column in columns:
+        sorted_column = column[order]
+        starts_group[1:] |= sorted_column[1:] != sorted_column[:-1]
+    groups = np.empty(len(order), dtype=np.intp)
+    groups[order] = np.cumsum(starts_group) - 1
+    return order[starts_group], groups
+
+
 def _validate_opacity(value: Any, value_name: str) -> float:
     """Return a finite display opacity in [0, 1]."""
     opacity = float(value)
@@ -15369,6 +15390,12 @@ class ModelBuilder:
             (self.joint_constraint_world_start, self.joint_cts_start, self.joint_constraint_count, "joint constraint"),
         ]
 
+        joint_world = np.asarray(self.joint_world, dtype=np.int64)
+        is_world_joint = joint_world >= 0
+        # Global entities at the front of the entity_world array end at the first other entry
+        is_front_end = joint_world != -1
+        front_global_joint_count = int(np.argmax(is_front_end)) if is_front_end.any() else len(joint_world)
+
         def build_joint_space_start_array(
             space_count: int, joint_space_start: list[int], world_space_start: list[int], name: str
         ):
@@ -15379,34 +15406,21 @@ class ModelBuilder:
                     f"expected {self.joint_count}, found {len(joint_space_start)}."
                 )
 
-            # Initialize world_space_start with zeros
-            world_space_start.clear()
-            world_space_start.extend([0] * (self.world_count + 2))
+            # Extend joint_space_start with total count to enable computing per-joint counts
+            joint_space_start_ext = np.empty(self.joint_count + 1, dtype=np.int64)
+            joint_space_start_ext[:-1] = joint_space_start
+            joint_space_start_ext[-1] = space_count
+            joint_space_counts = np.diff(joint_space_start_ext)
 
-            # Extend joint_space_start with total count to enable computing per-world counts
-            joint_space_start_ext = copy.copy(joint_space_start)
-            joint_space_start_ext.append(space_count)
+            # Slot 0 counts the global entities at the front of the entity_world array,
+            # and slot w + 1 counts those of world w
+            world_space_counts = np.zeros(self.world_count + 2, dtype=np.int64)
+            world_space_counts[0] = joint_space_counts[:front_global_joint_count].sum()
+            np.add.at(world_space_counts, joint_world[is_world_joint] + 1, joint_space_counts[is_world_joint])
 
-            # Count global entities at the front of the entity_world array
-            front_global_space_count = 0
-            for j, w in enumerate(self.joint_world):
-                if w == -1:
-                    front_global_space_count += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
-                else:
-                    break
-
-            # Compute per-world cumulative joint space counts to initialize world_space_start
-            for j, w in enumerate(self.joint_world):
-                if w >= 0:
-                    world_space_start[w + 1] += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
-
-            # Convert per-world counts to cumulative start indices
-            world_space_start[0] += front_global_space_count
-            for w in range(self.world_count):
-                world_space_start[w + 1] += world_space_start[w]
-
-            # Add total (i.e. final) entity counts to the per-world start indices
-            world_space_start[-1] = space_count
+            # Convert per-world counts to cumulative start indices, and add total (i.e. final)
+            # entity counts to them
+            world_space_start[:] = (*np.cumsum(world_space_counts[:-1]).tolist(), space_count)
 
         # Check that all world offset indices are cumulative and match counts
         for world_start_array, space_start_array, total_count, name in world_joint_space_start_arrays:
@@ -16347,17 +16361,31 @@ class ModelBuilder:
                 ((shape_type_arr == GeoType.MESH) | (shape_type_arr == GeoType.CONVEX_MESH))
                 & ((shape_flags_arr & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) != 0)
             )
-            for shape_idx in collidable_mesh_indices.tolist():
-                geo = generated_shape_sources[shape_idx]
-                if isinstance(geo, Mesh):
-                    geo_hash = hash(geo)
-                    mesh_properties = mesh_properties_by_geo_hash.get(geo_hash)
-                    if mesh_properties is None:
-                        mesh_properties = int(MeshProperties.WATERTIGHT) if geo.is_watertight else 0
-                        mesh_properties_by_geo_hash[geo_hash] = mesh_properties
-                    if shape_type_arr[shape_idx] == GeoType.MESH and geo.enable_surface_velocity:
-                        mesh_properties |= int(MeshProperties.SURFACE_VELOCITY)
-                    shape_mesh_properties[shape_idx] = mesh_properties
+            if len(collidable_mesh_indices) > 0:
+                # Shapes with the same source and type have the same properties, so resolve them
+                # once per such group. A mesh without duplicate vertices is also the source of its
+                # convex hulls, which never take the surface velocity bit.
+                group_first, shape_group = _group_rows(
+                    np.fromiter(
+                        map(id, map(generated_shape_sources.__getitem__, collidable_mesh_indices.tolist())),
+                        dtype=np.uintp,
+                        count=len(collidable_mesh_indices),
+                    ),
+                    shape_type_arr[collidable_mesh_indices],
+                )
+                group_mesh_properties = np.zeros(len(group_first), dtype=np.int32)
+                for group, shape_idx in enumerate(collidable_mesh_indices[group_first].tolist()):
+                    geo = generated_shape_sources[shape_idx]
+                    if isinstance(geo, Mesh):
+                        geo_hash = hash(geo)
+                        mesh_properties = mesh_properties_by_geo_hash.get(geo_hash)
+                        if mesh_properties is None:
+                            mesh_properties = int(MeshProperties.WATERTIGHT) if geo.is_watertight else 0
+                            mesh_properties_by_geo_hash[geo_hash] = mesh_properties
+                        if shape_type_arr[shape_idx] == GeoType.MESH and geo.enable_surface_velocity:
+                            mesh_properties |= int(MeshProperties.SURFACE_VELOCITY)
+                        group_mesh_properties[group] = mesh_properties
+                shape_mesh_properties[collidable_mesh_indices] = group_mesh_properties[shape_group]
 
             m.shape_type = wp.array(shape_type_arr, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
@@ -16501,9 +16529,6 @@ class ModelBuilder:
 
             voxel_budget = NUM_VOXEL_DEPTH_SLOTS
 
-            # Cache per unique (shape_type, id(shape_src), scale) for source-dependent shapes
-            shape_aabb_cache = {}
-
             if n_shapes == 0:
                 local_aabb_lower = np.empty((0, 3), dtype=np.float32)
                 local_aabb_upper = np.empty((0, 3), dtype=np.float32)
@@ -16586,34 +16611,54 @@ class ModelBuilder:
                     voxel_resolution = np.ones((n_shapes, 3), dtype=np.int32)
 
                 src_dependent_indices = np.flatnonzero(src_dependent_mask)
-                for s_idx in src_dependent_indices.tolist():
-                    shape_src = self.shape_source[s_idx]
-                    if shape_src is None:
-                        continue
-                    st = int(shape_type_arr[s_idx])
-                    sc_tuple = (
-                        float(scale_clean[s_idx, 0]),
-                        float(scale_clean[s_idx, 1]),
-                        float(scale_clean[s_idx, 2]),
+                if len(src_dependent_indices) > 0:
+                    # Shapes with the same type, source, and scale have the same bounds, so compute
+                    # them once per such group. Shapes without a source keep the defaults.
+                    source_ids = np.fromiter(
+                        map(id, map(self.shape_source.__getitem__, src_dependent_indices.tolist())),
+                        dtype=np.uintp,
+                        count=len(src_dependent_indices),
                     )
-                    cache_key = (st, id(shape_src), sc_tuple)
-                    cached_aabb = shape_aabb_cache.get(cache_key)
-                    if cached_aabb is None:
-                        interior_pt = np.zeros(3, dtype=np.float32)
+                    has_source = source_ids != id(None)
+                    grouped_indices = src_dependent_indices[has_source]
+                    # Compare scales by their bits, so that the grouping is exact.
+                    scale_bits = scale_clean[grouped_indices].view(np.uint32)
+                    group_first, shape_group = _group_rows(
+                        shape_type_arr[grouped_indices],
+                        source_ids[has_source],
+                        scale_bits[:, 0],
+                        scale_bits[:, 1],
+                        scale_bits[:, 2],
+                    )
+                    group_aabb_lower = np.empty((len(group_first), 3), dtype=np.float32)
+                    group_aabb_upper = np.empty((len(group_first), 3), dtype=np.float32)
+                    group_interior_point = np.zeros((len(group_first), 3), dtype=np.float32)
+                    group_voxel_resolution = np.empty((len(group_first), 3), dtype=np.int32)
+                    for group, s_idx in enumerate(grouped_indices[group_first].tolist()):
+                        shape_src = self.shape_source[s_idx]
+                        st = int(shape_type_arr[s_idx])
+                        sc_tuple = (
+                            float(scale_clean[s_idx, 0]),
+                            float(scale_clean[s_idx, 1]),
+                            float(scale_clean[s_idx, 2]),
+                        )
                         sc_np = np.array(sc_tuple)
-                        if st == GeoType.MESH:
-                            vertices = shape_src.vertices
-                            lo64 = vertices.min(axis=0) * sc_np
-                            hi64 = vertices.max(axis=0) * sc_np
+                        if st == GeoType.MESH or st == GeoType.CONVEX_MESH:
+                            # A mesh caches its vertex bounds, so scanning its vertices again is
+                            # only needed for a source that isn't one.
+                            get_local_bounds = getattr(shape_src, "_get_local_bounds", None)
+                            if get_local_bounds is not None:
+                                vertex_lo, vertex_hi = get_local_bounds()
+                            else:
+                                vertex_lo = shape_src.vertices.min(axis=0)
+                                vertex_hi = shape_src.vertices.max(axis=0)
+                            lo64 = vertex_lo * sc_np
+                            hi64 = vertex_hi * sc_np
                             aabb_lo = np.minimum(lo64, hi64)
                             aabb_hi = np.maximum(lo64, hi64)
-                        elif st == GeoType.CONVEX_MESH:
-                            lo64 = shape_src.vertices.min(axis=0) * sc_np
-                            hi64 = shape_src.vertices.max(axis=0) * sc_np
-                            centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
-                            interior_pt = (centroid * sc_np).astype(np.float32)
-                            aabb_lo = np.minimum(lo64, hi64)
-                            aabb_hi = np.maximum(lo64, hi64)
+                            if st == GeoType.CONVEX_MESH:
+                                centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
+                                group_interior_point[group] = centroid * sc_np
                         else:
                             hx = abs(shape_src.hx * sc_tuple[0])
                             hy = abs(shape_src.hy * sc_tuple[1])
@@ -16621,18 +16666,15 @@ class ModelBuilder:
                             z_hi = shape_src.max_z * sc_tuple[2]
                             aabb_lo = np.array([-hx, -hy, min(z_lo, z_hi)])
                             aabb_hi = np.array([hx, hy, max(z_lo, z_hi)])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lo, aabb_hi, voxel_budget)
-                        cached_aabb = (
-                            aabb_lo.astype(np.float32),
-                            aabb_hi.astype(np.float32),
-                            interior_pt,
-                            (nx, ny, nz),
+                        group_aabb_lower[group] = aabb_lo
+                        group_aabb_upper[group] = aabb_hi
+                        group_voxel_resolution[group] = compute_voxel_resolution_from_aabb(
+                            aabb_lo, aabb_hi, voxel_budget
                         )
-                        shape_aabb_cache[cache_key] = cached_aabb
-                    local_aabb_lower[s_idx] = cached_aabb[0]
-                    local_aabb_upper[s_idx] = cached_aabb[1]
-                    local_interior_point[s_idx] = cached_aabb[2]
-                    voxel_resolution[s_idx] = cached_aabb[3]
+                    local_aabb_lower[grouped_indices] = group_aabb_lower[shape_group]
+                    local_aabb_upper[grouped_indices] = group_aabb_upper[shape_group]
+                    local_interior_point[grouped_indices] = group_interior_point[shape_group]
+                    voxel_resolution[grouped_indices] = group_voxel_resolution[shape_group]
 
             m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
             m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)

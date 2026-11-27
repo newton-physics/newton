@@ -1484,6 +1484,35 @@ def test_model_mesh_properties_track_watertight(test, device):
     test.assertEqual(closed_mesh.watertight_query_count, 1)
 
 
+def test_model_mesh_properties_shared_source(test, device):
+    """Verify that shapes sharing one mesh get their properties by shape type, and the shapes between keep theirs."""
+    closed_vertices, closed_faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+    open_vertices, open_faces = _make_open_square()
+    # The box has no duplicate vertices, so its convex hulls collide against this same mesh object.
+    moving_mesh = newton.Mesh(closed_vertices, closed_faces, compute_inertia=False, enable_surface_velocity=True)
+    open_mesh = newton.Mesh(open_vertices, open_faces, compute_inertia=False)
+    visual_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False, has_particle_collision=False)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    mesh_first = builder.add_shape_mesh(body=-1, mesh=moving_mesh)
+    hull_first = builder.add_shape_convex_hull(body=-1, mesh=moving_mesh)
+    sphere = builder.add_shape_sphere(body=-1, radius=0.1)
+    hull_again = builder.add_shape_convex_hull(body=-1, mesh=moving_mesh)
+    visual_shape = builder.add_shape_mesh(body=-1, mesh=moving_mesh, cfg=visual_cfg)
+    open_shape = builder.add_shape_mesh(body=-1, mesh=open_mesh)
+    mesh_again = builder.add_shape_mesh(body=-1, mesh=moving_mesh)
+    model = builder.finalize(device=device)
+
+    mesh_properties = model._shape_mesh_properties.numpy()
+    test.assertEqual(int(mesh_properties[mesh_first]), MeshProperties.WATERTIGHT | MeshProperties.SURFACE_VELOCITY)
+    test.assertEqual(int(mesh_properties[hull_first]), MeshProperties.WATERTIGHT)
+    test.assertEqual(int(mesh_properties[sphere]), 0)
+    test.assertEqual(int(mesh_properties[hull_again]), MeshProperties.WATERTIGHT)
+    test.assertEqual(int(mesh_properties[visual_shape]), 0)
+    test.assertEqual(int(mesh_properties[open_shape]), 0)
+    test.assertEqual(int(mesh_properties[mesh_again]), MeshProperties.WATERTIGHT | MeshProperties.SURFACE_VELOCITY)
+
+
 def test_visual_only_mesh_properties_skip_watertight_query(test, device):
     vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
 
@@ -1654,6 +1683,13 @@ add_function_test(
     "test_model_mesh_properties_track_watertight",
     test_model_mesh_properties_track_watertight,
     devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_model_mesh_properties_shared_source",
+    test_model_mesh_properties_shared_source,
+    devices=["cpu"],
     check_output=False,
 )
 add_function_test(
