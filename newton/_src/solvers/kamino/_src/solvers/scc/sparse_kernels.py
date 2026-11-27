@@ -1354,6 +1354,7 @@ def _solve_scc_sparse_inequalities_pgs(
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
     coupled_value: wp.array2d[float32],
+    jacobian_row_scale: wp.array[float32],
 ):
     """Apply one conflict-free sparse PGS schedule to every inequality."""
     tid = wp.tid()
@@ -1517,7 +1518,8 @@ def _solve_scc_sparse_inequalities_pgs(
                                     bound_value += coupled_rows_product(
                                         vec_idx, vio, coupled_row, coupled_value, solution_lambdas
                                     )
-                                P_bound = problem_P[vec_idx]
+                                # The body impulse of a decoupled joint row includes its body share
+                                P_bound = jacobian_row_scale[vec_idx]
                                 diagonal_raw = projected_diag[vec_idx]
                                 lambda_bound_old = solution_lambdas[vec_idx]
                                 lambda_bound_new = _project_box_update(
@@ -2519,6 +2521,7 @@ def _solve_scc_sparse_inequalities_pgs_cooperative(
     has_coupled_rows: wp.bool,
     coupled_row: wp.array2d[int32],
     coupled_value: wp.array2d[float32],
+    jacobian_row_scale: wp.array[float32],
 ):
     """Apply sparse PGS with one warp cooperating on each articulated world.
 
@@ -2784,7 +2787,8 @@ def _solve_scc_sparse_inequalities_pgs_cooperative(
                                             bounded_nzb_offsets,
                                             problem_bound_lower,
                                             problem_bound_upper,
-                                            problem_P,
+                                            # The body impulse of a decoupled joint row includes its body share
+                                            jacobian_row_scale,
                                             problem_v_f,
                                             projected_diag,
                                             eta,

@@ -7,15 +7,15 @@ With joint decoupling (see :class:`~newton._src.solvers.kamino._src.dynamics.joi
 the friction and effort rows of a DoF act on the bodies with the Jacobian ``s J``, and they couple
 to the joint dynamics row of the DoF with ``c r`` and to each other with ``c^2 r``. The sparse
 Delassus operator applies these terms in its own products. The sparse SCC kernels that form row
-products or matrix entries from the Jacobian blocks instead read the row-scaled Jacobian values
-and the coupled-row table of :class:`SparseDecoupledRows`.
+products or matrix entries from the Jacobian blocks instead scale the Jacobian rows with the row
+scale of the operator, which includes ``s``, and read the coupled-row table of
+:class:`SparseDecoupledRows`.
 """
 
 from __future__ import annotations
 
 import warp as wp
 
-from ...core.types import vec6f
 from ...dynamics.joint_decoupling import DecoupledJointDof, DynamicJointDecoupling
 
 wp.set_module_options({"enable_backward": False})
@@ -61,42 +61,6 @@ def coupled_rows_entry(
         if coupled_row[vec_idx, k] == local_col:
             value += coupled_value[vec_idx, k]
     return value
-
-
-@wp.kernel
-def _set_row_body_share(
-    # Inputs:
-    dofs: wp.array[DecoupledJointDof],
-    body_share: wp.array[wp.float32],
-    # Outputs:
-    row_body_share: wp.array[wp.float32],
-):
-    tid = wp.tid()
-    dof = dofs[tid]
-    s = body_share[tid]
-    if dof.friction_row >= 0:
-        row_body_share[dof.friction_row] = s
-    if dof.effort_row >= 0:
-        row_body_share[dof.effort_row] = s
-
-
-@wp.kernel
-def _scale_jacobian_rows(
-    # Inputs:
-    num_nzb: wp.array[wp.int32],
-    nzb_start: wp.array[wp.int32],
-    nzb_coords: wp.array2d[wp.int32],
-    row_start: wp.array[wp.int32],
-    row_body_share: wp.array[wp.float32],
-    values: wp.array[vec6f],
-    # Outputs:
-    scaled_values: wp.array[vec6f],
-):
-    mat, block = wp.tid()
-    if block >= num_nzb[mat]:
-        return
-    idx = nzb_start[mat] + block
-    scaled_values[idx] = values[idx] * row_body_share[row_start[mat] + nzb_coords[idx, 0]]
 
 
 @wp.func
@@ -151,38 +115,25 @@ def _set_coupled_rows(
 
 
 class SparseDecoupledRows:
-    """Row-scaled Jacobian values and coupled-row table of decoupled joint rows for sparse SCC.
+    """Row scale and coupled-row table of decoupled joint rows for sparse SCC.
 
-    Without a joint decoupling, :attr:`enabled` is ``False``, :meth:`jacobian_values` returns the
-    constraint Jacobian values unchanged, and the table holds placeholders that kernels skip.
+    Without a joint decoupling, :attr:`enabled` is ``False``, :meth:`row_scale` returns the
+    preconditioner, and the table holds placeholders that kernels skip.
     """
 
-    def __init__(
-        self,
-        decoupling: DynamicJointDecoupling | None,
-        num_rows: int,
-        device: wp.DeviceLike,
-        jacobian_values: wp.array | None = None,
-    ):
-        """Allocates the table and the scaled copy before any graph capture.
+    def __init__(self, decoupling: DynamicJointDecoupling | None, num_rows: int, device: wp.DeviceLike):
+        """Allocates the table before any graph capture.
 
         Args:
             decoupling: The joint decoupling of the problem, if any.
             num_rows: Number of constraint rows of all worlds.
             device: Device of the arrays.
-            jacobian_values: Block values of the constraint Jacobian, which set the size of the scaled copy.
         """
         self.decoupling = decoupling if decoupling is not None and decoupling.num_dofs > 0 else None
         self.device = device
         rows = num_rows if self.enabled else 1
         self.coupled_row = wp.full((rows, 2), -1, dtype=wp.int32, device=device)
         self.coupled_value = wp.zeros((rows, 2), dtype=wp.float32, device=device)
-        self.row_body_share = wp.ones(rows, dtype=wp.float32, device=device) if self.enabled else None
-        self._scaled_values: wp.array | None = None
-        if self.enabled:
-            if jacobian_values is None:
-                raise ValueError("Decoupled joint rows require the constraint Jacobian values.")
-            self._scaled_values = wp.zeros_like(jacobian_values)
 
     @property
     def enabled(self) -> bool:
@@ -195,40 +146,17 @@ class SparseDecoupledRows:
         return (wp.bool(self.enabled), self.coupled_row, self.coupled_value)
 
     def update(self, problem) -> None:
-        """Refreshes the scaled Jacobian values and the coupled-row table for the current build of ``problem``."""
+        """Refreshes the coupled-row table for the current build of ``problem``."""
         if not self.enabled:
             return
         decoupling = self.decoupling
-        delassus = problem.delassus
-        jacobian = delassus.constraint_jacobian
-        wp.launch(
-            _set_row_body_share,
-            dim=decoupling.num_dofs,
-            inputs=[decoupling.dofs, decoupling.body_share],
-            outputs=[self.row_body_share],
-            device=self.device,
-        )
-        wp.launch(
-            _scale_jacobian_rows,
-            dim=(jacobian.num_matrices, jacobian.max_of_num_nzb),
-            inputs=[
-                jacobian.num_nzb,
-                jacobian.nzb_start,
-                jacobian.nzb_coords,
-                jacobian.row_start,
-                self.row_body_share,
-                jacobian.nzb_values,
-            ],
-            outputs=[self._scaled_values],
-            device=self.device,
-        )
         wp.launch(
             _set_coupled_rows,
             dim=decoupling.num_dofs,
             inputs=[
                 decoupling.dofs,
                 decoupling.body_share,
-                delassus._data.joints.inv_m_j,
+                problem.delassus._data.joints.inv_m_j,
                 problem.data.vio,
                 problem.data.P,
             ],
@@ -236,8 +164,13 @@ class SparseDecoupledRows:
             device=self.device,
         )
 
-    def jacobian_values(self, problem) -> wp.array:
-        """Jacobian block values with the friction and effort rows of decoupled DoFs scaled by their body share."""
+    def row_scale(self, problem) -> wp.array:
+        """Scale of the Jacobian rows: the preconditioner, with the friction and effort rows of
+        decoupled DoFs also scaled by their body share.
+
+        The sparse Delassus operator refreshes it together with the mass-weighted Jacobian blocks
+        that the same kernels read, so it is current whenever they are.
+        """
         if not self.enabled:
-            return problem.delassus.constraint_jacobian.nzb_values
-        return self._scaled_values
+            return problem.data.P
+        return problem.delassus._jacobian_row_scale

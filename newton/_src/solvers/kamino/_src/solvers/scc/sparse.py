@@ -224,12 +224,7 @@ class SparseSCCPath:
         # bilateral dynamics row, so keep the placeholder from `__init__` instead of reallocating it.
         decoupling = problem.joint_decoupling
         if decoupling is not None and decoupling.num_dofs > 0:
-            self.decoupled_rows = SparseDecoupledRows(
-                decoupling,
-                self.size.sum_of_max_total_cts,
-                self.device,
-                jacobian_values=delassus.constraint_jacobian.nzb_values,
-            )
+            self.decoupled_rows = SparseDecoupledRows(decoupling, self.size.sum_of_max_total_cts, self.device)
         # General PGS and fused inverse solves read transpose values directly. The raw transpose
         # product applies the row scale, which includes the body share of decoupled joint rows.
         delassus._set_raw_transpose_enabled(
@@ -679,7 +674,7 @@ def _launch_sparse_inequality_pgs(
         bsm.nzb_start,
         bsm.nzb_coords,
         bsm.nzb_values,
-        path.decoupled_rows.jacobian_values(problem),
+        delassus.constraint_jacobian.nzb_values,
         bsm.row_start,
         bsm.col_start,
     ]
@@ -797,7 +792,8 @@ def _launch_sparse_inequality_pgs(
                 problem.data.lio,
                 problem.data.cio,
                 problem.data.vio,
-                problem.data.P,
+                # Column scale, with the body share of decoupled joint rows
+                path.decoupled_rows.row_scale(problem),
                 problem.data.v_f,
                 delassus.regularization,
                 problem.data.njc,
@@ -923,6 +919,8 @@ def _launch_sparse_inequality_pgs(
         kernel_inputs.extend(body_inputs)
     if kernel in (_solve_scc_sparse_inequalities_pgs, _solve_scc_sparse_inequalities_pgs_cooperative):
         kernel_inputs.extend(path.decoupled_rows.inputs)
+        # Row scale of the body impulse of bounded rows, with the body share of decoupled joint rows
+        kernel_inputs.append(path.decoupled_rows.row_scale(problem))
     wp.launch(
         kernel=kernel,
         dim=world_count * threads_per_world,
@@ -1907,7 +1905,7 @@ def _assemble_sparse_bilateral_coupling(path: SparseSCCPath, problem: DualProble
             bsm.nzb_start,
             bsm.nzb_coords,
             bsm.nzb_values,
-            path.decoupled_rows.jacobian_values(problem),
+            delassus.constraint_jacobian.nzb_values,
             problem.data.dim,
             problem.data.njc,
             problem.data.nbc,
@@ -1916,7 +1914,8 @@ def _assemble_sparse_bilateral_coupling(path: SparseSCCPath, problem: DualProble
             problem.data.lio,
             problem.data.cio,
             problem.data.vio,
-            problem.data.P,
+            # Column scale, with the body share of decoupled joint rows
+            path.decoupled_rows.row_scale(problem),
             state.limit_indices,
             state.contact_indices,
             path.jacobians.limit_constraint_nzb_offsets,
