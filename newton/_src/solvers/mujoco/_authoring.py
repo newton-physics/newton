@@ -78,9 +78,8 @@ def _prepare_custom_frequency_row(
             raise ValueError(
                 f"Custom attribute '{key}' uses frequency {attribute.frequency!r}, expected {frequency!r}."
             )
-    for key, attribute in builder.custom_attributes.items():
-        if attribute.frequency == frequency and key not in row and attribute.references != "world":
-            row[key] = attribute.default
+    for attribute in builder.get_custom_attributes_by_frequency([frequency]):
+        row.setdefault(attribute.key, None)
     return row
 
 

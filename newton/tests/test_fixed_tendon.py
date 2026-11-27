@@ -581,5 +581,87 @@ class TestMujocoFixedTendon(unittest.TestCase):
         self.assertEqual(int(solver.mj_model.wrap_objid[0]), 0)
 
 
+    def test_add_tendon_fixed_preserves_omitted_custom_references_and_enum_world(self):
+        ca = newton.ModelBuilder.CustomAttribute
+
+        blueprint = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(blueprint)
+        blueprint.add_custom_attribute(
+            ca(
+                name="tendon_ref_body",
+                frequency="mujoco:tendon",
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                references="body",
+                namespace="mujoco",
+            )
+        )
+        link = blueprint.add_link(mass=1.0)
+        blueprint.add_shape_sphere(link, radius=0.1)
+        rev = blueprint.add_joint_revolute(parent=-1, child=link, axis=wp.vec3(0.0, 1.0, 0.0))
+        blueprint.add_articulation([rev])
+        mjc_author.add_tendon_fixed(blueprint, [(rev, 1.0)], label="omitted_ref")
+        mjc_author.add_tendon_fixed(
+            blueprint,
+            [(rev, 1.0)],
+            label="explicit_ref",
+            custom_attributes={"mujoco:tendon_ref_body": link},
+        )
+
+        replicated = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(replicated)
+        replicated.add_custom_attribute(
+            ca(
+                name="tendon_ref_body",
+                frequency="mujoco:tendon",
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                references="body",
+                namespace="mujoco",
+            )
+        )
+        replicated.replicate(blueprint, num_worlds=2)
+        rep_model = replicated.finalize(device="cpu")
+        self.assertEqual(rep_model.mujoco.tendon_ref_body.numpy().tolist(), [-1, 0, -1, 1])
+
+        world_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(world_builder)
+        world_builder.add_custom_attribute(
+            ca(
+                name="tendon_world_str",
+                frequency="mujoco:tendon",
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                references="world",
+                namespace="mujoco",
+            )
+        )
+        world_builder.add_custom_attribute(
+            ca(
+                name="tendon_world_enum",
+                frequency="mujoco:tendon",
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                references=newton.Model.AttributeFrequency.WORLD,
+                namespace="mujoco",
+            )
+        )
+        for w in range(2):
+            world_builder.begin_world()
+            w_link = world_builder.add_link(mass=1.0)
+            world_builder.add_shape_sphere(w_link, radius=0.1)
+            w_rev = world_builder.add_joint_revolute(parent=-1, child=w_link, axis=wp.vec3(0.0, 1.0, 0.0))
+            world_builder.add_articulation([w_rev])
+            mjc_author.add_tendon_fixed(world_builder, [(w_rev, 1.0)], label=f"t_{w}")
+            world_builder.end_world()
+        world_model = world_builder.finalize(device="cpu")
+        self.assertEqual(world_model.mujoco.tendon_world_str.numpy().tolist(), [0, 1])
+        self.assertEqual(world_model.mujoco.tendon_world_enum.numpy().tolist(), [0, 1])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
