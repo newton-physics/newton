@@ -1468,12 +1468,7 @@ def accumulate_spring_force_and_hessian(
                 wp.atomic_add(particle_hessians, v1, hessian)
 
 
-# Warp 1.18 added the explicit inlining hint.
-_supports_func_inlining = tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18)
-_inline_vbd_func = wp.func(inline=True) if _supports_func_inlining else wp.func
-
-
-@_inline_vbd_func
+@wp.func(inline=True)
 def _accumulate_membrane(
     particle_index: int,
     dt: float,
@@ -1527,7 +1522,7 @@ def _accumulate_membrane(
     return f, h
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _accumulate_bending(
     particle_index: int,
     dt: float,
@@ -2699,7 +2694,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     return solve_elasticity_tile_kernel
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_tet_head(
     adjacency: wp.array[wp.int32],
     begin: int,
@@ -2713,7 +2708,7 @@ def _scalar_native_tet_head(
     return entry
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_material(tet_id: int, materials: wp.array2d[float]):
     material = wp.vec3()
     if tet_id >= 0:
@@ -2730,7 +2725,7 @@ class _ScalarTetInputs:
     material: wp.vec3
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_vertices(tet_id: int, indices: wp.array2d[wp.int32]):
     vertices = wp.vec4i()
     if tet_id >= 0:
@@ -2738,7 +2733,7 @@ def _scalar_native_vertices(tet_id: int, indices: wp.array2d[wp.int32]):
     return vertices
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_stage_tet(
     entry: wp.vec2i,
     material: wp.vec3,
@@ -2768,7 +2763,7 @@ class _ScalarTetPoints:
     previous3: wp.vec3
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_stage_points(stencil: _ScalarTetInputs, pos: wp.array[wp.vec3], pos_prev: wp.array[wp.vec3]):
     points = _ScalarTetPoints()
     if stencil.active:
@@ -2784,7 +2779,7 @@ def _scalar_native_stage_points(stencil: _ScalarTetInputs, pos: wp.array[wp.vec3
     return points
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_project_column(
     left: wp.vec3, right: float, diag: wp.vec3, shape: wp.vec3, stiffness: float, volume: float
 ):
@@ -2792,7 +2787,7 @@ def _scalar_native_project_column(
     return entries[0] * shape[0] + entries[1] * shape[1] + entries[2] * shape[2]
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_project_entry(
     left: wp.vec3, right: wp.vec3, diagonal: float, shape: wp.vec3, stiffness: float, volume: float
 ):
@@ -2802,7 +2797,7 @@ def _scalar_native_project_entry(
     return shape[0] * col0 + shape[1] * col1 + shape[2] * col2
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_damping_upper(gradient: wp.vec3):
     dx = gradient[0]
     dy = gradient[1]
@@ -2810,7 +2805,7 @@ def _scalar_native_damping_upper(gradient: wp.vec3):
     return wp.spatial_vector(dx * dx, dx * dy, dx * dz, dy * dy, dy * dz, dz * dz)
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_tet_damping(
     points: _ScalarTetPoints,
     deformation: wp.mat33,
@@ -2882,7 +2877,7 @@ def _scalar_native_tet_damping(
     return force, hessian
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_evaluate_tet(
     points: _ScalarTetPoints,
     v_order: int,
@@ -2994,7 +2989,7 @@ def _scalar_native_evaluate_tet(
     return force, hessian
 
 
-@_inline_vbd_func
+@wp.func(inline=True)
 def _scalar_native_accumulate_elasticity(
     particle_index: int,
     dt: float,
@@ -3097,12 +3092,6 @@ def _scalar_native_accumulate_elasticity(
     return f, h
 
 
-# The staged scalar loop relies on explicit inlining to keep its lookahead inexpensive.
-_accumulate_scalar_elasticity = (
-    _scalar_native_accumulate_elasticity if _supports_func_inlining else accumulate_elasticity_force_and_hessian
-)
-
-
 @wp.kernel(launch_bounds=(256, 1))
 def solve_elasticity(
     dt: float,
@@ -3153,7 +3142,7 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    f, h = _accumulate_scalar_elasticity(
+    f, h = _scalar_native_accumulate_elasticity(
         particle_index,
         dt,
         pos_prev,

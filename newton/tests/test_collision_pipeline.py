@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import gc
 import itertools
 import math
 import unittest
@@ -72,12 +71,8 @@ from newton.tests.unittest_utils import (
     get_cuda_test_devices,
     get_test_devices,
     requires,
-    warp_version_at_least,
 )
 from newton.tests.utils.soft_contacts import evaluate_soft_contact_force_mask
-
-# Older Warp destroys textures immediately during CUDA capture (NVIDIA/warp#2066).
-_WARP_NEEDS_CAPTURE_GC_GUARD = not warp_version_at_least("1.19.0.dev20261020")
 
 
 class TestLevel(IntFlag):
@@ -203,17 +198,9 @@ class CollisionSetup:
 
     def capture(self):
         if wp.get_device(self._device).is_cuda:
-            # Cyclic GC can destroy an earlier scene's SDF textures, which CUDA forbids during capture.
-            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
-            if gc_was_enabled:
-                gc.disable()
-            try:
-                with wp.ScopedCapture(device=self._device) as capture:
-                    self.simulate()
-                self.graph = capture.graph
-            finally:
-                if gc_was_enabled:
-                    gc.enable()
+            with wp.ScopedCapture(device=self._device) as capture:
+                self.simulate()
+            self.graph = capture.graph
         else:
             self.graph = None
 
@@ -8009,15 +7996,8 @@ def test_plane_convex_support(test, device):
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
         if wp.get_device(device).is_cuda:
-            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
-            if gc_was_enabled:
-                gc.disable()
-            try:
-                with wp.ScopedCapture(device=device) as capture:
-                    pipeline.collide(state, contacts)
-            finally:
-                if gc_was_enabled:
-                    gc.enable()
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts)
             wp.capture_launch(capture.graph)
         distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
         newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
@@ -8151,15 +8131,8 @@ def test_small_hull_broad_phase_bounds(test, device):
     np.testing.assert_array_equal(contacts.rigid_contact_shape1.numpy()[:count], 1)
     for pose in poses:
         pose[3:] = np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3) * wp.quat(*pose[3:]))
-    gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
-    if gc_was_enabled:
-        gc.disable()
-    try:
-        with wp.ScopedCapture(device=device) as capture:
-            pipeline.collide(state, contacts)
-    finally:
-        if gc_was_enabled:
-            gc.enable()
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
     state.body_q.assign(poses)
     wp.capture_launch(capture.graph)
     check_bounds()
@@ -8209,15 +8182,8 @@ def test_tetrahedron_local_bounds_routing(test, device):
     worlds = set((contacts.rigid_contact_shape0.numpy()[:count] // 2).tolist())
     test.assertEqual(worlds, {world for world in range(64) if world % 4 in (1, 2)})
 
-    gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
-    if gc_was_enabled:
-        gc.disable()
-    try:
-        with wp.ScopedCapture(device=device) as capture:
-            pipeline.collide(state, contacts)
-    finally:
-        if gc_was_enabled:
-            gc.enable()
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
     poses = state.body_q.numpy()
     poses[1::2, :3] = poses[::2, :3] + np.array([0.96, 0.0, 0.0])
     state.body_q.assign(poses)

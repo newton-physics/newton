@@ -29,8 +29,6 @@ Sorting body pairs makes construction local to a pair and preserves CUDA graph
 capture: all buffers and the radix-sort workspace have fixed capacity.
 """
 
-import inspect
-
 import warp as wp
 
 from ...core.reset import reset_world_selected
@@ -565,14 +563,8 @@ def _flood_regions(
 
 # Capped at the register count of the single-path kernel: the device-flood branch
 # otherwise raises it from 96 to 120, and the lost occupancy costs more than the
-# branch saves when a batch of small worlds floods every pair here. The cap needs
-# Warp's cuda_max_registers (1.17); older Warp builds the uncapped kernel.
-_BUILD_KERNEL_OPTIONS = (
-    {"cuda_max_registers": 96} if "cuda_max_registers" in inspect.signature(wp.kernel).parameters else {}
-)
-
-
-@wp.kernel(enable_backward=False, **_BUILD_KERNEL_OPTIONS)
+# branch saves when a batch of small worlds floods every pair here.
+@wp.kernel(enable_backward=False, cuda_max_registers=96)
 def _build(
     count: wp.array[int],
     q: wp.array[wp.transform],

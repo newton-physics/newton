@@ -47,19 +47,6 @@ range and still yield an unreliable normal after division.  A threshold of
 triangles contribute near-zero area anyway)."""
 
 
-def _get_marching_cubes_class():
-    """Find Warp's marching-cubes class without using its deprecated alias.
-
-    Remove the fallback once Newton's minimum Warp version provides
-    ``warp.geometry.IsoSurfaceMarchingCubes``.
-    """
-    try:
-        from warp.geometry import IsoSurfaceMarchingCubes  # noqa: PLC0415 - Warp 1.17 lacks this module
-    except ImportError:
-        return wp.MarchingCubes
-    return IsoSurfaceMarchingCubes
-
-
 def get_mc_tables(device):
     """Create marching cubes lookup tables on the specified device.
 
@@ -89,11 +76,12 @@ def get_mc_tables(device):
         ]
     )
 
-    marching_cubes = _get_marching_cubes_class()
-    tri_local_inds = np.asarray(marching_cubes.TRI_LOCAL_INDICES, dtype=np.int32)
-    tri_range_table = wp.array(marching_cubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
+    from warp.geometry import IsoSurfaceMarchingCubes  # noqa: PLC0415 - slow import
+
+    tri_local_inds = np.asarray(IsoSurfaceMarchingCubes.TRI_LOCAL_INDICES, dtype=np.int32)
+    tri_range_table = wp.array(IsoSurfaceMarchingCubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
     tri_local_inds_table = wp.array(tri_local_inds, dtype=wp.int32, device=device)
-    corner_offsets_table = wp.array(marching_cubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
+    corner_offsets_table = wp.array(IsoSurfaceMarchingCubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
     edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
 
     # Create flattened table:

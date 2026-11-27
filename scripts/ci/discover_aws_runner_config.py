@@ -29,7 +29,6 @@ ALLOWED_REGIONS = (
     "ap-northeast-1",
     "ap-northeast-2",
 )
-DEFAULT_AMI_NAME = "Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????"
 
 
 def warning(message: str) -> None:
@@ -111,7 +110,6 @@ def discover_candidates(
     tag_key: str,
     aws_call: AwsCall = aws,
     warn: Warn = warning,
-    image_name: str = DEFAULT_AMI_NAME,
 ) -> list[dict[str, str]]:
     """Discover eligible EC2 runner candidates.
 
@@ -121,7 +119,6 @@ def discover_candidates(
         tag_key: Tag key used to find eligible subnets and security groups.
         aws_call: AWS EC2 call helper.
         warn: Warning callback.
-        image_name: AWS AMI name or name pattern to select in each region.
 
     Returns:
         Candidate objects accepted by ``machulav/ec2-github-runner``.
@@ -153,7 +150,7 @@ def discover_candidates(
             "--owners",
             "amazon",
             "--filters",
-            f"Name=name,Values={image_name}",
+            "Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????",
             "Name=state,Values=available",
             "--query",
             "reverse(sort_by(Images, &CreationDate))[:1].ImageId",
@@ -285,8 +282,7 @@ def main() -> int:
     instance_type = os.environ["AWS_INSTANCE_TYPE"]
     tag_key = os.environ["AWS_RUNNER_RESOURCE_TAG"]
 
-    image_name = os.environ.get("AWS_AMI_NAME") or DEFAULT_AMI_NAME
-    candidates = discover_candidates(regions, instance_type, tag_key, image_name=image_name)
+    candidates = discover_candidates(regions, instance_type, tag_key)
     if not candidates:
         error("No eligible EC2 runner candidates were discovered.")
         return 1
