@@ -30,37 +30,15 @@ Minimum Requirements
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64, ARM64), or macOS (CPU only)
      - macOS has no GPU acceleration; Windows ARM64 support is experimental
-
-GPU requirements depend on the installed `Warp
-<https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__ wheel:
-
-.. list-table::
-   :widths: 20 25 25 30
-   :header-rows: 1
-
-   * - Warp wheel
-     - NVIDIA GPU
-     - NVIDIA driver
-     - CUDA support
-   * - 1.18+ (fresh installs)
-     - 1.18: compute capability 7.5+ (Turing)
-     - 1.18: R580 or newer
-     - Standard 1.18 wheel uses CUDA 13.4; check Warp's requirements for later releases
-   * - 1.17
-     - Compute capability 5.2+ (Maxwell) on x86-64; see the ARM64 limitation below
-     - 545 or newer (Newton 1.7 requirement)
-     - Standard wheel uses CUDA 12.9
-
-Newton 1.7 deprecates CUDA 12 GPU support, while retaining it with a Warp
-wheel built with CUDA 12 throughout the 1.7 release line. To use the standard
-Warp 1.17 wheel on an R545–R579 driver or an older supported GPU, install both
-packages in one request::
-
-    python -m pip install "newton" "warp-lang==1.17.0"
-
-Keep the Warp pin in your application's requirements or constraints file for
-later installs. A local CUDA Toolkit is not needed for standard Warp wheels.
-See :ref:`cuda-compatibility` for version-specific notes.
+   * - NVIDIA GPU
+     - Compute capability 7.5+ (Turing)
+     - Any GeForce RTX 20xx or newer
+   * - NVIDIA Driver
+     - R580 or newer (CUDA 13)
+     -
+   * - CUDA
+     - 13
+     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime. See :ref:`cuda-compatibility` for version-specific notes.
 
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -80,25 +58,16 @@ on Linux x86-64 and ARM64, Windows x86-64, and macOS ARM64. On Linux ARM64,
 Newton uses USD Core 26.11 for Python 3.14; earlier Python versions use USD
 Exchange. Windows ARM64 retains the optional-feature limitations below.
 
-**Linux aarch64 (ARM64)**
-
-The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
-``sm_70`` targets on Linux ARM64. The installation command above does not
-enable these GPUs. They need a Warp wheel built with an earlier CUDA 12
-toolkit; see `Warp's CUDA 12.9 ARM64 limitation
-<https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
-
 **Windows ARM64 (experimental)**
 
-Windows on ARM64 requires Warp 1.19 or newer. Several
-optional dependencies do not publish Windows ARM64 packages, so the extras skip
-them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
-USD import and export are unavailable because ``mujoco-core`` and ``usd-core`` cannot
-be installed. The platform markers in ``pyproject.toml`` list all skipped
-packages. The ``torch-cu12``, ``torch-cu13``, ``rtx``, ``docs``, and
-``notebook`` extras cannot be installed because PyTorch provides no CUDA
-builds and OVRTX, ``pypandoc-binary``, and ``rerun-sdk`` provide no packages
-for Windows ARM64.
+Several optional dependencies do not publish Windows ARM64 packages, so the
+extras skip them on this platform. Most notably,
+:class:`~newton.solvers.SolverMuJoCo` and USD import and export are unavailable
+because ``mujoco-core`` and ``usd-core`` cannot be installed. The platform
+markers in ``pyproject.toml`` list all skipped packages. The ``torch-cu12``,
+``torch-cu13``, ``rtx``, ``docs``, and ``notebook`` extras cannot be installed
+because PyTorch provides no CUDA builds and OVRTX, ``pypandoc-binary``, and
+``rerun-sdk`` provide no packages for Windows ARM64.
 
 For tested configurations and CUDA version-specific notes, see
 :doc:`compatibility`.
@@ -273,9 +242,7 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``torch-cu12``
      - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as
        training or running deprecated Torch ``.pt2`` / ``.pt`` / ``.pth`` policies
-       (includes ``examples``). On an R545–R579 driver, install with
-       ``python -m pip install "newton[torch-cu12]" "warp-lang==1.17.0"``; the extra
-       does not select Warp 1.17 by itself.
+       (includes ``examples``)
    * - ``torch-cu13``
      - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running deprecated Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``

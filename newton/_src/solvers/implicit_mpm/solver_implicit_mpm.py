@@ -136,10 +136,6 @@ from .implicit_mpm_solver_kernels import (
     voxel_coordinates,
 )
 
-# Features that need Warp 1.19 check this gate; remove it with their fallbacks once
-# Newton requires Warp 1.19.
-_WARP_AT_LEAST_1_19 = tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 19)
-
 
 def _as_2d_array(array, shape, dtype):
     return wp.array(
@@ -246,22 +242,6 @@ def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polyn
     return fem.make_polynomial_basis_space(
         grid, degree=degree, element_basis=element_basis, family=family, discontinuous=discontinuous
     )
-
-
-class _DomainNamedPicQuadrature(fem.PicQuadrature):
-    """PIC quadrature whose cache name includes its domain.
-
-    Warp 1.18 names PIC quadratures by index scope only, so point bases built on
-    different geometries share generated kernels. Warp 1.19 includes the domain
-    name itself (GH-1984).
-    """
-
-    @property
-    def name(self):
-        return f"{super().name}_{self.domain.name}"
-
-
-_PicQuadrature = fem.PicQuadrature if _WARP_AT_LEAST_1_19 else _DomainNamedPicQuadrature
 
 
 def _recovery_time(time: float | None, name: str) -> float | None:
@@ -3296,7 +3276,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     self._mpm_model.voxel_size,
                     self._particle_environment,
                 )
-                pic = _PicQuadrature(
+                pic = fem.PicQuadrature(
                     domain=domain,
                     positions=particle_locations,
                     measures=self._mpm_model.particle_volume,
@@ -3306,7 +3286,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self._scratchpad.particle_cells = particle_locations[0]
                 center_pic = None
                 if self.collider_basis[:3] == "pic" or "particle" in self._density_measurements():
-                    center_pic = _PicQuadrature(
+                    center_pic = fem.PicQuadrature(
                         domain=domain,
                         positions=self._particle_cell_locations(domain, positions, self._particle_environment),
                         measures=self._mpm_model.particle_volume,
@@ -3320,7 +3300,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             else:
                 particle_locations = self._particle_cell_locations(domain, positions, self._particle_environment)
                 self._scratchpad.particle_cells = particle_locations[0].reshape((-1, 1))
-                pic = _PicQuadrature(
+                pic = fem.PicQuadrature(
                     domain=domain,
                     positions=particle_locations,
                     measures=self._mpm_model.particle_volume,
@@ -3863,7 +3843,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     reduction="first",
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                     temporary_store=self.temporary_store,
-                    # Preserve first-sample arithmetic; older Warp falls back to triplets.
+                    # Preserve first-sample arithmetic.
                     bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
 
@@ -3957,11 +3937,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Prefer row compression for validated CUDA contact-map layouts."""
         # Compact maps with many inactive partition rows can still favor triplets,
         # even when Warp packs active-row candidate capacity.
-        # Row compression resizes padded BSR rows after the matrix shrinks, which
-        # Warp 1.19 supports (NVIDIA/warp#2036, see #4506).
         return (
-            _WARP_AT_LEAST_1_19
-            and self.model.device.is_cuda
+            self.model.device.is_cuda
             and self.velocity_basis == "Q1"
             and self.collider_basis in ("S2", "S3")
             and scratch.collider_node_count <= scratch.collider_fraction_test.space_restriction.node_count()

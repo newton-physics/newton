@@ -20,7 +20,6 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Environment :: GPU :: NVIDIA CUDA",
-    "Environment :: GPU :: NVIDIA CUDA :: 12",
     "Environment :: GPU :: NVIDIA CUDA :: 13",
     "Topic :: Scientific/Engineering",
 ]
@@ -28,7 +27,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "warp-lang>=1.17.0",
+    "warp-lang>=1.19.0",
 ]
 
 [project.optional-dependencies]

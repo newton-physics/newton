@@ -30,8 +30,7 @@ Newton releases are tested on the following configurations:
    * - Dependencies
      - Latest known-good versions are pinned in the release branch's ``uv.lock``
    * - CUDA
-     - 13; 12 is deprecated in Newton 1.7 and covered by the nightly Warp 1.17
-       minimum-dependency tests on an R570 driver
+     - 13
 
 For the minimum requirements to install Newton, see
 :ref:`system-requirements` in the installation guide.
@@ -54,8 +53,7 @@ is the source of truth for:
 Newton may apply additional constraints on top of Warp's baseline. Newton's
 source lockfile controls contributor environments, while a wheel installation
 resolves from the package's declared ``warp-lang`` requirement. For current
-default requirements and the Warp 1.17 installation command, see
-:ref:`system-requirements`.
+default requirements, see :ref:`system-requirements`.
 
 .. _cuda-compatibility:
 
@@ -68,14 +66,13 @@ CUDA Compatibility
 
    * - CUDA Version
      - Notes
-   * - 12 (deprecated)
-     - Continues to work throughout Newton 1.7.x with a CUDA 12-built Warp
-       wheel, such as the standard Warp 1.17 wheel. See
-       :ref:`system-requirements` for driver and GPU limits.
-   * - 13.4+ (recommended)
-     - Since Warp 1.18, standard PyPI and nightly wheels require an NVIDIA
-       R580-series or newer driver for CUDA acceleration. Check the installed
-       wheel's driver and GPU requirements on the `Warp compatibility page
+   * - 12
+     - Not supported. Upgrade to an NVIDIA R580-series or newer driver, or run
+       on the CPU.
+   * - 13
+     - Standard Warp wheels require an NVIDIA R580-series or newer driver
+       for CUDA acceleration. Check the installed wheel's driver and GPU
+       requirements on the `Warp compatibility page
        <https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__.
 
 .. _versioning:

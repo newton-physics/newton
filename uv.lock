@@ -3456,7 +3456,7 @@ requires-dist = [
     { name = "viser", marker = "extra == 'dev'", specifier = ">=1.1.1" },
     { name = "viser", marker = "extra == 'docs'", specifier = ">=1.1.1" },
     { name = "viser", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
-    { name = "warp-lang", specifier = ">=1.17.0", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", specifier = ">=1.19.0", index = "https://pypi.nvidia.com/" },
     { name = "warp-nn", extras = ["onnx"], marker = "extra == 'onnx'", specifier = "~=0.4.0" },
     { name = "warp-optix", marker = "(python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'optix') or (python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'win32' and extra == 'optix')", specifier = "~=0.3.0" },
 ]

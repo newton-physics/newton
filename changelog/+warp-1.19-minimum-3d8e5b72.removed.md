@@ -1,0 +1,1 @@
+Remove CUDA 12 GPU support, deprecated in Newton 1.7. With the standard Warp wheels, CUDA acceleration now requires an NVIDIA R580-series or newer driver and a Turing or newer GPU; upgrade the driver, or run on the CPU.
