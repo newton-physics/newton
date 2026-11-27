@@ -763,8 +763,6 @@ def test_texture_sdf_gradient_accuracy(test, device):
                 outputs=[distances, analytical],
                 device=device,
             )
-            # Separate analytical and scalar sampling avoids a combined-kernel
-            # CUDA compilation issue on supported Warp 1.17.
             h = float(voxel.min() * 0.01)
             offsets = np.eye(3, dtype=np.float32) * h
             stencil = np.stack((points[:, None, :] + offsets, points[:, None, :] - offsets), axis=2)

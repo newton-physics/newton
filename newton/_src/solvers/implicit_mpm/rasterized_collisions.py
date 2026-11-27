@@ -872,8 +872,7 @@ def _make_reflect_kernels(grid):
             res = geo.res
         return ijk, res
 
-    # Stencil loops index vertices from the containing cell's lower corner, read once outside the loops
-    # (Warp 1.17 faults on struct array fields read in unrolled loops).
+    # Stencil loops index vertices from the containing cell's lower corner, read once outside the loops.
     @fem.cache.dynamic_func(suffix=grid.name)
     def vertex_index(vertex_grid: wp.uint64, corner: wp.vec3i, res: wp.vec3i, vertex: wp.vec3i, environment: int):
         """Index of the vertex ``vertex`` away from the lower corner ``corner``, or -1 outside the grid."""
