@@ -53,6 +53,7 @@ See Also:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import warp as wp
@@ -408,18 +409,6 @@ def _make_contact_value_fast(score: float, fingerprint: int, contact_id: int) ->
         contact_id: Index into the contact buffer (from ``atomic_add``).
     """
     return (wp.uint64(float_flip(score)) << wp.uint64(32)) | wp.uint64(contact_id)
-
-
-@wp.func
-def _make_preprune_probe_fast(score: float, fingerprint: int) -> wp.uint64:
-    """Pre-prune ceiling probe (fast path).
-
-    Packs the full-precision score with ``0xFFFFFFFF`` in the contact_id
-    field, creating the maximum possible value for this score.  The
-    comparison ``stored < probe`` is true whenever the stored value can
-    be beaten, regardless of what contact_id the new contact receives.
-    """
-    return (wp.uint64(float_flip(score)) << wp.uint64(32)) | wp.uint64(0xFFFFFFFF)
 
 
 @wp.func
@@ -1646,7 +1635,7 @@ def _export_and_reduce_contact_centered_two_spatial_depths(
     fingerprint: int,
     centered_position: wp.vec3,
     inner_spatial_depth: float,
-    outer_spatial_depth: float,
+    use_outer: bool,
     position_local: wp.vec3,
     aabb_lower_voxel: wp.vec3,
     aabb_upper_voxel: wp.vec3,
@@ -1656,13 +1645,12 @@ def _export_and_reduce_contact_centered_two_spatial_depths(
 ) -> int:
     """Export contact with inner-preferred spatial winners.
 
-    Directional slots accept contacts out to ``outer_spatial_depth``, but
+    Directional slots accept contacts within the caller's outer bound, but
     contacts inside ``inner_spatial_depth`` always outrank outer contacts.
     Within the same inner/outer tier, the furthest spatial projection wins.
     """
     ht_capacity = reducer_data.ht_capacity
     use_inner = depth < inner_spatial_depth
-    use_outer = depth < outer_spatial_depth
 
     if not use_outer:
         return -1
@@ -1930,7 +1918,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         fingerprint,
         centered_position,
         inner_spatial_depth,
-        outer_spatial_depth,
+        depth <= outer_spatial_depth,
         position_local,
         aabb_lower_voxel,
         aabb_upper_voxel,
@@ -2744,6 +2732,7 @@ def _group_contact_won(
     return won
 
 
+@lru_cache
 def create_export_group_contacts_kernel(writer_func: Any):
     """Create the kernel that writes every staged contact that won a slot of its group."""
 
@@ -2857,14 +2846,16 @@ def _roundoff_duplicate_bit_for_slot_pair(
     return 1 << slot_b
 
 
+@lru_cache
 def create_export_reduced_contacts_kernel(writer_func: Any):
     """Create a tiled kernel that exports globally reduced contacts.
 
     One thread block processes each active hashtable entry. Its first 21 lanes
     compare the seven possible winner pairs in parallel, preserving the
     lower-fingerprint representative for roundoff-equivalent geometry. CUDA
-    lanes export the seven surviving slots concurrently in fast mode; CPU and
-    deterministic paths stream them serially from lane zero.
+    lanes export the seven surviving slots concurrently in fast mode and the
+    CPU streams them serially from lane zero. Deterministic mode only marks them
+    in ``exported_flags`` for :func:`create_export_marked_contacts_kernel`.
     """
     _module = f"export_reduced_contacts_{writer_func.__name__}"
 
@@ -2993,6 +2984,10 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                     contact_id = unpack_contact_id(value, deterministic)
                     if contact_id == 0:
                         continue
+                    if deterministic != 0:
+                        # Slots race for a contact and their inlined writers may round differently.
+                        wp.atomic_max(exported_flags, contact_id, 1)
+                        continue
                     # The global flag also suppresses repeated winners within
                     # this entry, so no per-entry ID list is needed.
                     export_contact_id(
@@ -3013,6 +3008,29 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
             wp.tile_scatter_masked(duplicate_bits, lane, int(0), True)
 
     return export_reduced_contacts_kernel
+
+
+def create_export_marked_contacts_kernel(writer_func: Any):
+    """Create the kernel that writes every contact the deterministic reduced export marked."""
+
+    @wp.kernel(enable_backward=False, module=f"export_marked_contacts_{writer_func.__name__}")
+    def export_marked_contacts_kernel(
+        reducer_data: GlobalContactReducerData,
+        shape_types: wp.array[int],
+        shape_data: wp.array[wp.vec4],
+        shape_gap: wp.array[float],
+        writer_data: Any,
+        total_num_threads: int,
+    ):
+        tid = wp.tid()
+        num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
+        for i in range(tid, num_contacts, total_num_threads):
+            contact_id = i + 1
+            if reducer_data.exported_flags[contact_id] != 0:
+                contact_data = _staged_contact_data(contact_id, reducer_data, shape_types, shape_data, shape_gap)
+                writer_func(contact_data, writer_data, -1)
+
+    return export_marked_contacts_kernel
 
 
 @wp.kernel(enable_backward=False, module="unique")

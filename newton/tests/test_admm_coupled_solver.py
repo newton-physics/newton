@@ -536,12 +536,14 @@ def _run_inclined_plane_particle_box(
     *,
     steps: int = 120,
     dt: float = 1.0 / 360.0,
+    friction_mode: newton.ShapeFrictionMode = newton.ShapeFrictionMode.SLIDING,
 ) -> tuple[float, float, int]:
     model, plane_body, _, particle_ids = _build_inclined_plane_particle_box_scene(angle)
     # ADMM derives friction from material properties; set both sides so the
     # geometric-mean combine reduces to the requested coefficient.
     model.particle_mu = float(friction)
     model.shape_material_mu = wp.full(model.shape_count, float(friction), dtype=wp.float32, device=model.device)
+    model.shape_material_friction_mode.fill_(int(friction_mode))
     solver = _make_admm_inclined_plane_particle_box_solver(
         model,
         plane_body,
@@ -1217,39 +1219,32 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         disabled = _make_semi_body_particle_solver(model)
         self.assertEqual(disabled._admm_rp_groups, [])
 
-    def test_deprecated_helper_preserves_legacy_attachment_row(self):
-        """Keep the deprecated ADMM helper compatible with its custom-row layout."""
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+    def test_legacy_attachment_rows_are_consumed(self):
+        """Keep ADMM compatible with the legacy ``coupling:body_particle_attachment`` rows."""
 
-        with self.assertWarnsRegex(DeprecationWarning, "add_attachment_particle_body"):
-            attachment = SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=500.0)
+        def build(stiffness: float) -> newton.Model:
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+            SolverCoupledADMM.register_custom_attributes(builder)
+            builder.add_custom_values(
+                **{
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_BODY_ATTR: body,
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_PARTICLE_ATTR: particle,
+                    SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_STIFFNESS_ATTR: stiffness,
+                }
+            )
+            builder.color()
+            model = builder.finalize(device="cpu")
+            model.particle_grid = None
+            return model
 
-        self.assertEqual(attachment, 0)
-        self.assertEqual(builder.attachment_particle_body_count, 0)
-
-        builder.color()
-        model = builder.finalize(device="cpu")
+        model = build(500.0)
         self.assertEqual(model.attachment_particle_body_count, 0)
-        self.assertEqual(
-            model.custom_frequency_counts[SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY],
-            1,
-        )
-        self.assertIn(
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY,
-            model.custom_frequency_counts,
-        )
+        self.assertEqual(len(_make_semi_body_particle_solver(model)._admm_rp_groups), 1)
 
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
-        with self.assertWarns(DeprecationWarning):
-            SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=math.inf)
-        builder.color()
-        model = builder.finalize(device="cpu")
         with self.assertRaisesRegex(ValueError, "is hard; use ModelBuilder.add_attachment_particle_body"):
-            _make_semi_body_particle_solver(model)
+            _make_semi_body_particle_solver(build(math.inf))
 
     def test_single_unsupported_entry_attachment_is_reported(self):
         """Warn when a same-entry solver cannot apply a model attachment."""
@@ -1391,13 +1386,22 @@ class TestAdmmExternalForces(unittest.TestCase):
         body_idx = rs  # only MuJoCo body
         body_mass = float(model_b.body_mass.numpy()[body_idx])
         upward_force = 5.0 * body_mass * 9.81  # 5 g upward wrench
+        output_body_f = np.full((model_b.body_count, 6), 0.25, dtype=np.float32)
+        output_particle_f = np.full((model_b.particle_count, 3), 0.5, dtype=np.float32)
         for _ in range(5):
             state_0.clear_forces()
             wrench = np.zeros((model_b.body_count, 6), dtype=np.float32)
             wrench[body_idx, 2] = upward_force  # linear z
             state_0.body_f = wp.array(wrench, dtype=wp.spatial_vector, device=model_b.device)
+            # Distinct output-state sentinels: solvers never write force inputs in either state.
+            state_1.body_f.assign(output_body_f)
+            state_1.particle_f.assign(output_particle_f)
             collision_pipeline.collide(state_0, contacts)
             solver_b.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+            np.testing.assert_array_equal(state_0.body_f.numpy(), wrench)
+            np.testing.assert_array_equal(state_0.particle_f.numpy(), 0.0)
+            np.testing.assert_array_equal(state_1.body_f.numpy(), output_body_f)
+            np.testing.assert_array_equal(state_1.particle_f.numpy(), output_particle_f)
             state_0, state_1 = state_1, state_0
         z_with_force = state_0.body_q.numpy()[0, 2]
 
@@ -1652,6 +1656,19 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         self.assertLess(math.tan(angle), friction)
         self.assertLess(abs(displacement), 0.01)
         self.assertLess(abs(velocity), 0.05)
+
+    def test_collision_frictionless_shape_releases_subcritical_inclined_box(self):
+        """Slide particles down a frictionless plane at an angle that friction would hold."""
+        angle = math.radians(15.0)
+        steps, dt = 120, 1.0 / 360.0
+        displacement, _velocity, contact_count = _run_inclined_plane_particle_box(
+            angle, 0.4, steps=steps, dt=dt, friction_mode=newton.ShapeFrictionMode.NONE
+        )
+
+        t = steps * dt
+        expected_displacement = 0.5 * 10.0 * math.sin(angle) * t * t
+        self.assertGreater(contact_count, 0)
+        self.assertAlmostEqual(displacement, expected_displacement, delta=0.45 * expected_displacement)
 
     def test_collision_rigid_rigid_frictional_contact_matches_inclined_plane_box_motion(self):
         friction = 0.35

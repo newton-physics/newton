@@ -22,16 +22,6 @@ from .anderson import (
     store_contact_anderson_sample,
     store_contact_map_input,
 )
-from .apgd import (
-    APGDRowState,
-    apgd_momentum,
-    box_restart_dot,
-    contact_restart_dot,
-    extrapolate_box_apgd_row,
-    extrapolate_contact_apgd_row,
-    initialize_box_apgd_row,
-    initialize_contact_apgd_row,
-)
 from .contact import (
     angular_contact_reaction,
     clamp_contact_reaction,
@@ -41,6 +31,17 @@ from .contact import (
     pack_spatial_friction,
     scatter_spatial_impulse,
     vec5f,
+)
+from .nesterov import (
+    NesterovRowState,
+    box_restart_dot,
+    contact_restart_dot,
+    extrapolate_body_twist,
+    extrapolate_box_nesterov_row,
+    extrapolate_contact_nesterov_row,
+    initialize_box_nesterov_row,
+    initialize_contact_nesterov_row,
+    nesterov_momentum,
 )
 from .projection_kernels import (
     _project_box_row,
@@ -316,12 +317,12 @@ def make_project_by_world_kernel(
         spatial: Whether the contacts are spatial contacts with angular friction.
         colored: Whether the rows are swept by colored Gauss--Seidel; Jacobi otherwise.
         acceleration: Acceleration of the projection maps, whose state the kernel takes as one struct:
-            :class:`.AndersonWorldState`, :class:`.APGDRowState`, or :class:`NoAccelerationState`.
+            :class:`.AndersonWorldState`, :class:`.NesterovRowState`, or :class:`NoAccelerationState`.
         body_capacity: Largest number of bodies of a world, at most :data:`_WORLD_SHARED_BODY_CAPACITY`.
     """
     anderson = acceleration == ProjectionAcceleration.ANDERSON
-    apgd = acceleration == ProjectionAcceleration.APGD
-    AccelerationState = AndersonWorldState if anderson else APGDRowState if apgd else NoAccelerationState
+    nesterov = acceleration == ProjectionAcceleration.NESTEROV
+    AccelerationState = AndersonWorldState if anderson else NesterovRowState if nesterov else NoAccelerationState
     contact_row_cost = _SPATIAL_CONTACT_ROW_COST if spatial else _CONTACT_ROW_COST
     shared_world_twists = _make_shared_world_twists(max(body_capacity, 1))
 
@@ -720,7 +721,7 @@ def make_project_by_world_kernel(
             local += stride
 
     @wp.func
-    def initialize_world_apgd(
+    def initialize_world_nesterov(
         wid: wp.int32,
         tid: wp.int32,
         world_box_offset: wp.array[wp.int32],
@@ -736,7 +737,7 @@ def make_project_by_world_kernel(
         box_reaction: wp.array[wp.float32],
         contact_reaction: wp.array[wp.vec3f],
         angular_reaction: wp.array[wp.vec3f],
-        state: APGDRowState,
+        state: NesterovRowState,
     ):
         """Clamp the warm-start reactions of one world and reset their momentum.
 
@@ -744,13 +745,13 @@ def make_project_by_world_kernel(
         """
         local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
-            initialize_box_apgd_row(
+            initialize_box_nesterov_row(
                 world_box_offset[wid] + local, box_lower, box_upper, box_reaction, state.box_trial, state.box_previous
             )
             local += stride
         local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
-            initialize_contact_apgd_row(
+            initialize_contact_nesterov_row(
                 world_contact_offset[wid] + local,
                 contact_body_a,
                 contact_body_b,
@@ -770,31 +771,24 @@ def make_project_by_world_kernel(
         wid: wp.int32,
         tid: wp.int32,
         theta: wp.float32,
+        world_body_offset: wp.array[wp.int32],
+        world_body_count: wp.array[wp.int32],
         world_box_offset: wp.array[wp.int32],
         world_box_count: wp.array[wp.int32],
         world_contact_offset: wp.array[wp.int32],
         world_contact_count: wp.array[wp.int32],
-        box_body_a: wp.array[wp.int32],
-        box_body_b: wp.array[wp.int32],
-        box_jacobian_a: wp.array[vec6f],
-        box_jacobian_b: wp.array[vec6f],
-        contact_body_a: wp.array[wp.int32],
-        contact_body_b: wp.array[wp.int32],
-        contact_jacobian_a: wp.array[mat36f],
-        contact_jacobian_b: wp.array[mat36f],
-        contact_frame: wp.array[wp.mat33f],
         contact_friction: wp.array[wp.float32],
         angular_friction: wp.array[wp.vec2f],
         box_reaction: wp.array[wp.float32],
         contact_reaction: wp.array[wp.vec3f],
         angular_reaction: wp.array[wp.vec3f],
-        state: APGDRowState,
-        weights: ProjectionWeights,
-        twist_delta: wp.array[vec6f],
+        state: NesterovRowState,
+        world_twist: wp.array[vec6f],
     ) -> wp.float32:
-        """Update the momentum of one world, extrapolate its rows, and return the next ``theta``.
+        """Update the momentum of one world, extrapolate its rows and body twists, and return the next ``theta``.
 
-        Every thread of the block must call this function, which reduces the restart test over the block.
+        Every thread of the block must call this function, which reduces the restart test over the block. Each
+        thread extrapolates the bodies that it updates in :func:`_apply_world_delta`.
         """
         dot = wp.float32(0.0)
         local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
@@ -816,43 +810,31 @@ def make_project_by_world_kernel(
             )
             local += stride
         restart_dot = wp.tile_sum(wp.tile(dot))
-        next_theta, beta = apgd_momentum(theta, restart_dot[0])
+        next_theta, beta = nesterov_momentum(theta, restart_dot[0])
         local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
-            extrapolate_box_apgd_row(
-                world_box_offset[wid] + local,
-                beta,
-                box_body_a,
-                box_body_b,
-                box_jacobian_a,
-                box_jacobian_b,
-                weights,
-                box_reaction,
-                state.box_trial,
-                state.box_previous,
-                twist_delta,
+            extrapolate_box_nesterov_row(
+                world_box_offset[wid] + local, beta, box_reaction, state.box_trial, state.box_previous
             )
             local += stride
         local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
-            extrapolate_contact_apgd_row(
+            extrapolate_contact_nesterov_row(
                 world_contact_offset[wid] + local,
                 beta,
-                contact_body_a,
-                contact_body_b,
-                contact_jacobian_a,
-                contact_jacobian_b,
-                contact_frame,
-                weights,
                 contact_reaction,
                 state.contact_trial,
                 state.contact_previous,
                 angular_reaction,
                 state.angular_trial,
                 state.angular_previous,
-                twist_delta,
             )
             local += stride
+        local = tid
+        while local < world_body_count[wid]:
+            extrapolate_body_twist(world_body_offset[wid] + local, beta, world_twist, state.twist_previous)
+            local += wp.block_dim()
+        _sync_threads()
         return next_theta
 
     @wp.kernel(module="unique", enable_backward=False)
@@ -860,6 +842,7 @@ def make_project_by_world_kernel(
         # Inputs:
         iterations: wp.int32,
         color_count: wp.int32,
+        recycle: wp.bool,
         world_body_offset: wp.array[wp.int32],
         world_body_count: wp.array[wp.int32],
         box_capacity: wp.int32,
@@ -918,8 +901,10 @@ def make_project_by_world_kernel(
         Colored worlds sweep their colors in order and finish with one Jacobi
         smoothing sweep; Jacobi worlds sweep all their rows at once. With
         Anderson acceleration, each iteration is one map whose
-        image is mixed along the stored direction; with APGD, every Jacobi sweep
-        but the last is extrapolated. Each block sweeps the projected twists of its
+        image is mixed along the stored direction; with Nesterov, every sweep but
+        the last is extrapolated, and ``recycle`` keeps the momentum and row
+        history of the previous splitting iteration and applies the deferred
+        extrapolation of its last sweep after the warm start. Each block sweeps the projected twists of its
         world in shared memory, and runs box rows and contacts on separate warps.
         """
         wid, tid = wp.tid()
@@ -935,25 +920,28 @@ def make_project_by_world_kernel(
         )
         _load_world_twists(wid, tid, world_body_offset, world_body_count, projected_twist, world_twist)
 
-        if wp.static(apgd):
-            initialize_world_apgd(
-                wid,
-                tid,
-                world_box_offset,
-                world_box_count,
-                world_contact_offset,
-                world_contact_count,
-                box_lower,
-                box_upper,
-                contact_body_a,
-                contact_body_b,
-                contact_friction,
-                angular_friction,
-                box_reaction,
-                contact_reaction,
-                angular_reaction,
-                acceleration_state,
-            )
+        keep_history = False
+        if wp.static(nesterov):
+            keep_history = recycle and acceleration_state.history[wid] == 1
+            if not keep_history:
+                initialize_world_nesterov(
+                    wid,
+                    tid,
+                    world_box_offset,
+                    world_box_count,
+                    world_contact_offset,
+                    world_contact_count,
+                    box_lower,
+                    box_upper,
+                    contact_body_a,
+                    contact_body_b,
+                    contact_friction,
+                    angular_friction,
+                    box_reaction,
+                    contact_reaction,
+                    angular_reaction,
+                    acceleration_state,
+                )
 
         # Apply the existing reactions before the first sweep, clamping the spatial reactions into their cone.
         local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
@@ -1021,6 +1009,39 @@ def make_project_by_world_kernel(
             )
 
         theta = wp.float32(1.0)
+        if wp.static(nesterov):
+            # The previous twists match the warm-started reactions; a kept history holds the twist change of the
+            # last sweep of the previous splitting iteration
+            local = tid
+            while local < world_body_count[wid]:
+                bid = world_body_offset[wid] + local
+                if keep_history:
+                    acceleration_state.twist_previous[bid] = world_twist[bid] - acceleration_state.twist_previous[bid]
+                else:
+                    acceleration_state.twist_previous[bid] = world_twist[bid]
+                local += wp.block_dim()
+            if recycle:
+                theta = acceleration_state.theta[wid]
+            if keep_history:
+                # The extrapolation deferred from the last sweep of the previous splitting iteration
+                theta = extrapolate_world(
+                    wid,
+                    tid,
+                    theta,
+                    world_body_offset,
+                    world_body_count,
+                    world_box_offset,
+                    world_box_count,
+                    world_contact_offset,
+                    world_contact_count,
+                    contact_friction,
+                    angular_friction,
+                    box_reaction,
+                    contact_reaction,
+                    angular_reaction,
+                    acceleration_state,
+                    world_twist,
+                )
         for iteration in range(iterations):
             if wp.static(colored):
                 for color in range(color_count):
@@ -1164,36 +1185,25 @@ def make_project_by_world_kernel(
                 _apply_world_delta(
                     wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
                 )
-            if wp.static(apgd):
+            if wp.static(nesterov):
                 if iteration + 1 < iterations:
                     theta = extrapolate_world(
                         wid,
                         tid,
                         theta,
+                        world_body_offset,
+                        world_body_count,
                         world_box_offset,
                         world_box_count,
                         world_contact_offset,
                         world_contact_count,
-                        box_body_a,
-                        box_body_b,
-                        box_jacobian_a,
-                        box_jacobian_b,
-                        contact_body_a,
-                        contact_body_b,
-                        contact_jacobian_a,
-                        contact_jacobian_b,
-                        contact_frame,
                         contact_friction,
                         angular_friction,
                         box_reaction,
                         contact_reaction,
                         angular_reaction,
                         acceleration_state,
-                        weights,
-                        twist_delta,
-                    )
-                    _apply_world_delta(
-                        wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
+                        world_twist,
                     )
 
         if wp.static(colored):
@@ -1252,6 +1262,16 @@ def make_project_by_world_kernel(
             )
             _apply_world_delta(wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist)
 
+        if wp.static(nesterov):
+            if tid == 0:
+                acceleration_state.theta[wid] = theta
+                acceleration_state.history[wid] = wp.int32(recycle)
+            # The twist change of the last sweep, for the deferred extrapolation of the next splitting iteration
+            local = tid
+            while local < world_body_count[wid]:
+                bid = world_body_offset[wid] + local
+                acceleration_state.twist_previous[bid] = world_twist[bid] - acceleration_state.twist_previous[bid]
+                local += wp.block_dim()
         _store_world_twists(wid, tid, world_body_offset, world_body_count, world_twist, projected_twist)
 
     return project_by_world

@@ -10,7 +10,7 @@ import warp as wp
 
 from newton._src.geometry.contact_data import (
     ContactData,
-    contact_sort_shape_index_bits,
+    contact_sort_key_layout,
     make_contact_sort_key,
     make_contact_sort_key_with_bits,
 )
@@ -26,6 +26,7 @@ from newton._src.geometry.contact_reduction_global import (
     _make_contact_value_fast,
     _make_preprune_probe_det,
     _unpack_contact_id_det,
+    create_export_marked_contacts_kernel,
     create_export_reduced_contacts_kernel,
     decode_oct,
     encode_oct,
@@ -614,6 +615,7 @@ def test_export_reduced_contacts_kernel(test, device):
 
     # Create the export kernel
     export_kernel = create_export_reduced_contacts_kernel(test_writer)
+    export_marked_kernel = create_export_marked_contacts_kernel(test_writer)
 
     # Store some contacts
     @wp.kernel(module="unique")
@@ -749,7 +751,7 @@ def test_export_reduced_contacts_kernel(test, device):
     # One block must reuse its shared duplicate-bit tile for every active entry.
     total_blocks = 1
 
-    def launch_and_verify():
+    def launch_and_verify(deterministic=0):
         wp.launch_tiled(
             export_kernel,
             dim=total_blocks,
@@ -768,11 +770,18 @@ def test_export_reduced_contacts_kernel(test, device):
                 writer_data,
                 total_blocks,
                 int(not device.is_cpu),
-                0,  # deterministic=0 (fast packing)
+                deterministic,
             ],
             device=device,
             block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
         )
+        if deterministic:
+            wp.launch(
+                export_marked_kernel,
+                dim=total_blocks,
+                inputs=[reducer_data, shape_types, shape_data, shape_gap, writer_data, total_blocks],
+                device=device,
+            )
 
         # ID zero is skipped, leaving five distinct pairs plus one representative
         # from the numerically equivalent winner pair and all seven geometrically
@@ -790,10 +799,11 @@ def test_export_reduced_contacts_kernel(test, device):
         np.testing.assert_array_equal(np.sort(positions[distinct_pair, 0]), np.arange(20.0, 27.0, dtype=np.float32))
 
     launch_and_verify()
-    for _ in range(10):
+    for i in range(10):
         reducer.exported_flags.zero_()
         contact_count_out.zero_()
-        launch_and_verify()
+        # Small contact IDs unpack the same way from fast and deterministic values.
+        launch_and_verify(deterministic=i % 2)
 
 
 def test_key_uniqueness(test, device):
@@ -1463,23 +1473,23 @@ class TestMakeContactSortKey(unittest.TestCase):
     pass
 
 
-def test_sort_key_shape_index_bits(test, device):
-    """Use only the shape-index bits required by the model, up to what the sub-key leaves free."""
+def test_sort_key_layout(test, device):
+    """Pack shape indices into the key while they fit; past that, sort by a separate pair key."""
     del device
     for shape_count, sub_key_bits, expected in (
-        (0, 23, 1),
-        (2, 23, 1),
-        (3, 23, 2),
-        (256, 23, 8),
-        (32768, 23, 15),
-        (1 << 20, 23, 20),
-        ((1 << 20) + 1, 3, 21),
-        (1 << 30, 3, 30),
+        (0, 23, (1, False)),
+        (2, 23, (1, False)),
+        (3, 23, (2, False)),
+        (256, 23, (8, False)),
+        (32768, 23, (15, False)),
+        (1 << 20, 23, (20, False)),
+        ((1 << 20) + 1, 3, (21, False)),
+        (1 << 30, 3, (30, False)),
+        ((1 << 20) + 1, 23, (21, True)),
+        ((1 << 30) + 1, 3, (31, True)),
+        (1 << 31, 23, (31, True)),
     ):
-        test.assertEqual(contact_sort_shape_index_bits(shape_count, sub_key_bits), expected)
-    for shape_count, sub_key_bits in (((1 << 20) + 1, 23), ((1 << 30) + 1, 3)):
-        with test.assertRaises(ValueError):
-            contact_sort_shape_index_bits(shape_count, sub_key_bits)
+        test.assertEqual(contact_sort_key_layout(shape_count, sub_key_bits), expected)
 
 
 @wp.kernel(enable_backward=False)
@@ -1856,8 +1866,8 @@ add_function_test(
 # make_contact_sort_key tests
 add_function_test(
     TestMakeContactSortKey,
-    "test_sort_key_shape_index_bits",
-    test_sort_key_shape_index_bits,
+    "test_sort_key_layout",
+    test_sort_key_layout,
     devices=devices,
 )
 add_function_test(TestMakeContactSortKey, "test_sort_key_bit_layout", test_sort_key_bit_layout, devices=devices)

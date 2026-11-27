@@ -1,0 +1,1 @@
+Remove `Model.contacts()` and `Model.collide()`, deprecated in Newton 1.5; create a `CollisionPipeline(model)`, allocate with `pipeline.contacts()`, and detect collisions with `pipeline.collide(state, contacts)` instead.

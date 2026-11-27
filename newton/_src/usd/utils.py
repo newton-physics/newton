@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, overload
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import _builtin
 from ..core.types import Axis, AxisType
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
@@ -448,10 +449,62 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
 
     Returns:
         A Warp transform containing the position and rotation extracted from the prim.
+
+    Note:
+        The rotation follows ``Gf.Transform``, the convention of the UsdPhysics parser. For a
+        mirrored (negative-determinant) matrix it puts the reflection into a negative uniform
+        scale, so the returned rotation is the negated orthogonal factor and reproduces the
+        authored axes only together with that scale. Callers that keep only the pose, such as
+        cameras, should build their frame from the authored axes instead.
     """
     mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
-    xform_pos, xform_rot, _scale = wp.transform_decompose(wp.mat44(mat.T))
-    return wp.transform(xform_pos, xform_rot)
+    # Use ``Gf.Transform`` so the rotation matches the UsdPhysics parser convention.
+    gf_xform = Gf.Transform(Gf.Matrix4d(*np.asarray(mat, dtype=np.float64).reshape(-1)))
+    translation = gf_xform.GetTranslation()
+    quat = gf_xform.GetRotation().GetQuat()
+    imag = quat.GetImaginary()
+    return wp.transform(
+        wp.vec3(float(translation[0]), float(translation[1]), float(translation[2])),
+        wp.quat(float(imag[0]), float(imag[1]), float(imag[2]), float(quat.GetReal())),
+    )
+
+
+def _get_camera_transform(
+    prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCache | None = None
+) -> wp.transform:
+    """Return a camera pose that keeps the authored view (local -Z) and up (local +Y) directions.
+
+    Unlike :func:`get_transform`, this drops any scale, shear or reflection: a mirrored
+    camera keeps its view and up directions and its right axis flips.
+
+    Args:
+        prim: The USD camera prim to query.
+        local: If True, get the local transformation; if False, get the world transformation.
+        xform_cache: Optional USD XformCache to reuse when computing world transforms (only used if ``local`` is False).
+
+    Returns:
+        A Warp transform whose rotation maps local -Z and +Y onto the authored view and up directions.
+    """
+    mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache).astype(np.float64)
+    # USD matrices act on row vectors: rows 0-2 are the images of the local axes, row 3 the translation.
+    back = mat[2, :3]
+    up = mat[1, :3]
+    back_len = np.linalg.norm(back)
+    if back_len < 1e-12:
+        return get_transform(prim, local=local, xform_cache=xform_cache)
+    z_axis = back / back_len
+    up = up - np.dot(up, z_axis) * z_axis
+    up_len = np.linalg.norm(up)
+    if up_len < 1e-12:
+        return get_transform(prim, local=local, xform_cache=xform_cache)
+    y_axis = up / up_len
+    x_axis = np.cross(y_axis, z_axis)
+    rotation = np.column_stack((x_axis, y_axis, z_axis))
+    translation = mat[3, :3]
+    return wp.transform(
+        wp.vec3(float(translation[0]), float(translation[1]), float(translation[2])),
+        wp.normalize(wp.quat_from_matrix(wp.mat33(*rotation.reshape(-1).tolist()))),
+    )
 
 
 def _normalized_quat(x: float, y: float, z: float, w: float) -> wp.quat:
@@ -745,9 +798,8 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 )
 
 
-# Vendor attribute namespaces that get_tetmesh() read by default before the canonical
-# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read them
-# off a bound material.
+# Vendor attribute namespaces that predate the canonical ``physics:`` deformable schema.
+# Pass as ``compat_namespaces`` to read them off a bound material.
 DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
 
 
@@ -755,10 +807,9 @@ def _material_authors_legacy_deformable_attrs(prim: Usd.Prim) -> bool:
     """Return whether ``prim``'s bound physics material authors deformable moduli only under
     the legacy vendor namespaces (see :data:`DEFORMABLE_LEGACY_NAMESPACES`).
 
-    True means a canonical-only read would silently drop the authored stiffness/density:
-    the material lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
-    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to keep a
-    deprecation window for such assets.
+    True means a canonical-only read drops the authored stiffness/density: the material
+    lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
+    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to warn.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
@@ -774,10 +825,7 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
     """Return whether ``prim``'s bound physics material authors canonical ``physics:``
     deformable moduli without ``PhysicsVolumeDeformableMaterialAPI``.
 
-    The deprecated ``get_tetmesh()`` default reads these off any bound material, while
-    canonical-only behavior (``compat_namespaces=()``) scopes moduli to materials with the
-    applied API and would silently drop them -- the second case where the legacy default
-    is load-bearing and deserves the deprecation warning.
+    Canonical-only behavior scopes moduli to materials with the applied API and drops these.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
@@ -786,6 +834,31 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
         material_prim.GetAttribute(f"physics:{name}").HasAuthoredValue()
         for name in ("youngsModulus", "poissonsRatio", "density")
     )
+
+
+def _ignored_tetmesh_material_attrs(prim: Usd.Prim) -> list[str]:
+    """List bound-material attributes that only a ``compat_namespaces`` read of ``prim`` uses."""
+    from pxr import UsdPhysics
+
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None:
+        return []
+    volume_api = has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
+    base_api = material_prim.HasAPI(UsdPhysics.MaterialAPI) or has_applied_api_schema(
+        material_prim, "PhysicsMaterialAPI"
+    )
+    ignored = []
+    for name in ("youngsModulus", "poissonsRatio", "density"):
+        for namespace in ("physics", *DEFORMABLE_LEGACY_NAMESPACES):
+            attr = material_prim.GetAttribute(f"{namespace}:{name}")
+            if attr.HasAuthoredValue():
+                # Time samples alone supply no value to either read.
+                if attr.Get() is not None and (
+                    namespace != "physics" or not (volume_api or (name == "density" and base_api))
+                ):
+                    ignored.append(f"{namespace}:{name}")
+                break
+    return ignored
 
 
 def _should_load_tetmesh_material_for_import(prim: Usd.Prim) -> bool:
@@ -861,18 +934,13 @@ def get_tetmesh(
     frequency is ambiguous or cannot be inferred emit a warning and are
     omitted without preventing the TetMesh from loading.
 
-    Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
-    (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
-    are read off any bound material, matching the pre-canonical behavior. That default is
-    deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
-    authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
-    without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
-    materials do not warn); a future
-    release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
-    the canonical-only behavior now -- moduli are then read only from a material that applies
-    ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-    ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
-    warning.
+    Material-attribute namespaces: by default, only canonical ``physics:`` attributes are
+    read, moduli from a material that applies ``PhysicsVolumeDeformableMaterialAPI`` and
+    density also from one that applies ``UsdPhysicsMaterialAPI``. Omitting
+    ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
+    Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
+    canonical and the listed vendor namespaces off any bound material.
+    One deprecated exception to the default is described under ``compat_namespaces``.
 
     Example:
 
@@ -892,24 +960,51 @@ def get_tetmesh(
         prim: The USD prim to load the tetrahedral mesh from.
         compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
             ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
-            gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
-            canonical-only.
+            gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
+            about ignored attributes.
+
+            .. deprecated:: 1.9
+                ``None`` still reads vendor-namespaced values without a ``physics:`` counterpart
+                from a material that applies ``PhysicsVolumeDeformableMaterialAPI``. A future
+                release ignores them.
 
     Returns:
         A :class:`newton.TetMesh` with vertex positions and tet connectivity.
     """
-    return _get_tetmesh(
+    ignored = _ignored_tetmesh_material_attrs(prim) if compat_namespaces is None else []
+    # The earlier default never warned about vendor values on a volume-API material.
+    deprecated_read = bool(ignored) and has_applied_api_schema(
+        _find_physics_material_prim(prim), "PhysicsVolumeDeformableMaterialAPI"
+    )
+    tetmesh = _get_tetmesh(
         prim,
-        compat_namespaces=compat_namespaces,
+        compat_namespaces=DEFORMABLE_LEGACY_NAMESPACES if deprecated_read else (compat_namespaces or ()),
         load_custom_attributes=_load_custom_attributes,
         load_material=True,
     )
+    if deprecated_read:
+        warnings.warn(
+            f"{prim.GetPath()}: reading {', '.join(ignored)} from the bound material by default is "
+            "deprecated; a future release ignores them. Author canonical physics: attributes, or "
+            "pass compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep reading them.",
+            NewtonDeprecationWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    elif ignored:
+        warnings.warn(
+            f"{prim.GetPath()}: ignoring {', '.join(ignored)} on the bound material. Author "
+            "canonical physics: attributes with PhysicsVolumeDeformableMaterialAPI, or pass "
+            "compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES to read them.",
+            NewtonWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    return tetmesh
 
 
 def _get_tetmesh(
     prim: Usd.Prim,
     *,
-    compat_namespaces: Sequence[str] | None,
+    compat_namespaces: Sequence[str],
     load_custom_attributes: bool,
     load_material: bool,
 ) -> TetMesh:
@@ -952,27 +1047,6 @@ def _get_tetmesh(
         )
 
     material_prim = _find_physics_material_prim(prim) if load_material else None
-    if compat_namespaces is None:
-        # Deprecated legacy default: read vendor namespaces off any bound material, and
-        # canonical moduli off materials without the deformable material API. Warn only when
-        # that default is load-bearing -- vendor attrs authored, or canonical attrs on an
-        # API-less material -- so materials whose reads the default change does not alter
-        # (API-applied canonical, render-only) never warn.
-        if load_material and (
-            _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim)
-        ):
-            warnings.warn(
-                "get_tetmesh(): the default reads deformable material attributes off any bound "
-                "material (canonical physics: and legacy omniphysics: / physxDeformableBody: "
-                "namespaces); this is deprecated, and a future release will read canonical "
-                "physics: attributes only off a material applying "
-                "PhysicsVolumeDeformableMaterialAPI. Pass compat_namespaces=() to adopt the "
-                "canonical-only behavior now, or compat_namespaces="
-                "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
     # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
     # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
     # the listed vendor namespaces off any bound material.

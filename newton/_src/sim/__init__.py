@@ -3,6 +3,7 @@
 
 from .articulation import eval_fk, eval_ik, eval_inverse_dynamics_force, eval_jacobian, eval_mass_matrix
 from .builder import ModelBuilder
+from .camera import CameraLensType
 from .collide import CollisionPipeline
 from .collision_schedule import CollisionSubstepScheduler
 from .contact_kinematics import eval_rigid_contact_kinematics
@@ -13,6 +14,7 @@ from .enums import (
     JointTargetMode,
     JointType,
     ModelFlags,
+    ShapeFrictionMode,
     StateFlags,
 )
 from .inverse_dynamics import eval_inverse_dynamics_passive
@@ -24,6 +26,7 @@ from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 
 __all__ = [
     "BodyFlags",
+    "CameraLensType",
     "CollisionPipeline",
     "CollisionSubstepScheduler",
     "Contacts",
@@ -34,6 +37,7 @@ __all__ = [
     "ModelBuilder",
     "ModelFlags",
     "Rod",
+    "ShapeFrictionMode",
     "State",
     "StateFlags",
     "TendonGuide",

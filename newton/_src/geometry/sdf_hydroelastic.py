@@ -39,7 +39,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
 from ..sim.shape_contact_pairs import _shape_contact_pairs_for_mask
@@ -55,8 +55,10 @@ from .contact_reduction_global import (
 )
 from .contact_reduction_hydroelastic import (
     EPS_SMALL,
+    SPECULATIVE_CONTACT_AREA,
     HydroelasticContactReduction,
     HydroelasticReductionConfig,
+    _hydroelastic_damping,
     export_hydroelastic_contact_to_buffer,
 )
 from .hashtable import hashtable_find_or_insert
@@ -124,16 +126,6 @@ _ISO_REFINEMENT_MULTIPLIERS = (8, 32, 128, 256)
 # contact surfaces without making all face-storage allocations five times the
 # already conservative voxel capacity.
 _FACE_CONTACTS_PER_ISO_VOXEL = 2
-
-
-class _MarginContactAreaUnset:
-    """Mark an omitted deprecated margin contact area."""
-
-    def __repr__(self) -> str:
-        return "_DEPRECATED_MARGIN_CONTACT_AREA_UNSET"
-
-
-_DEPRECATED_MARGIN_CONTACT_AREA_UNSET: Any = _MarginContactAreaUnset()
 
 
 @wp.func
@@ -392,6 +384,9 @@ class HydroelasticSDF:
         total_num_active_tiles: Total number of narrow-band SDF blocks across
             the same traversal grids, used to size refinement buffers.
         shape_material_kh: Hydroelastic stiffness coefficient for each shape.
+        shape_material_ke: Shape stiffness [N/m], paired with ``shape_material_kd`` for damping.
+        shape_material_kd: Shape damping [N s/m]. Used when ``config.generate_damping`` is True.
+            Omitting either material array generates zero damping.
         n_shapes: Total number of shapes in the simulation.
         config: Configuration options controlling buffer sizes, contact reduction,
             and other behavior. Defaults to :class:`HydroelasticSDF.Config`.
@@ -472,14 +467,6 @@ class HydroelasticSDF:
         friction moment per normal bin is preserved between reduced and
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
-        margin_contact_area: float = _DEPRECATED_MARGIN_CONTACT_AREA_UNSET
-        """Deprecated speculative-contact area [m^2] retained for compatibility.
-
-        .. deprecated:: 1.6
-
-            This setting still controls speculative-contact activation
-            stiffness during the deprecation period.
-        """
         pressure_func: Any = None
         """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
 
@@ -533,15 +520,15 @@ class HydroelasticSDF:
         threading-style scenarios like ``nut_bolt_hydro`` where the surface
         bias measurably damps the contact response."""
 
+        generate_damping: bool = False
+        """Whether to generate hydroelastic contact damping from shape ``kd / ke``.
+
+        False preserves each solver's damping fallback. Set this when constructing
+        the pipeline; explicit penalty solvers may need smaller timesteps when enabled.
+        See :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
+        """
+
         def __post_init__(self):
-            if self.margin_contact_area is _DEPRECATED_MARGIN_CONTACT_AREA_UNSET:
-                self.margin_contact_area = 1.0e-2
-            else:
-                warnings.warn(
-                    "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
-                    NewtonDeprecationWarning,
-                    stacklevel=2,
-                )
             # NaN fails both bounds (NaN comparisons return False) and lands here too.
             if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
                 raise ValueError(
@@ -585,6 +572,9 @@ class HydroelasticSDF:
         writer_func: Any = None,
         deterministic: bool = False,
         paired_samples: bool = True,
+        *,
+        shape_material_ke: wp.array[wp.float32] | None = None,
+        shape_material_kd: wp.array[wp.float32] | None = None,
     ) -> None:
         if config is None:
             config = HydroelasticSDF.Config()
@@ -606,6 +596,8 @@ class HydroelasticSDF:
         self.device = device
 
         self.shape_material_kh = shape_material_kh
+        self.shape_material_ke = shape_material_ke if config.generate_damping else None
+        self.shape_material_kd = shape_material_kd if config.generate_damping else None
         self.paired_samples = paired_samples
 
         self.n_shapes = n_shapes
@@ -746,7 +738,6 @@ class HydroelasticSDF:
                     normal_matching=self.config.normal_matching,
                     anchor_contact=self.config.anchor_contact,
                     moment_matching=self.config.moment_matching,
-                    margin_contact_area=self.config.margin_contact_area,
                     hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
@@ -764,16 +755,12 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=HydroelasticReductionConfig(
-                        margin_contact_area=self.config.margin_contact_area,
                         hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                     ),
                     deterministic=self.deterministic,
                     enable_reduction=False,
                 )
-                self.decode_contacts_kernel = get_decode_contacts_kernel(
-                    self.config.margin_contact_area,
-                    writer_func,
-                )
+                self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
 
         self._host_warning_poll_interval = 120
         self._launch_counter = 0
@@ -892,6 +879,8 @@ class HydroelasticSDF:
             total_num_tiles=total_num_tiles,
             total_num_active_tiles=total_num_active_tiles,
             shape_material_kh=model.shape_material_kh,
+            shape_material_ke=model.shape_material_ke,
+            shape_material_kd=model.shape_material_kd,
             n_shapes=model.shape_count,
             config=config,
             device=model.device,
@@ -1265,6 +1254,8 @@ class HydroelasticSDF:
                 self.grid_size,
                 self.contact_reduction.contact_count,
                 self.shape_material_kh,
+                self.shape_material_ke,
+                self.shape_material_kd,
                 shape_transform,
                 shape_gap,
                 self.contact_reduction.reducer.position_depth,
@@ -1305,6 +1296,8 @@ class HydroelasticSDF:
         )
         self.contact_reduction.export(
             shape_material_k_hydro=self.shape_material_kh,
+            shape_material_ke=self.shape_material_ke,
+            shape_material_kd=self.shape_material_kd,
             shape_gap=shape_gap,
             shape_transform=shape_transform,
             writer_data=writer_data,
@@ -1820,10 +1813,7 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
 # =============================================================================
 
 
-def get_decode_contacts_kernel(
-    margin_contact_area: float,
-    writer_func: Any = None,
-):
+def get_decode_contacts_kernel(writer_func: Any = None):
     """Create a kernel that decodes hydroelastic contacts without reduction.
 
     This kernel is used when reduce_contacts=False. It exports all generated
@@ -1831,8 +1821,6 @@ def get_decode_contacts_kernel(
     read from the contact buffer after being evaluated once during generation.
 
     Args:
-        margin_contact_area: Deprecated compatibility area [m^2] for speculative
-            contact activation stiffness.
         writer_func: Warp function for writing decoded contacts.
 
     Returns:
@@ -1844,6 +1832,8 @@ def get_decode_contacts_kernel(
         grid_size: int,
         contact_count: wp.array[int],
         shape_material_kh: wp.array[wp.float32],
+        shape_material_ke: wp.array[wp.float32],
+        shape_material_kd: wp.array[wp.float32],
         shape_transform: wp.array[wp.transform],
         shape_gap: wp.array[wp.float32],
         position_depth: wp.array[wp.vec4],
@@ -1918,7 +1908,7 @@ def get_decode_contacts_kernel(
             else:
                 k_a = shape_material_kh[shape_a]
                 k_b = shape_material_kh[shape_b]
-                c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
+                c_stiffness = SPECULATIVE_CONTACT_AREA * get_effective_stiffness(k_a, k_b)
 
             # Create ContactData for the writer function
             contact_data = ContactData()
@@ -1933,6 +1923,10 @@ def get_decode_contacts_kernel(
             contact_data.shape_b = shape_b
             contact_data.gap_sum = gap_sum
             contact_data.contact_stiffness = c_stiffness
+            if depth < 0.0:
+                contact_data.contact_damping = _hydroelastic_damping(
+                    c_stiffness, shape_material_ke, shape_material_kd, shape_a, shape_b
+                )
             # ``tid`` is a buffer slot handed out by an atomic during generation,
             # so it varies between runs; the fingerprint is the marching-cubes
             # voxel and face index and is stable.

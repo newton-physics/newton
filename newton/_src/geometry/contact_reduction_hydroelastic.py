@@ -68,6 +68,8 @@ EPS_LARGE = 1e-8
 EPS_SMALL = 1e-20
 MIN_FRICTION_SCALE = 1e-2
 SPECULATIVE_BIN_OFFSET = 128
+SPECULATIVE_CONTACT_AREA = 1.0e-2
+"""Area [m^2] that turns the pair's material stiffness into the activation stiffness of a speculative contact."""
 _NUM_VOXEL_GROUPS = (NUM_VOXEL_DEPTH_SLOTS + NUM_SPATIAL_DIRECTIONS) // (NUM_SPATIAL_DIRECTIONS + 1)
 assert NUM_NORMAL_BINS + _NUM_VOXEL_GROUPS <= SPECULATIVE_BIN_OFFSET
 assert SPECULATIVE_BIN_OFFSET + _NUM_VOXEL_GROUPS <= 256
@@ -331,6 +333,24 @@ def _register_voxel_contact(
 # =============================================================================
 # Hydroelastic contact buffer function
 # =============================================================================
+
+
+@wp.func
+def _hydroelastic_damping(
+    stiffness: float,
+    shape_ke: wp.array[wp.float32],
+    shape_kd: wp.array[wp.float32],
+    a: int,
+    b: int,
+) -> float:
+    """Scale contact stiffness by the two shapes' relaxation times."""
+    tau = float(0.0)
+    if shape_ke and shape_kd:
+        if shape_ke[a] > 0.0:
+            tau += wp.max(shape_kd[a], 0.0) / shape_ke[a]
+        if shape_ke[b] > 0.0:
+            tau += wp.max(shape_kd[b], 0.0) / shape_ke[b]
+    return stiffness * tau
 
 
 @wp.func
@@ -979,7 +999,6 @@ def _create_accumulate_moments_kernel(
 
 def create_export_hydroelastic_reduced_contacts_kernel(
     writer_func: Any,
-    margin_contact_area: float,
     normal_matching: bool = True,
     anchor_contact: bool = False,
     moment_matching: bool = False,
@@ -997,8 +1016,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     This ensures the total contact force from the K reduced contacts equals the
     aggregate force from all original contacts under any user-supplied
-    ``pressure_func``. Speculative contact activation stiffness uses the
-    configured compatibility area and the pair's series-combined material slope.
+    ``pressure_func``. Speculative contact activation stiffness uses
+    ``SPECULATIVE_CONTACT_AREA`` and the pair's series-combined material slope.
 
     .. important::
 
@@ -1008,8 +1027,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     Args:
         writer_func: A warp function with signature (ContactData, writer_data, int) -> None
-        margin_contact_area: Deprecated compatibility area [m^2] for
-            speculative contact activation stiffness.
         normal_matching: If True, rotate contact normals so their weighted sum aligns with aggregate force
         anchor_contact: If True, add an anchor contact at the center of pressure for each entry
         moment_matching: If True, adjust per-contact friction scales so that
@@ -1049,6 +1066,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         contact_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
         shape_material_k_hydro: wp.array[wp.float32],
+        shape_material_ke: wp.array[wp.float32],
+        shape_material_kd: wp.array[wp.float32],
         contact_nbin_entry: wp.array[wp.int32],
         # Pre-accumulated total depth of winning contacts per normal bin
         total_depth_reduced: wp.array[wp.float32],
@@ -1286,7 +1305,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         if depth < 0.0:
                             c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                         else:
-                            c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                            c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
 
                     # Moment matching friction adjustment
                     if wp.static(moment_matching) and depth < 0.0:
@@ -1385,12 +1404,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     elif depth < 0.0:
                         c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                     else:
-                        c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                        c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
 
                 if depth >= 0.0:
                     # Speculative contacts never inherit penetrating
                     # force/wrench-matching stiffness from a mixed bin.
-                    c_stiffness = wp.static(margin_contact_area) * k_eff_first
+                    c_stiffness = SPECULATIVE_CONTACT_AREA * k_eff_first
                     c_friction_scale = 1.0
 
                 # Transform contact to world space
@@ -1410,6 +1429,10 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_b = shape_b
                 contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = c_stiffness
+                if depth < 0.0:
+                    contact_data.contact_damping = _hydroelastic_damping(
+                        c_stiffness, shape_material_ke, shape_material_kd, shape_a, shape_b
+                    )
                 contact_data.contact_friction_scale = wp.float32(c_friction_scale)
                 if wp.static(deterministic_sort_keys):
                     # Both copies contribute to the force-preserving denominator
@@ -1443,6 +1466,9 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_b = shape_b_first
                 contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = shared_stiffness
+                contact_data.contact_damping = _hydroelastic_damping(
+                    shared_stiffness, shape_material_ke, shape_material_kd, shape_a_first, shape_b_first
+                )
                 contact_data.contact_friction_scale = wp.float32(anchor_friction_scale)
                 bin_id = int((ht_keys[entry_idx] >> wp.uint64(55)) & wp.uint64(0xFF))
                 contact_data.sort_sub_key = 0x400000 | bin_id
@@ -1470,8 +1496,6 @@ class HydroelasticReductionConfig:
         moment_matching: If True, adjust per-contact friction scales so that the
             maximum friction moment per normal bin is preserved between reduced
             and unreduced contacts. Automatically enables ``anchor_contact``.
-        margin_contact_area: Deprecated compatibility area [m^2] for
-            speculative contact activation stiffness.
         hashtable_size_factor: Multiplier applied to the contact buffer capacity
             when allocating the reduction hashtable. Must be positive.
     """
@@ -1479,7 +1503,6 @@ class HydroelasticReductionConfig:
     normal_matching: bool = True
     anchor_contact: bool = False
     moment_matching: bool = False
-    margin_contact_area: float = 1e-2
     hashtable_size_factor: float = 0.25
 
 
@@ -1627,7 +1650,6 @@ class HydroelasticContactReduction:
         # Create the export kernel with the configured options
         self._export_kernel = create_export_hydroelastic_reduced_contacts_kernel(
             writer_func=writer_func,
-            margin_contact_area=config.margin_contact_area,
             normal_matching=config.normal_matching,
             anchor_contact=config.anchor_contact,
             moment_matching=config.moment_matching,
@@ -1777,6 +1799,9 @@ class HydroelasticContactReduction:
         shape_transform: wp.array,
         writer_data: Any,
         grid_size: int,
+        *,
+        shape_material_ke: wp.array[wp.float32] | None = None,
+        shape_material_kd: wp.array[wp.float32] | None = None,
     ):
         """Export reduced contacts using the writer function.
 
@@ -1788,6 +1813,8 @@ class HydroelasticContactReduction:
 
         Args:
             shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
+            shape_material_ke: Shape stiffness [N/m], paired with ``shape_material_kd`` for damping.
+            shape_material_kd: Shape damping [N s/m]. Omitting either array generates zero damping.
             shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             writer_data: Data struct for the writer function.
@@ -1868,6 +1895,8 @@ class HydroelasticContactReduction:
                 self.reducer.contact_area,
                 self.reducer.contact_pressure,
                 shape_material_k_hydro,
+                shape_material_ke,
+                shape_material_kd,
                 self.reducer.contact_nbin_entry,
                 self.reducer.total_depth_reduced,
                 self.reducer.total_normal_reduced,
@@ -1894,6 +1923,9 @@ class HydroelasticContactReduction:
         shape_gap: wp.array,
         writer_data: Any,
         grid_size: int,
+        *,
+        shape_material_ke: wp.array[wp.float32] | None = None,
+        shape_material_kd: wp.array[wp.float32] | None = None,
     ):
         """Convenience method to reduce and export in one call.
 
@@ -1901,6 +1933,8 @@ class HydroelasticContactReduction:
 
         Args:
             shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
+            shape_material_ke: Shape stiffness [N/m], paired with ``shape_material_kd`` for damping.
+            shape_material_kd: Shape damping [N s/m]. Omitting either array generates zero damping.
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             shape_collision_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
             shape_collision_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
@@ -1917,4 +1951,12 @@ class HydroelasticContactReduction:
             shape_voxel_resolution,
             grid_size,
         )
-        self.export(shape_material_k_hydro, shape_gap, shape_transform, writer_data, grid_size)
+        self.export(
+            shape_material_k_hydro,
+            shape_gap,
+            shape_transform,
+            writer_data,
+            grid_size,
+            shape_material_ke=shape_material_ke,
+            shape_material_kd=shape_material_kd,
+        )

@@ -317,6 +317,7 @@ class SolverKaminoImpl(SolverBase):
         elif self._config.dynamics_solver == "padmm":
             self._solver_fd = PADMMSolver(
                 model=self._model,
+                problem=self._problem_fd,
                 config=self._config.padmm,
                 warmstart=self._warmstart_mode,
                 use_acceleration=self._config.padmm.use_acceleration,
@@ -754,7 +755,9 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Fill/reset remaining state components based on body poses and velocities
-        reset_joints_state_from_bodies_state(self._model, state, world_mask)
+        reset_joints_state_from_bodies_state(
+            self._model, state, world_mask, rotation_correction=self._rotation_correction
+        )
         reset_body_wrenches(self._model, state, world_mask)
 
         # Reset solver internals
@@ -947,7 +950,7 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(state_out.q_i, self._data.bodies.q_i)
         wp.copy(state_out.u_i, self._data.bodies.u_i)
         wp.copy(state_out.w_i, self._data.bodies.w_i)
-        wp.copy(state_out.w_i_e, self._data.bodies.w_e_i)
+        # External wrenches (w_i_e) are a step input and are never written to the output state.
         wp.copy(state_out.q_j, self._data.joints.q_j)
         wp.copy(state_out.q_j_p, self._data.joints.q_j_p)
         wp.copy(state_out.dq_j, self._data.joints.dq_j)

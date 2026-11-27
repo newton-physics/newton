@@ -161,10 +161,7 @@ repository examples spend tuning effort, not a shared solver API.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
      - ``iterations``, ``friction_epsilon``,
-       ``dat_conservative_bound_relaxation``,
-       ``rigid_avbd_alpha``,
-       ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
-       ``rigid_avbd_gamma``, ``rigid_contact_history``,
+       ``dat_conservative_bound_relaxation``, ``rigid_contact_history``,
        ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``,
        ``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``,
@@ -187,8 +184,10 @@ repository examples spend tuning effort, not a shared solver API.
        numerical ALM conditioning parameters internally. The legacy AVBD path
        (``rigid_compliant_alm=False``) and its penalty-ramping and hard/soft
        controls were removed after their 1.6 deprecation; rigid simulations
-       that relied on them may require stiffness retuning. Alpha remains an
-       advanced stabilization override.
+       that relied on them may require stiffness retuning. The
+       ``rigid_avbd_alpha``, ``rigid_avbd_joint_alpha``,
+       ``rigid_avbd_contact_alpha``, and ``rigid_avbd_gamma`` arguments are
+       deprecated; omit them.
 
        Optional numeric contact warm-starting with
        ``rigid_contact_history=True`` requires
@@ -303,7 +302,9 @@ repository examples spend tuning effort, not a shared solver API.
        Experimental contact torsion adds spin friction to the contacts of
        articulated bodies whose shapes carry a positive
        ``steel:min_torsional_patch_radius`` (imported from
-       ``physxCollision:minTorsionalPatchRadius``), bounded by the shared
+       ``physxCollision:minTorsionalPatchRadius``) and a
+       :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` with torsional
+       friction, bounded by the shared
        Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
        a uniformly loaded disk of radius ``R``). ``contact_torsion_device``
        prepares these rows on the device, which CUDA graph capture requires.
@@ -409,6 +410,11 @@ repository examples spend tuning effort, not a shared solver API.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
+       If you are porting a PhysX or Isaac Lab scene, start from Skild's
+       `porting-from-PhysX guide <https://steel.skild.ai/guides/porting-from-physx/>`_,
+       which covers attribute mapping, solver option equivalents, what
+       differs and a migration procedure (see :doc:`/solvers/steel` for
+       the other Skild resources).
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.

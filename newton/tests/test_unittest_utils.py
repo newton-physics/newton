@@ -143,6 +143,20 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         self.assertTrue(result.wasSuccessful())
 
+    def test_line_anchors_match_crlf_output(self):
+        """Match native CRLF lines on both streams with the same patterns used for LF."""
+
+        class EmitsCRLF(NewtonTestCase):
+            def test_output(self):
+                self.expectOutputRegex(r"^first$\n^second$", stream="stdout")
+                self.allowOutputRegex(r"^warning$", stream="stderr")
+                sys.stdout.buffer.write(b"first\r\nsecond\r\n")
+                sys.stderr.buffer.write(b"warning\r\n")
+
+        result = self._run_test_case(EmitsCRLF)
+
+        self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+
     def test_optional_output_allows_absent_or_present_output(self):
         class AllowsAbsentOutput(NewtonTestCase):
             def test_output(self):
