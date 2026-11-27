@@ -697,15 +697,17 @@ computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
 Newton solver that provides one. MuJoCo's free and ball joints use different
 coordinates from Newton's, so pass the state as well; the response then
-converts them at that pose.
+converts them at that pose. The solver's step does not factorize its inertia by
+default, so factorize it before refreshing the response.
 
 .. code-block:: python
 
    def solve_inverse(x, y):
-       # x = M^-1 y, using the factorization the solver already built
+       # x = M^-1 y, using the factorization of the solver's inertia
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
    # Simulation loop, in place of response.refresh(sim_state)
+   mujoco_warp.factor_m(solver.mjw_model, solver.mjw_data)
    response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the

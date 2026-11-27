@@ -1650,6 +1650,8 @@ class TestMenagerieBase(unittest.TestCase):
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
+        # Mirror SolverMuJoCo's run_qacc_smooth=False default.
+        mjw_model.opt.run_qacc_smooth = False
 
         # Unallocated efm_* arrays are uninitialized memory; see SolverMuJoCo.
         with np.errstate(over="ignore"):

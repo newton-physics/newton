@@ -5337,17 +5337,17 @@ def surface_contact_target(contact_surface_velocity: wp.array[wp.vec3], c: int, 
 def _contact_mu(
     shape_a: int, shape_b: int, shape_material_mu: wp.array[float], shape_material_friction_mode: wp.array[wp.int32]
 ):
-    """Return the arithmetic-mean friction coefficient of one shape pair, zero for frictionless pairs."""
+    """Return the arithmetic-mean friction coefficient of one shape pair, zero for frictionless pairs.
+
+    The mean of two finite coefficients is finite: halving each before the sum keeps it in float32 range.
+    """
     mu = float(0.0)
-    material_count = int(0)
-    if shape_a >= 0:
-        mu += shape_material_mu[shape_a]
-        material_count += 1
-    if shape_b >= 0:
-        mu += shape_material_mu[shape_b]
-        material_count += 1
-    if material_count > 0:
-        mu /= float(material_count)
+    if shape_a >= 0 and shape_b >= 0:
+        mu = 0.5 * shape_material_mu[shape_a] + 0.5 * shape_material_mu[shape_b]
+    elif shape_a >= 0:
+        mu = shape_material_mu[shape_a]
+    elif shape_b >= 0:
+        mu = shape_material_mu[shape_b]
     if contact_friction_mode(shape_material_friction_mode, shape_a, shape_b) == int(ShapeFrictionMode.NONE):
         mu = 0.0
     return mu
@@ -7435,7 +7435,7 @@ def compute_mf_effective_mass_and_rhs(
 ):
     """Compute the response ``H^-1 J^T``, inverse effective mass and bias of each free-body row.
 
-    The effective mass is ``J_a H_a^-1 J_a^T + J_b H_b^-1 J_b^T + cfm`` with the full
+    The step denominator is ``J_a H_a^-1 J_a^T + J_b H_b^-1 J_b^T + cfm`` with the full
     6x6 inverse spatial inertia of each free body. The right-hand side holds only the
     bias; the solve recomputes ``J v`` every iteration. Penetrating contacts get the
     Baumgarte term, bounded by the bodies' maximum depenetration velocity; separated
@@ -8149,10 +8149,37 @@ def build_joint_limit_rows(
 
 
 @wp.kernel
-def scale_array_inplace(values: wp.array[float], scale: float):
-    """Multiply every entry of ``values`` by ``scale``."""
-    i = wp.tid()
-    values[i] = values[i] * scale
+def scale_shape_friction(
+    shape_material_mu: wp.array[float],
+    scale: float,
+    shape_world: wp.array[wp.int32],
+    world_count: int,
+    # outputs
+    shape_mu: wp.array[float],
+    shape_mu_invalid: wp.array[wp.int32],
+    shape_mu_invalid_world: wp.array[wp.bool],
+    shape_friction_rejected: wp.array[wp.bool],
+):
+    """Write ``scale * shape_material_mu``, flagging shapes whose scaled coefficient is not finite and zeroing them.
+
+    ``shape_mu_invalid_world`` and ``shape_friction_rejected`` (``world_count + 1`` entries) mark the worlds
+    a flagged shape collides in.
+    """
+    shape = wp.tid()
+    mu = shape_material_mu[shape] * scale
+    if not wp.isfinite(mu):
+        wp.atomic_min(shape_mu_invalid, 0, shape)
+        mu = 0.0
+        world = shape_world[shape]
+        if world >= 0:
+            shape_mu_invalid_world[world] = True
+            shape_friction_rejected[world] = True
+        else:
+            # A global shape collides with every world.
+            for entry in range(world_count + 1):
+                shape_mu_invalid_world[entry] = True
+                shape_friction_rejected[entry] = True
+    shape_mu[shape] = mu
 
 
 # ---------------------------------------------------------------------------
