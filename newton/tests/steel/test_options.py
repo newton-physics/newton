@@ -4,6 +4,7 @@
 """Solver-wide options, global worlds, target layouts and the private API surface of SolverSteel."""
 
 import ast
+import functools
 import inspect
 import re
 import typing
@@ -439,8 +440,102 @@ def test_scaled_friction_overflow_is_rejected(test, device):
                 solver.check_constraint_capacity()
     model.shape_material_mu.fill_(0.6)
     solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-    solver.check_constraint_capacity()
     np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 1.2, rtol=1.0e-7)
+    with test.assertRaisesRegex(RuntimeError, r"scaled shape friction was not finite in worlds \[0, 1\]"):
+        solver.check_constraint_capacity()
+    solver.reset(model.state())
+    solver.check_constraint_capacity()
+
+
+def test_rejected_shape_friction_is_reported_until_its_worlds_reset(test, device):
+    """Report the worlds of a rejected shape after valid coefficients return, until a reset selects them."""
+    model = _build_contact_scene(device)
+    solver = SolverSteel(model)
+    state = model.state()
+    shape = int(np.flatnonzero(model.shape_world.numpy() == 1)[0])
+    mu = model.shape_material_mu.numpy()
+    mu[shape] = np.inf
+    model.shape_material_mu.assign(mu)
+    with test.assertRaisesRegex(ValueError, f"not finite for shape {shape}"):
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    model.shape_material_mu.fill_(0.6)
+    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    for selected in ([True, False, True], [False, True, False]):
+        with test.assertRaisesRegex(RuntimeError, r"not finite in worlds \[1\]"):
+            solver.check_constraint_capacity()
+        solver.reset(state, world_mask=wp.array(selected, dtype=wp.bool, device=device))
+    solver.check_constraint_capacity()
+
+    # A global shape collides in every world.
+    scene = newton.ModelBuilder()
+    scene.add_shape_box(scene.add_body(), hx=0.1, hy=0.1, hz=0.1)
+    builder = newton.ModelBuilder()
+    builder.replicate(scene, 2)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model)
+    shape = model.shape_count - 1
+    test.assertEqual(int(model.shape_world.numpy()[shape]), -1)
+    mu = model.shape_material_mu.numpy()
+    mu[shape] = np.inf
+    model.shape_material_mu.assign(mu)
+    with test.assertRaisesRegex(ValueError, f"not finite for shape {shape}"):
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    model.shape_material_mu.fill_(0.6)
+    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    with test.assertRaisesRegex(RuntimeError, r"not finite in worlds \[0, 1, -1\]"):
+        solver.check_constraint_capacity()
+    solver.reset(model.state(), world_mask=wp.array([True, True, False], dtype=wp.bool, device=device))
+    with test.assertRaisesRegex(RuntimeError, r"not finite in worlds \[-1\]"):
+        solver.check_constraint_capacity()
+    solver.reset(model.state())
+    solver.check_constraint_capacity()
+
+
+def _check_rejection_outlives_valid_steps(test, device, capture):
+    """Step with overflowing coefficients, then twice with valid ones, and expect the check to report it until reset."""
+    model = _build_contact_scene(device)
+    solver = SolverSteel(model, contact_friction_scale=2.0)
+    state_in, state_out = model.state(), model.state()
+    _set_box_velocities(model, state_in)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=False)
+    contacts = pipeline.contacts()
+    control = model.control()
+
+    def step():
+        try:
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        except ValueError:
+            test.assertFalse(capture)
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, DT)
+        state_in.assign(state_out)
+
+    step()
+    advance = step
+    if capture:
+        with wp.ScopedCapture(device) as scoped:
+            step()
+        advance = functools.partial(wp.capture_launch, scoped.graph)
+    model.shape_material_mu.fill_(3.0e38)
+    advance()
+    model.shape_material_mu.fill_(0.6)
+    advance()
+    advance()
+    with test.assertRaisesRegex(RuntimeError, r"not finite in worlds \[0, 1\]"):
+        solver.check_constraint_capacity()
+    solver.reset(state_in)
+    solver.check_constraint_capacity()
+
+
+def test_rejected_shape_friction_outlives_valid_steps(test, device):
+    """Report an eager step with rejected coefficients after later valid notifications and steps."""
+    _check_rejection_outlives_valid_steps(test, device, capture=False)
+
+
+def test_rejected_shape_friction_outlives_valid_replays(test, device):
+    """Report a replay with rejected coefficients after later valid replays."""
+    _check_rejection_outlives_valid_steps(test, device, capture=True)
 
 
 def test_captured_scaled_friction_overflow_is_reported(test, device):
@@ -462,8 +557,11 @@ def test_captured_scaled_friction_overflow_is_reported(test, device):
         solver.check_constraint_capacity()
     model.shape_material_mu.fill_(0.6)
     wp.capture_launch(capture.graph)
-    solver.check_constraint_capacity()
     np.testing.assert_allclose(solver._shape_mu.numpy()[: model.shape_count], 1.2, rtol=1.0e-7)
+    with test.assertRaisesRegex(RuntimeError, r"scaled shape friction was not finite in worlds \[0, 1\]"):
+        solver.check_constraint_capacity()
+    solver.reset(model.state())
+    solver.check_constraint_capacity()
 
 
 def _friction_start_runs(device):
@@ -668,6 +766,9 @@ for _cls, _fn, _devices in (
     (TestSteelFrictionOptions, test_friction_switches_validate_their_values, get_test_devices()),
     (TestSteelFrictionOptions, test_pair_friction_mean_stays_finite, get_test_devices()),
     (TestSteelFrictionOptions, test_scaled_friction_overflow_is_rejected, get_test_devices()),
+    (TestSteelFrictionOptions, test_rejected_shape_friction_is_reported_until_its_worlds_reset, get_test_devices()),
+    (TestSteelFrictionOptions, test_rejected_shape_friction_outlives_valid_steps, get_test_devices()),
+    (TestSteelFrictionOptions, test_rejected_shape_friction_outlives_valid_replays, get_cuda_test_devices()),
     (TestSteelFrictionOptions, test_captured_scaled_friction_overflow_is_reported, get_cuda_test_devices()),
     (TestSteelFrictionOptions, test_friction_position_iterations_gate_every_solve_path, get_test_devices()),
     (TestSteelFrictionOptions, test_friction_position_iterations_validate_their_value, get_test_devices()),

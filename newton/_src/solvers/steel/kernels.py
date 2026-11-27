@@ -8154,16 +8154,29 @@ def build_joint_limit_rows(
 def scale_shape_friction(
     shape_material_mu: wp.array[float],
     scale: float,
+    shape_world: wp.array[wp.int32],
+    world_count: int,
     # outputs
     shape_mu: wp.array[float],
     shape_mu_invalid: wp.array[wp.int32],
+    shape_friction_rejected: wp.array[wp.bool],
 ):
-    """Write ``scale * shape_material_mu``, flagging shapes whose scaled coefficient is not finite and zeroing them."""
+    """Write ``scale * shape_material_mu``, flagging shapes whose scaled coefficient is not finite and zeroing them.
+
+    ``shape_friction_rejected`` (``world_count + 1`` entries) marks the worlds a flagged shape collides in.
+    """
     shape = wp.tid()
     mu = shape_material_mu[shape] * scale
     if not wp.isfinite(mu):
         wp.atomic_min(shape_mu_invalid, 0, shape)
         mu = 0.0
+        world = shape_world[shape]
+        if world >= 0:
+            shape_friction_rejected[world] = True
+        else:
+            # A global shape collides with every world.
+            for entry in range(world_count + 1):
+                shape_friction_rejected[entry] = True
     shape_mu[shape] = mu
 
 

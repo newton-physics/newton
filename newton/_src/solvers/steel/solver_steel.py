@@ -596,12 +596,13 @@ def _reset_solver_status(
     overflow: wp.array[wp.bool],
     disabled_tree_joint: wp.array[wp.bool],
     joint_friction_invalid: wp.array[wp.bool],
+    shape_friction_rejected: wp.array[wp.bool],
     fk_id_valid: wp.array[int],
 ):
     """Clear the status of selected worlds, request a mass refresh of their articulations and drop their carried kinematics.
 
-    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid`` and ``world_mask`` share the
-    ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
+    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid``, ``shape_friction_rejected`` and
+    ``world_mask`` share the ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
     global articulations (world ``-1``) are selected by the final mask entry.
     """
     tid = wp.tid()
@@ -610,6 +611,7 @@ def _reset_solver_status(
             overflow[tid] = False
             disabled_tree_joint[tid] = False
             joint_friction_invalid[tid] = False
+            shape_friction_rejected[tid] = False
     if tid < mass_update_requested.shape[0]:
         if not world_mask or reset_world_selected(articulation_world[tid], world_mask, world_count):
             mass_update_requested[tid] = 1
@@ -2241,8 +2243,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 budget; the model's coefficients are unchanged. Each scaled coefficient must be
                 finite in float32: construction and an eager notification raise
                 :class:`ValueError` otherwise, and :meth:`check_constraint_capacity` reports
-                one from a captured notification. A shape pair uses the mean of its two
-                scaled coefficients.
+                any notification that found one until a reset of its worlds. A shape pair uses
+                the mean of its two scaled coefficients.
             contact_friction_position_iterations: Number of position iterations that solve
                 tangential friction rows. ``-1`` (the default) solves them in every position iteration;
                 ``k >= 0`` solves them only in the last ``k`` position iterations (``0`` never),
@@ -3009,6 +3011,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._shape_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         # First shape whose scaled friction coefficient is not finite; written by each material refresh.
         self._shape_mu_invalid = wp.full(1, _NO_INVALID_SHAPE, dtype=wp.int32, device=model.device)
+        # Worlds a refresh since their last reset ran with a flagged shape, in the reset layout.
+        self._shape_friction_rejected = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         self._shape_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
         self._validate_shape_friction()
@@ -3100,8 +3104,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             wp.launch(
                 scale_shape_friction,
                 dim=model.shape_count,
-                inputs=[model.shape_material_mu, self._contact_friction_scale],
-                outputs=[self._shape_mu, self._shape_mu_invalid],
+                inputs=[
+                    model.shape_material_mu,
+                    self._contact_friction_scale,
+                    model.shape_world,
+                    int(model.world_count),
+                ],
+                outputs=[self._shape_mu, self._shape_mu_invalid, self._shape_friction_rejected],
                 device=model.device,
             )
 
@@ -3304,9 +3313,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         also discard the anchors of the bodies whose collision geometry changed, in every world.
 
         Joint, joint DOF (including the DOF inertial, force and reference-pose flags), body
-        inertial and shape notifications run on the device without host synchronization, so
-        they can be captured in a CUDA graph and replayed after the model arrays are edited in
-        place. A captured
+        inertial and shape notifications run on the device without host synchronization, apart
+        from the eager checks below, so they can be captured in a CUDA graph and replayed after
+        the model arrays are edited in place. A captured
         notification reads the arrays it was captured with; after replacing a model array,
         notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
         Sleeping, and the positive-restitution check of sparse mass factors (with restitution
@@ -3320,7 +3329,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
         Steel spring, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
-        Steel ignores. A captured notification skips all three checks.
+        Steel ignores. A captured notification skips all three checks. An eager shape notification reads
+        the scaled friction coefficients on the host and raises :class:`ValueError` when one is not finite in
+        float32; a captured one leaves the error to :meth:`check_constraint_capacity`.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3592,12 +3603,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         is selected. Global articulations share world 0's rows, so selecting the global
         entry also discards world 0's warm-start impulses while a dynamic global
         articulation exists. Any reset, whatever its mask, also clears the solver-wide contact
-        torsion input error; it clears the disabled-tree-joint and invalid-joint-friction status of the
-        selected worlds. The reset is launched on the device without host synchronization and can be
-        captured in a CUDA graph. A full reset (``world_mask=None``) also restarts the host-side step
-        cadence (mass-matrix refresh interval, ``dt`` change detection, double-buffer schedule and
-        warm-start history) for subsequent eager :meth:`step` calls; CUDA graphs captured before the
-        reset keep the cadence captured into them.
+        torsion input error; it clears the disabled-tree-joint, invalid-joint-friction and
+        rejected-shape-friction status of the selected worlds. The reset is launched on the device
+        without host synchronization and can be captured in a CUDA graph. A full reset
+        (``world_mask=None``) also restarts the host-side step cadence (mass-matrix refresh interval,
+        ``dt`` change detection, double-buffer schedule and warm-start history) for subsequent eager
+        :meth:`step` calls; CUDA graphs captured before the reset keep the cadence captured into them.
 
         Args:
             state: Simulation state; left unchanged. With ``enable_sleeping``, a masked reset
@@ -3637,6 +3648,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
+            # Without articulations no step solves contacts.
+            self._shape_friction_rejected.zero_()
             self._retake_status_snapshot()
             return
 
@@ -3653,6 +3666,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self.constraint_overflow,
                 self._disabled_tree_joint,
                 self._joint_friction_invalid,
+                self._shape_friction_rejected,
                 self._fk_id_valid,
             ],
             device=self.model.device,
@@ -8333,9 +8347,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         and invalid load coefficients were ignored, so discard the output, repair the coefficients
         and :meth:`reset`. Also raises while the friction coefficients of the last
         ``SHAPE_PROPERTIES`` notification, times ``contact_friction_scale``, include one that is not
-        finite in float32; such a notification raises at once unless it was captured. The solver
-        uses zero as the coefficient of each flagged shape until a notification with finite
-        coefficients, so discard the output since the notification and repair the coefficients. With
+        finite in float32, and for the worlds of such a shape until their :meth:`reset`, even after a
+        later notification with finite coefficients; a global shape flags every world. Such a notification
+        raises at once unless it was captured. The solver uses zero as the coefficient of each flagged shape
+        until a notification with finite coefficients, so discard the output of the flagged worlds since the
+        notification, repair the coefficients and :meth:`reset` those worlds. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
         the last :meth:`reset`; a failing captured step restored its output motion arrays to the
         input, while a failing eager step raised from :meth:`step`. Torsion rows dropped for
@@ -8403,6 +8419,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         shape = int(arrays["shape_friction_invalid"].numpy()[0])
         if shape != _NO_INVALID_SHAPE:
             raise RuntimeError(f"Steel: shape_material_mu * contact_friction_scale is not finite for shape {shape}.")
+        rejected = np.flatnonzero(arrays["shape_friction_rejected"].numpy())
+        if rejected.size:
+            worlds = np.where(rejected == self.model.world_count, -1, rejected)
+            raise RuntimeError(f"Steel: scaled shape friction was not finite in worlds {worlds[:16].tolist()}.")
         flags = arrays["constraint_overflow"].numpy()
         worlds = np.flatnonzero(flags[:-1])
         global_flagged = bool(flags[-1])
@@ -8427,6 +8447,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             "disabled_tree_joint": self._disabled_tree_joint,
             "joint_friction_invalid": self._joint_friction_invalid,
             "shape_friction_invalid": self._shape_mu_invalid,
+            "shape_friction_rejected": self._shape_friction_rejected,
             "constraint_overflow": self.constraint_overflow,
         }
         if self._device_torsion is not None:
