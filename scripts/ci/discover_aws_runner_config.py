@@ -150,7 +150,7 @@ def discover_candidates(
             "--owners",
             "amazon",
             "--filters",
-            "Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????",
+            "Name=name,Values=Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) ????????",
             "Name=state,Values=available",
             "--query",
             "reverse(sort_by(Images, &CreationDate))[:1].ImageId",
