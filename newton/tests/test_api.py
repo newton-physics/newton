@@ -90,6 +90,52 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_mpm_config_deprecates_positional_arguments(self):
+        """Legacy positional configuration keeps its binding and warns at the caller."""
+        import dataclasses  # noqa: PLC0415
+        import warnings  # noqa: PLC0415
+
+        import newton  # noqa: PLC0415
+        from newton.solvers import SolverImplicitMPM  # noqa: PLC0415
+
+        config_type = SolverImplicitMPM.Config
+        fields = dataclasses.fields(config_type)
+        self.assertEqual(
+            {field.name for field in fields if field.kw_only},
+            {
+                "collider_recovery_time",
+                "volume_recovery_time",
+                "volume_recovery_target",
+                "volume_recovery_measurement",
+                "critical_fraction_measurement",
+                "collider_winding_number",
+                "collider_contact_shielding",
+            },
+        )
+        legacy_fields = [field for field in fields if not field.kw_only]
+        self.assertEqual(legacy_fields[18].name, "collider_normal_from_sdf_gradient")
+        values = [field.default for field in legacy_fields]
+        values[18] = True
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", newton.NewtonDeprecationWarning)
+            config = config_type(*values)
+        self.assertEqual(len(caught), 1)
+        self.assertIs(caught[0].category, newton.NewtonDeprecationWarning)
+        self.assertEqual(caught[0].filename, __file__)
+        self.assertIn("keyword arguments", str(caught[0].message))
+        for field, value in zip(legacy_fields, values, strict=True):
+            self.assertEqual(getattr(config, field.name), value)
+        self.assertIsNone(config.collider_recovery_time)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            config_type()
+            config_type(**{field.name: field.default for field in fields})
+        self.assertEqual(caught, [])
+        with self.assertRaises(TypeError):
+            config_type(10, max_iterations=20)
+        with self.assertRaises(TypeError):
+            config_type(*values, None)
+
     def test_narrow_phase_keeps_pipeline_controls_private(self):
         """Keep topology specializations and counter ownership out of the public API."""
         from newton.geometry import NarrowPhase  # noqa: PLC0415

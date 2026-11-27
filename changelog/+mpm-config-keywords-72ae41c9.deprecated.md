@@ -1,0 +1,1 @@
+Deprecate passing options positionally to `SolverImplicitMPM.Config`; use keyword arguments such as `Config(max_iterations=100)` instead. Existing positional options retain their original bindings, and the newly added recovery, density measurement, winding number, and contact shielding options are keyword-only.
