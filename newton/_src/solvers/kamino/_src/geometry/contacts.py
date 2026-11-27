@@ -31,8 +31,10 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Literal
 
+import numpy as np
 import warp as wp
 
+from .....geometry.flags import ShapeFlags
 from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.enums import FRICTION_ROLLING_BIT, FRICTION_SLIDING_BIT, FRICTION_TORSIONAL_BIT
@@ -64,6 +66,7 @@ __all__ = [
     "convert_contacts_newton_to_kamino",
     "make_contact_frame_xnorm",
     "make_contact_frame_znorm",
+    "prepare_deterministic_contact_slots",
 ]
 
 
@@ -990,6 +993,7 @@ def make_convert_contacts_newton_to_kamino(
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
     cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
     kinematic_only_immovable: bool = False,
+    slot_mode: Literal["atomic", "group", "ranked"] = "atomic",
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -1001,12 +1005,25 @@ def make_convert_contacts_newton_to_kamino(
             whose margin-shifted distance exceeds the kernel's ``contact_dead_zone``.
         kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
             see :func:`is_immovable_for_kamino`.
+        slot_mode: How a converted contact obtains its output slot. ``"atomic"`` reserves it from
+            the atomic counters, in thread-arrival order. ``"group"`` writes no contact: it
+            records each accepted contact's ``(world, range)`` group in ``contact_group`` and the
+            first and last source index of every group in ``range_bounds``. ``"ranked"`` reads the
+            world slot from ``contact_rank`` and adds ``world_model_start`` for the model slot.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
     """
 
-    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
+    # Without Warp's deterministic mode, which rejects the "atomic" slots; the other slot modes do not need it.
+    @wp.kernel(
+        module="unique",
+        module_options={
+            "enable_backward": False,
+            "default_grid_stride": False,
+            "deterministic": wp.DeterministicMode.NOT_GUARANTEED,
+        },
+    )
     def _convert_contacts_newton_to_kamino(
         # Inputs:
         num_worlds: wp.int32,
@@ -1038,6 +1055,10 @@ def make_convert_contacts_newton_to_kamino(
         body_inv_inertia: wp.array[wp.mat33f],
         body_flags: wp.array[wp.int32],
         contact_dead_zone: wp.float32,
+        contact_rank: wp.array[wp.int32],
+        world_model_start: wp.array[wp.int32],
+        shape_globals_below: wp.array[wp.int32],
+        num_ranges: wp.int32,
         # Outputs:
         kamino_model_active: wp.array[wp.int32],
         kamino_world_active: wp.array[wp.int32],
@@ -1057,6 +1078,8 @@ def make_convert_contacts_newton_to_kamino(
         kamino_key: wp.array[wp.uint64],
         kamino_reaction: wp.array[wp.vec3f],
         kamino_remap: wp.array[wp.int32],
+        contact_group: wp.array[wp.int32],
+        range_bounds: wp.array[wp.int32],
     ):
         """
         Convert Newton :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1080,6 +1103,14 @@ def make_convert_contacts_newton_to_kamino(
         """
         # Retrieve the contact index for this thread
         cid = wp.tid()
+
+        if wp.static(slot_mode == "group"):
+            # Inactive and rejected contacts belong to no group.
+            contact_group[cid] = -1
+        if wp.static(slot_mode == "ranked"):
+            # Reuse the group pass's decision; repeating its float filters could disagree on a borderline contact.
+            if contact_group[cid] < 0:
+                return
 
         # Skip conversion if this contact index exceeds the number
         # of contacts to convert.
@@ -1141,7 +1172,7 @@ def make_convert_contacts_newton_to_kamino(
 
         # Cull speculative contacts. The dynamics treat separations within the dead-zone
         # as touching, so rounding must not drop a resting contact.
-        if wp.static(cull_speculative):
+        if wp.static(cull_speculative and slot_mode != "ranked"):
             if distance > contact_dead_zone:
                 return
 
@@ -1174,13 +1205,14 @@ def make_convert_contacts_newton_to_kamino(
         # (both masks are zero, so the Delassus row would be structurally zero).
         # The bid_A == -1 case (world-static A) is intentionally kept: the other
         # endpoint is exercised against an infinite-mass anchor.
-        if bid_A >= 0 and bid_B >= 0:
-            if is_immovable_for_kamino(
-                body_inv_mass[bid_A], body_inv_inertia[bid_A], body_flags[bid_A], kinematic_only_immovable
-            ) and is_immovable_for_kamino(
-                body_inv_mass[bid_B], body_inv_inertia[bid_B], body_flags[bid_B], kinematic_only_immovable
-            ):
-                return
+        if wp.static(slot_mode != "ranked"):
+            if bid_A >= 0 and bid_B >= 0:
+                if is_immovable_for_kamino(
+                    body_inv_mass[bid_A], body_inv_inertia[bid_A], body_flags[bid_A], kinematic_only_immovable
+                ) and is_immovable_for_kamino(
+                    body_inv_mass[bid_B], body_inv_inertia[bid_B], body_flags[bid_B], kinematic_only_immovable
+                ):
+                    return
 
         # Retrieve the material properties for this contact
         # TODO: Integrate use of material manager to retrieve material properties
@@ -1195,19 +1227,43 @@ def make_convert_contacts_newton_to_kamino(
         gapfunc = wp.vec4f(normal[0], normal[1], normal[2], distance)
         q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
 
-        reservation = reserve_contact_capacity(
-            model_max_contacts,
-            world_max_contacts,
-            wid,
-            1,
-            kamino_model_active,
-            kamino_world_active,
-            contact_overflow_warning_emitted,
-        )
-        if reservation[0] == 0:
+        if wp.static(slot_mode == "group"):
+            # With contacts sorted by (shape0, shape1), a world's contacts form one contiguous range
+            # per global shape0, plus one for its own shapes. Ranges are numbered in source order.
+            range_index = shape_globals_below[sid_0]
+            if wid_0 < 0 and sid_0 > sid_1:
+                range_index += 1
+            # A single world has one range, so its contacts keep their source order.
+            range_index = wp.min(range_index, num_ranges - 1)
+            group = wid * num_ranges + range_index
+            contact_group[cid] = group
+            # Integer minima do not depend on thread order. The last index is stored negated.
+            wp.atomic_min(range_bounds, 2 * group, cid)
+            wp.atomic_min(range_bounds, 2 * group + 1, -cid)
             return
-        wcid = reservation[1]
-        mcid = reservation[2]
+
+        wcid = wp.int32(-1)
+        mcid = wp.int32(-1)
+        if wp.static(slot_mode == "ranked"):
+            wcid = contact_rank[cid]
+            mcid = world_model_start[wid] + wcid
+            if wcid >= world_max_contacts or mcid >= model_max_contacts:
+                mcid = -1
+        if wp.static(slot_mode == "atomic"):
+            reservation = reserve_contact_capacity(
+                model_max_contacts,
+                world_max_contacts,
+                wid,
+                1,
+                kamino_model_active,
+                kamino_world_active,
+                contact_overflow_warning_emitted,
+            )
+            if reservation[0] != 0:
+                wcid = reservation[1]
+                mcid = reservation[2]
+        if mcid < 0:
+            return
 
         # Store the contact data in the Kamino format if the contact is valid
         kamino_wid[mcid] = wid
@@ -1257,6 +1313,81 @@ def make_convert_contacts_newton_to_kamino(
 
     # Return the generated kernel function
     return _convert_contacts_newton_to_kamino
+
+
+# In its own module, without Warp's deterministic mode: the integer scan and sum are already exact.
+@wp.kernel(
+    enable_backward=False,
+    module="unique",
+    module_options={"deterministic": wp.DeterministicMode.NOT_GUARANTEED},
+)
+def _rank_world_contacts(
+    # Inputs:
+    num_ranges: wp.int32,
+    world_max_contacts: wp.array[wp.int32],
+    contact_group: wp.array[wp.int32],
+    range_bounds: wp.array[wp.int32],
+    # Outputs:
+    contact_rank: wp.array[wp.int32],
+    world_count: wp.array[wp.int32],
+    world_count_clamped: wp.array[wp.int32],
+):
+    """Rank the accepted contacts of one world. One block of threads per world.
+
+    The block walks the world's source ranges in order, one block width at a time. Each thread
+    flags whether its source contact belongs to the range, and an exclusive scan of the flags
+    gives each kept contact its world slot. Slots follow ``(range, source index)``.
+    """
+    wid, lane = wp.tid()
+    block_dim = wp.block_dim()
+    count = int(0)
+    for r in range(num_ranges):
+        group = wid * num_ranges + r
+        first = range_bounds[2 * group]
+        last = -range_bounds[2 * group + 1]
+        start = first
+        while start <= last:
+            i = start + lane
+            keep = int(0)
+            if i <= last:
+                if contact_group[i] == group:
+                    keep = 1
+            flags = wp.tile(keep)
+            rank = wp.untile(wp.tile_scan_exclusive(flags))
+            if keep == 1:
+                contact_rank[i] = count + rank
+            count += wp.tile_extract(wp.tile_sum(flags), 0)
+            start += block_dim
+    if lane == 0:
+        world_count[wid] = count
+        world_count_clamped[wid] = wp.min(count, world_max_contacts[wid])
+
+
+@wp.kernel(enable_backward=False)
+def _write_assigned_contact_counts(
+    # Inputs:
+    model_max_contacts: wp.array[wp.int32],
+    world_count: wp.array[wp.int32],
+    world_count_clamped: wp.array[wp.int32],
+    world_model_start: wp.array[wp.int32],
+    # Outputs:
+    contact_overflow_warning_emitted: wp.array[wp.int32],
+    model_active_contacts: wp.array[wp.int32],
+    world_active_contacts: wp.array[wp.int32],
+):
+    """Write the active contact counts that match the slots of :func:`_rank_world_contacts`."""
+    wid = wp.tid()
+    model_max = model_max_contacts[0]
+    kept = wp.max(wp.min(world_count_clamped[wid], model_max - world_model_start[wid]), 0)
+    world_active_contacts[wid] = kept
+    if kept < world_count[wid]:
+        if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
+            if kept < world_count_clamped[wid]:
+                _print_model_contact_capacity_warning()
+            else:
+                _print_world_contact_capacity_warning()
+    if wid == world_count.shape[0] - 1:
+        model_active_contacts[0] = wp.min(world_model_start[wid] + world_count_clamped[wid], model_max)
 
 
 @wp.kernel
@@ -1468,6 +1599,54 @@ def _convert_existing_contacts_kamino_to_newton(
 ###
 
 
+_INT32_MAX = 2**31 - 1
+
+
+#: Threads per world in :func:`_rank_world_contacts`.
+_CONTACT_RANK_BLOCK_DIM = 256
+
+
+class _ContactRankScratch:
+    """Buffers for the deterministic slot assignment of :func:`convert_contacts_newton_to_kamino`."""
+
+    def __init__(self, capacity: int, num_worlds: int, shape_world: np.ndarray, shape_collides: np.ndarray, device):
+        self.device = device
+        self.num_worlds = num_worlds
+        self.shape_count = shape_world.shape[0]
+        is_global = ((shape_world < 0) & shape_collides & (num_worlds > 1)).astype(np.int32)
+        # One source range per colliding global shape, plus one for the world's own shapes.
+        self.num_ranges = int(is_global.sum()) + 1
+        self.shape_globals_below = wp.array(np.cumsum(is_global) - is_global, dtype=wp.int32, device=device)
+        self.range_bounds = wp.zeros(2 * num_worlds * self.num_ranges, dtype=wp.int32, device=device)
+        self.world_count = wp.zeros(num_worlds, dtype=wp.int32, device=device)
+        self.world_count_clamped = wp.zeros(num_worlds, dtype=wp.int32, device=device)
+        self.world_model_start = wp.zeros(num_worlds, dtype=wp.int32, device=device)
+        self.resize(capacity)
+
+    def resize(self, capacity: int) -> None:
+        """Allocate the per-source-contact buffers. Reads nothing back from the device."""
+        self.capacity = capacity
+        self.contact_group = wp.zeros(capacity, dtype=wp.int32, device=self.device)
+        self.contact_rank = wp.zeros(capacity, dtype=wp.int32, device=self.device)
+
+
+def prepare_deterministic_contact_slots(model: Model, contacts_out: ContactsKamino, rigid_contact_max: int) -> None:
+    """Allocate the buffers that :func:`convert_contacts_newton_to_kamino` needs with ``deterministic=True``.
+
+    Reads model arrays back from the device, so call it outside of CUDA graph capture. Without this
+    call, the first deterministic conversion into ``contacts_out`` does the same work.
+
+    Args:
+        model: The model the converted contacts belong to.
+        contacts_out: The conversion target that keeps the buffers.
+        rigid_contact_max: The expected capacity of the Newton contacts that will be converted.
+    """
+    shape_collides = (model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0
+    contacts_out._rank_scratch = _ContactRankScratch(
+        rigid_contact_max, model.world_count, model.shape_world.numpy(), shape_collides, model.device
+    )
+
+
 def convert_contacts_newton_to_kamino(
     model: Model,
     state: State,
@@ -1481,6 +1660,7 @@ def convert_contacts_newton_to_kamino(
     kinematic_only_immovable: bool = False,
     contact_dead_zone: float = 1.0e-6,
     geom_friction_mode: wp.array[wp.int32] | None = None,
+    deterministic: bool = False,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1537,6 +1717,17 @@ def convert_contacts_newton_to_kamino(
         geom_friction_mode:
             Per-geometry :class:`~newton.ShapeFrictionMode` used to remove
             friction components the contact pairs do not enable, or ``None``.
+        deterministic:
+            If ``True``, output slots do not depend on the order in which GPU threads
+            reach the contact counters, so identically ordered ``contacts_in`` give identically ordered
+            ``contacts_out``. One block of threads per world ranks that world's contacts with a prefix
+            sum. Model slots are grouped by world, and a full world or model keeps its first contacts.
+            Expects ``contacts_in`` sorted by ``(shape0, shape1)``, as ``CollisionPipeline(deterministic=True)``
+            delivers it; world slots then follow the source index. Other input orders stay correct and
+            repeatable but can be slow. Passes over the source contacts twice, and scratch grows with
+            ``world_count * (colliding global shape count + 1)``. The first call reads ``model.shape_world`` back from
+            the device; call :func:`prepare_deterministic_contact_slots` beforehand if that first call runs
+            inside CUDA graph capture. Defaults to ``False``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1578,70 +1769,137 @@ def convert_contacts_newton_to_kamino(
     # counts and reset contact data to sentinel values.
     contacts_out.clear()
 
-    # Generate the conversion kernel
-    _convert_contacts_newton_to_kamino = make_convert_contacts_newton_to_kamino(
-        friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
-        restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
-        cull_speculative=cull_speculative_contacts,
-        kinematic_only_immovable=kinematic_only_immovable,
-    )
+    def launch_conversion(
+        slot_mode,
+        contact_rank=None,
+        world_model_start=None,
+        shape_globals_below=None,
+        num_ranges=0,
+        contact_group=None,
+        range_bounds=None,
+    ):
+        kernel = make_convert_contacts_newton_to_kamino(
+            friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
+            restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
+            cull_speculative=cull_speculative_contacts,
+            kinematic_only_immovable=kinematic_only_immovable,
+            slot_mode=slot_mode,
+        )
+        wp.launch(
+            kernel=kernel,
+            dim=max_converted_contacts,
+            inputs=[
+                wp.int32(model.world_count),
+                contacts_out.model_max_contacts,
+                contacts_out.world_max_contacts,
+                contacts_out._data._contact_overflow_warning_emitted,
+                contacts_in.rigid_contact_count,
+                contacts_in.rigid_contact_shape0,
+                contacts_in.rigid_contact_shape1,
+                contacts_in.rigid_contact_point0,
+                contacts_in.rigid_contact_point1,
+                contacts_in.rigid_contact_offset0,
+                contacts_in.rigid_contact_offset1,
+                contacts_in.rigid_contact_normal,
+                contacts_in.rigid_contact_margin0,
+                contacts_in.rigid_contact_margin1,
+                contacts_in_force,
+                contacts_in.rigid_contact_stiffness,
+                contacts_in.rigid_contact_damping,
+                model.shape_margin,
+                model.shape_body,
+                model.shape_world,
+                model.shape_material_mu,
+                model.shape_material_restitution,
+                model.shape_material_mu_torsional,
+                model.shape_material_mu_rolling,
+                state.body_q,
+                model.body_inv_mass,
+                model.body_inv_inertia,
+                model.body_flags,
+                contact_dead_zone,
+                contact_rank,
+                world_model_start,
+                shape_globals_below,
+                wp.int32(num_ranges),
+            ],
+            outputs=[
+                contacts_out.model_active_contacts,
+                contacts_out.world_active_contacts,
+                contacts_out.wid,
+                contacts_out.cid,
+                contacts_out.gid_AB,
+                contacts_out.bid_AB,
+                contacts_out.position_A,
+                contacts_out.position_B,
+                contacts_out.gapfunc,
+                contacts_out.frame,
+                contacts_out.material,
+                contacts_out.angular_friction,
+                contacts_out.stiffness,
+                contacts_out.damping,
+                contacts_out.margins,
+                contacts_out.key,
+                contacts_out.reaction,
+                contacts_out.remap,
+                contact_group,
+                range_bounds,
+            ],
+            device=model.device,
+        )
 
-    # Launch the conversion kernel to convert Newton contacts to Kamino's format.
+    if not deterministic:
+        launch_conversion("atomic")
+        apply_contact_friction_modes(contacts_out, geom_friction_mode)
+        return
+
+    num_worlds = model.world_count
+    # Pass 1 finds the accepted contacts and each world's source ranges, one block of threads
+    # per world ranks that world's contacts, and pass 2 writes each one to the slot of its rank.
+    ranks = getattr(contacts_out, "_rank_scratch", None)
+    if ranks is None or ranks.num_worlds != num_worlds or ranks.shape_count != model.shape_count:
+        prepare_deterministic_contact_slots(model, contacts_out, max_converted_contacts)
+        ranks = contacts_out._rank_scratch
+    elif ranks.capacity != max_converted_contacts:
+        ranks.resize(max_converted_contacts)
+    ranks.range_bounds.fill_(_INT32_MAX)
+    launch_conversion(
+        "group",
+        shape_globals_below=ranks.shape_globals_below,
+        num_ranges=ranks.num_ranges,
+        contact_group=ranks.contact_group,
+        range_bounds=ranks.range_bounds,
+    )
+    wp.launch_tiled(
+        _rank_world_contacts,
+        dim=num_worlds,
+        inputs=[ranks.num_ranges, contacts_out.world_max_contacts, ranks.contact_group, ranks.range_bounds],
+        outputs=[ranks.contact_rank, ranks.world_count, ranks.world_count_clamped],
+        block_dim=_CONTACT_RANK_BLOCK_DIM,
+        device=model.device,
+    )
+    wp.utils.array_scan(ranks.world_count_clamped, ranks.world_model_start, inclusive=False)
     wp.launch(
-        kernel=_convert_contacts_newton_to_kamino,
-        dim=max_converted_contacts,
+        _write_assigned_contact_counts,
+        dim=num_worlds,
         inputs=[
-            wp.int32(model.world_count),
             contacts_out.model_max_contacts,
-            contacts_out.world_max_contacts,
-            contacts_out._data._contact_overflow_warning_emitted,
-            contacts_in.rigid_contact_count,
-            contacts_in.rigid_contact_shape0,
-            contacts_in.rigid_contact_shape1,
-            contacts_in.rigid_contact_point0,
-            contacts_in.rigid_contact_point1,
-            contacts_in.rigid_contact_offset0,
-            contacts_in.rigid_contact_offset1,
-            contacts_in.rigid_contact_normal,
-            contacts_in.rigid_contact_margin0,
-            contacts_in.rigid_contact_margin1,
-            contacts_in_force,
-            contacts_in.rigid_contact_stiffness,
-            contacts_in.rigid_contact_damping,
-            model.shape_margin,
-            model.shape_body,
-            model.shape_world,
-            model.shape_material_mu,
-            model.shape_material_restitution,
-            model.shape_material_mu_torsional,
-            model.shape_material_mu_rolling,
-            state.body_q,
-            model.body_inv_mass,
-            model.body_inv_inertia,
-            model.body_flags,
-            contact_dead_zone,
+            ranks.world_count,
+            ranks.world_count_clamped,
+            ranks.world_model_start,
         ],
         outputs=[
+            contacts_out._data._contact_overflow_warning_emitted,
             contacts_out.model_active_contacts,
             contacts_out.world_active_contacts,
-            contacts_out.wid,
-            contacts_out.cid,
-            contacts_out.gid_AB,
-            contacts_out.bid_AB,
-            contacts_out.position_A,
-            contacts_out.position_B,
-            contacts_out.gapfunc,
-            contacts_out.frame,
-            contacts_out.material,
-            contacts_out.angular_friction,
-            contacts_out.stiffness,
-            contacts_out.damping,
-            contacts_out.margins,
-            contacts_out.key,
-            contacts_out.reaction,
-            contacts_out.remap,
         ],
         device=model.device,
+    )
+    launch_conversion(
+        "ranked",
+        contact_rank=ranks.contact_rank,
+        world_model_start=ranks.world_model_start,
+        contact_group=ranks.contact_group,
     )
     apply_contact_friction_modes(contacts_out, geom_friction_mode)
 

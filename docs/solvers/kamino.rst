@@ -506,6 +506,44 @@ universal, right-handed Cartesian, and three-axis gimbal. Newton's
 :func:`newton.eval_fk` can initialize articulated D6 body states for any
 supported D6 layout.
 
+.. _kamino-determinism:
+
+Deterministic simulation
+------------------------
+
+Set ``SolverKamino.Config.deterministic=wp.DeterministicMode.RUN_TO_RUN``
+for run-to-run determinism as described
+in :ref:`determinism`. Supply contacts from a
+``CollisionPipeline(deterministic=True)``:
+
+.. code-block:: python
+
+   config = newton.solvers.SolverKamino.Config.from_model(
+       model, deterministic=wp.DeterministicMode.RUN_TO_RUN
+   )
+   solver = newton.solvers.SolverKamino(model, config=config)
+   collision_pipeline = newton.CollisionPipeline(model, deterministic=True)
+
+PADMM supports dense dynamics with either dense or sparse Jacobians. SCC,
+LOX, sparse dynamics (including the ``"CRF"`` linear solver, which enables
+them), the ``discover_sparse`` linear solver option and Kamino's collision
+detector (``use_collision_detector=True``) raise :class:`ValueError`
+for an explicit request, or warn and run ``NOT_GUARANTEED`` for an inherited
+request. The solver checks this when it is constructed.
+Explicit ``GPU_TO_GPU`` raises :class:`ValueError`; an inherited request warns
+and selects ``RUN_TO_RUN`` before checking configuration support.
+
+``Config.deterministic`` defaults to ``None``, which inherits
+``wp.config.deterministic`` when the solver is constructed. Set it to
+``NOT_GUARANTEED`` to disable determinism even when the global default is
+enabled. The read-only ``solver.deterministic`` property reports the effective
+mode. Construct a new solver to change it.
+
+Contacts retain their source order within each world. A full world or
+model deterministically keeps its first contacts.
+Resets through the forward-kinematics solver (``use_fk_solver=True``) are
+outside the determinism guarantee.
+
 .. _kamino-rod-joints:
 
 Rod joints

@@ -230,7 +230,15 @@ def _build_delassus_elementwise_dense(
         delassus_D[ncts * j + i] = D_ij
 
 
-@wp.kernel
+# In its own module, without Warp's deterministic mode: its per-pair storage exceeds Warp's limit on large models.
+@wp.kernel(
+    module="unique",
+    module_options={
+        "enable_backward": False,
+        "default_grid_stride": False,
+        "deterministic": wp.DeterministicMode.NOT_GUARANTEED,
+    },
+)
 def _build_delassus_elementwise_sparse(
     # Inputs:
     model_info_bodies_offset: wp.array[wp.int32],
@@ -302,7 +310,8 @@ def _build_delassus_elementwise_sparse(
     inv_I_k = data_bodies_inv_I_i[bid_k]
     D_ij = inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
 
-    # Write upper triangle and mirror to lower
+    # Write upper triangle and mirror to lower. The sums do not depend on thread order: the matrix starts
+    # at zero and an entry gets at most two terms, as a constraint row has at most two blocks, one per body.
     wp.atomic_add(delassus_D, ncts * ct_i + ct_j, D_ij)
     if ct_i != ct_j:
         wp.atomic_add(delassus_D, ncts * ct_j + ct_i, D_ij)

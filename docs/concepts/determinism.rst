@@ -147,8 +147,13 @@ GPU models); Newton only tests ``RUN_TO_RUN``.
        is deterministic. A Steel entry with ``RUN_TO_RUN`` raises
        :class:`NotImplementedError`; see :doc:`coupling`.
    * - :class:`~solvers.SolverKamino`
-     - No
-     - Converts contacts and reserves constraint rows with atomic counters.
+     - Partial
+     - Set ``SolverKamino.Config.deterministic``. Supports PADMM with dense
+       dynamics and either dense or sparse Jacobians.
+       Assigns contact slots with a per-world prefix sum and uses Warp
+       deterministic mode for the order-dependent atomic kernels. ``RUN_TO_RUN``
+       only; SCC, LOX, sparse dynamics and Kamino's collision detector are
+       unsupported. See :ref:`kamino-determinism`.
 
 Planned work on missing solver support and on the cost of the mode is tracked
 in `#5049 <https://github.com/newton-physics/newton/issues/5049>`__.

@@ -1817,6 +1817,129 @@ class TestGeometryContactConversions(NewtonTestCase):
                     np.testing.assert_array_equal(contacts.stiffness.numpy()[:count], expected)
                     np.testing.assert_array_equal(contacts.damping.numpy()[:count], 0.5 * expected)
 
+    def test_16_deterministic_slots(self):
+        """Deterministic conversion orders slots by world and source index, independent of thread order."""
+        box_pair = ModelBuilder()
+        no_gap = ModelBuilder.ShapeConfig(gap=0.0)
+        for k in range(2):
+            body = box_pair.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.25 + 0.5 * k), q=wp.quat_identity()))
+            box_pair.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=no_gap)
+            box_pair.add_articulation([box_pair.add_joint_free(parent=-1, child=body)])
+        num_worlds = 5
+        scene = ModelBuilder()
+        scene.add_ground_plane()
+        for w in range(num_worlds):
+            scene.add_world(box_pair, xform=wp.transform(p=wp.vec3(3.0 * w, 0.0, 0.0)))
+        model = scene.finalize(self.default_device)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16 * num_worlds, deterministic=True)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        fields = ("wid", "cid", "gid_AB", "bid_AB", "position_A", "position_B", "gapfunc", "remap")
+
+        def convert(capacity: int, deterministic: bool) -> dict[str, np.ndarray]:
+            out = ContactsKamino(capacity=[capacity] * num_worlds, device=self.default_device, remappable=True)
+            convert_contacts_newton_to_kamino(model, state, contacts, out, deterministic=deterministic)
+            count = int(out.model_active_contacts.numpy()[0])
+            data = {name: getattr(out, name).numpy()[:count].copy() for name in fields}
+            data["world_active"] = out.world_active_contacts.numpy().copy()
+            return data
+
+        atomic = convert(16, deterministic=False)
+        ordered = convert(16, deterministic=True)
+
+        with self.subTest("same contacts as the atomic path"):
+            np.testing.assert_array_equal(ordered["world_active"], atomic["world_active"])
+            self.assertEqual(len(ordered["remap"]), int(contacts.rigid_contact_count.numpy()[0]))
+            by_source_atomic, by_source_ordered = np.argsort(atomic["remap"]), np.argsort(ordered["remap"])
+            for name in ("gid_AB", "bid_AB", "position_A", "position_B", "gapfunc", "remap"):
+                np.testing.assert_array_equal(ordered[name][by_source_ordered], atomic[name][by_source_atomic], name)
+
+        with self.subTest("slots grouped by world and ordered by source index"):
+            self.assertTrue(np.all(np.diff(ordered["wid"]) >= 0))
+            for w in range(num_worlds):
+                rows = np.flatnonzero(ordered["wid"] == w)
+                np.testing.assert_array_equal(ordered["cid"][rows], np.arange(len(rows)))
+                self.assertTrue(np.all(np.diff(ordered["remap"][rows]) > 0))
+
+        with self.subTest("repeated conversion is identical"):
+            again = convert(16, deterministic=True)
+            for name, values in ordered.items():
+                np.testing.assert_array_equal(again[name], values, name)
+
+        with self.subTest("a full world keeps its first contacts"):
+            expect_contact_capacity_warning(self)
+            with self.assertLogs(level="WARNING"):
+                clipped = convert(3, deterministic=True)
+            np.testing.assert_array_equal(clipped["world_active"], [3] * num_worlds)
+            for w in range(num_worlds):
+                np.testing.assert_array_equal(
+                    clipped["remap"][clipped["wid"] == w], ordered["remap"][ordered["wid"] == w][:3]
+                )
+
+    def test_17_deterministic_slots_single_world(self):
+        """Without explicit worlds, deterministic conversion keeps the source order."""
+        scene = ModelBuilder()
+        no_gap = ModelBuilder.ShapeConfig(gap=0.0)
+        # The ground plane sits between the boxes in shape order, so it pairs with a lower and a higher shape.
+        for k in range(2):
+            if k == 1:
+                scene.add_ground_plane()
+            body = scene.add_link(xform=wp.transform(p=wp.vec3(2.0 * k, 0.0, 0.25), q=wp.quat_identity()))
+            scene.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=no_gap)
+            scene.add_articulation([scene.add_joint_free(parent=-1, child=body)])
+        model = scene.finalize(self.default_device)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=True)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+        self.assertEqual(set(shape1.tolist()), {0, 2}, "the ground plane must pair with both boxes")
+
+        out = ContactsKamino(capacity=[32], device=self.default_device, remappable=True)
+        convert_contacts_newton_to_kamino(model, state, contacts, out, deterministic=True)
+        np.testing.assert_array_equal(out.remap.numpy()[:count], np.arange(count))
+
+        expect_contact_capacity_warning(self)
+        clipped = ContactsKamino(capacity=[1], device=self.default_device, remappable=True)
+        with self.assertLogs(level="WARNING"):
+            convert_contacts_newton_to_kamino(model, state, contacts, clipped, deterministic=True)
+        np.testing.assert_array_equal(clipped.remap.numpy()[:1], [0])
+
+    def test_18_deterministic_slots_ignore_visual_shapes(self):
+        """Global shapes without collision add no work to the deterministic conversion."""
+        box = ModelBuilder()
+        body = box.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.25), q=wp.quat_identity()))
+        box.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=ModelBuilder.ShapeConfig(gap=0.0))
+        box.add_articulation([box.add_joint_free(parent=-1, child=body)])
+        num_worlds = 3
+        scene = ModelBuilder()
+        visual = ModelBuilder.ShapeConfig(has_shape_collision=False)
+        scene.add_shape_sphere(-1, radius=0.1, cfg=visual)
+        scene.add_ground_plane()
+        scene.add_shape_sphere(-1, radius=0.1, cfg=visual)
+        for w in range(num_worlds):
+            scene.add_world(box, xform=wp.transform(p=wp.vec3(3.0 * w, 0.0, 0.0)))
+        scene.add_shape_sphere(-1, radius=0.1, cfg=visual)
+        model = scene.finalize(self.default_device)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16 * num_worlds, deterministic=True)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        out = ContactsKamino(capacity=[16] * num_worlds, device=self.default_device, remappable=True)
+        convert_contacts_newton_to_kamino(model, state, contacts, out, deterministic=True)
+        # One range for the ground plane and one for a world's own shapes.
+        self.assertEqual(out._rank_scratch.num_ranges, 2)
+        count = int(out.model_active_contacts.numpy()[0])
+        self.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
+        np.testing.assert_array_equal(out.remap.numpy()[:count], np.arange(count))
+
 
 ###
 # Test execution
