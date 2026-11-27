@@ -12,7 +12,6 @@ from .rigid_vbd_kernels import (
     _bilateral_auto_rho,
     _compliant_alm_coefficients,
     _unwrap_hinge_angle,
-    _world_selected,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -32,7 +31,6 @@ ill-conditioned, and an unscaled Gauss-Newton Hessian loses float32 precision.
 class JointMimicData:
     joint_type: wp.array[int]
     joint_enabled: wp.array[bool]
-    joint_world: wp.array[wp.int32]
     joint_parent: wp.array[int]
     joint_child: wp.array[int]
     joint_X_p: wp.array[wp.transform]
@@ -235,19 +233,6 @@ def update_joint_mimic_duals(data: JointMimicData, body_q: wp.array[wp.transform
             data.lambda_[follower, component] = 0.0
 
 
-@wp.func
-def _anchor_follower_winding(data: JointMimicData, follower: int, body_q: wp.array[wp.transform]):
-    """Move a one-axis hinge follower's re-anchored winding to the turn its reference implies."""
-    joint_type = data.joint_type[follower]
-    if data.joint_dof_dim[follower, 1] != 1 or not (joint_type == JointType.REVOLUTE or joint_type == JointType.D6):
-        return
-    component = data.joint_dof_dim[follower, 0]
-    q_r, _g_rp, _g_rc = _coordinate(data, data.joint_mimic_joint[follower], component, body_q)
-    coeffs = data.joint_mimic_coeffs[follower]
-    dof = data.joint_qd_start[follower] + component
-    data.joint_angle_prev[dof] = _unwrap_hinge_angle(data.joint_angle_prev[dof], coeffs[0] + coeffs[1] * q_r)
-
-
 @wp.kernel
 def seed_joint_mimic_rho(
     data: JointMimicData,
@@ -256,19 +241,11 @@ def seed_joint_mimic_rho(
     body_inv_inertia: wp.array[wp.mat33],
     inv_dt_sq: float,
     lambda_retention: float,
-    pose_rebaseline_mask: wp.array[wp.bool],
 ):
-    """Retain mimic multipliers and fix each row's ALM penalty from its inverse-Delassus support.
-
-    On a reset-selected step, a one-axis hinge follower's winding moves by whole
-    turns to the coordinate its reference implies, so the pair starts on
-    consistent turns. A reference is never a follower, so its winding is final.
-    """
+    """Retain mimic multipliers and fix each row's ALM penalty from its inverse-Delassus support."""
     follower = wp.tid()
     if not _active(data, follower):
         return
-    if _world_selected(data.joint_world[follower], pose_rebaseline_mask):
-        _anchor_follower_winding(data, follower, body_q)
     count = data.joint_dof_dim[follower, 0] + data.joint_dof_dim[follower, 1]
     for component in range(count):
         row = _row(data, follower, component, body_q)

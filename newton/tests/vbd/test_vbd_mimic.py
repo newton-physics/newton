@@ -389,61 +389,6 @@ def test_vbd_mimic_multi_turn_reference(test, device):
     test.assertLess(abs(np.arctan2(np.sin(gear_error), np.cos(gear_error))), 0.02)
 
 
-def test_vbd_mimic_reset_winding(test, device):
-    """Start mimic hinges after reset on consistent turns, inside active limits where possible."""
-    pi = np.pi
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-
-    def add_hinge(lower, upper, limit_ke, target_ke):
-        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        return builder.add_joint_revolute(
-            -1,
-            body,
-            axis=newton.Axis.Z,
-            limit_lower=lower,
-            limit_upper=upper,
-            limit_ke=limit_ke,
-            limit_kd=200.0 if limit_ke > 0.0 else 0.0,
-            target_ke=target_ke,
-            target_kd=20.0 if target_ke > 0.0 else 0.0,
-        )
-
-    # Bounded pair with gear -1: both nearest-rest turns are out of range.
-    reference = add_hinge(0.0, 1.5 * pi, 1.0e4, 100.0)
-    follower = add_hinge(-1.5 * pi, 0.0, 1.0e4, 0.0)
-    builder.add_articulation([reference, follower])
-    builder.set_joint_mimic(follower, reference, coeffs=(0.0, -1.0))
-    # A reference without an active limit keeps its nearest-rest turn; its bounded follower must take the same turn.
-    free_reference = add_hinge(0.0, 1.5 * pi, 0.0, 100.0)
-    bounded_follower = add_hinge(0.0, 1.5 * pi, 1.0e4, 0.0)
-    builder.add_articulation([free_reference, bounded_follower])
-    builder.set_joint_mimic(bounded_follower, free_reference)
-    builder.color()
-    model = builder.finalize(device=device)
-
-    pose = np.array([1.25 * pi, -1.25 * pi, 1.25 * pi, 1.25 * pi], dtype=np.float32)
-    solver = newton.solvers.SolverVBD(model, iterations=10)
-    state, other = model.state(), model.state()
-    control = model.control()
-    control.joint_target_q.assign(pose)
-    solver.reset(state, flags=0)
-    state.joint_q.assign(pose)
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-    angles = pose.astype(float)
-    for step in range(100):
-        solver.step(state, other, control, None, 0.01)
-        state, other = other, state
-        if step == 0:
-            anchors = solver.joint_angle_prev.numpy()[model.joint_qd_start.numpy()[:4]]
-            np.testing.assert_allclose(anchors[:2], pose[:2], rtol=0.0, atol=1.0e-4)
-            test.assertAlmostEqual(float(anchors[3]), float(anchors[2]), delta=1.0e-4)
-        rotations = state.body_q.numpy()[:, 3:]
-        delta = 2.0 * np.arctan2(rotations[:, 2], rotations[:, 3]) - angles
-        angles += np.arctan2(np.sin(delta), np.cos(delta))
-    np.testing.assert_allclose(angles[:2], pose[:2], rtol=0.0, atol=1.0e-3)
-
-
 class TestSolverVBDMimic(unittest.TestCase):
     def test_mimic_kernel_module_follows_deterministic_mode(self):
         """Apply VBD's deterministic option to the separately compiled mimic kernels."""
@@ -470,7 +415,6 @@ add_function_test(
 add_function_test(TestSolverVBDMimic, "test_vbd_driven_finger_limit", test_vbd_driven_finger_limit, devices=devices)
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_gradients", test_vbd_mimic_gradients, devices=devices)
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_reset", test_vbd_mimic_reset, devices=devices)
-add_function_test(TestSolverVBDMimic, "test_vbd_mimic_reset_winding", test_vbd_mimic_reset_winding, devices=devices)
 add_function_test(TestSolverVBDMimic, "test_vbd_mimic_d6_gimbal_lock", test_vbd_mimic_d6_gimbal_lock, devices=devices)
 add_function_test(
     TestSolverVBDMimic, "test_vbd_mimic_multi_turn_reference", test_vbd_mimic_multi_turn_reference, devices=devices

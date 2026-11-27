@@ -286,8 +286,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           solver corrections. The first step after construction or
           :meth:`reset` starts from the pose-equivalent angle nearest the rest
           coordinate, preferring one inside the joint's limits when
-          :attr:`~newton.Model.joint_limit_ke` is positive. A mimic follower
-          instead starts on the turn its reference coordinate implies.
+          :attr:`~newton.Model.joint_limit_ke` is positive. A pose up to
+          0.1 rad past a bound counts as resting on that bound.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported,
           including six-component world-frame wrenches for ROD joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
@@ -1080,7 +1080,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             for name in (
                 "joint_type",
                 "joint_enabled",
-                "joint_world",
                 "joint_parent",
                 "joint_child",
                 "joint_X_p",
@@ -2868,10 +2867,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         values regardless of *flags*.
         REVOLUTE and one-axis-D6 winding re-anchors to the pose-equivalent angle
         nearest the authored rest coordinate, preferring an angle inside the
-        joint's limits when its limit stiffness is positive. A mimic follower
-        takes the turn its reference coordinate implies, so the pair stays
-        consistent. A pose alone cannot restore an independently intended
-        multi-turn coordinate.
+        joint's limits when its limit stiffness is positive, unless the pose
+        rests slightly past a bound; a pose alone cannot restore an
+        independently intended multi-turn coordinate.
         Selected-world contact warm-start is cold-started when fresh rigid contacts
         are next processed. Internal rigid history is reset regardless of *flags*.
         When an external solver integrates the bodies, reset performs no rigid
@@ -4077,7 +4075,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_inv_inertia_effective,
                         1.0 / (dt * dt),
                         self.rigid_avbd_gamma,
-                        self._rigid_pose_rebaseline_mask,
                     ],
                     device=self.device,
                 )

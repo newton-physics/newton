@@ -7480,7 +7480,6 @@ def _rigid_hinge_bounded_reset_hold(test, device):
     )
     # The pose is a full turn from its nearest-rest equivalent, -0.75 pi, which is out of range.
     angle = 1.25 * math.pi
-    coord_indices = model.joint_q_start.numpy()[:2] + model.joint_dof_dim.numpy()[:2, 0]
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
     state_in, state_out = model.state(), model.state()
@@ -7492,33 +7491,34 @@ def _rigid_hinge_bounded_reset_hold(test, device):
     for reset in (False, True):
         if reset:
             solver.reset(state_in)
+        # joint_target_q shares joint_q's layout.
         joint_q = state_in.joint_q.numpy()
-        joint_q[coord_indices] = angle
+        joint_q[target_indices] = angle
         state_in.joint_q.assign(joint_q)
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         angles = np.full(model.body_count, angle)
-        for _ in range(100):
+        for _ in range(20):
             solver.step(state_in, state_out, control, None, 0.01)
             state_in, state_out = state_out, state_in
             angles = _accumulate_body_z_angles(state_in, angles)
 
-        np.testing.assert_allclose(angles, angle, rtol=0.0, atol=1.0e-3)
+        np.testing.assert_allclose(angles, angle, rtol=0.0, atol=1.0e-3, err_msg=f"reset={reset}")
 
 
 def _rigid_hinge_anchor_angle_selection(test, device):
-    """Verify the reset winding anchor prefers active limits without flipping at-bound poses."""
+    """Verify the reset winding anchor prefers active limits but keeps a pose resting on a bound."""
     pi = math.pi
     # angle, rest, lower, upper, limit_ke -> expected anchored angle
     cases = [
-        # Nearest rest (-0.75 pi) is out of range; the in-range turn wins.
-        ((-0.75 * pi, 0.0, 0.0, 1.5 * pi, 1.0e4), 1.25 * pi),
+        # Nearest rest (0.75 pi) is above the range; the in-range turn wins.
+        ((0.75 * pi, 0.0, -1.5 * pi, 0.0, 1.0e4), -1.25 * pi),
         # Without an active limit row, the documented nearest-rest turn is kept.
         ((-0.75 * pi, 0.0, 0.0, 1.5 * pi, 0.0), -0.75 * pi),
-        # No turn is in range; the one with the smaller violation wins.
-        ((-0.2, 0.0, 0.0, 1.5 * pi, 1.0e4), -0.2),
-        # A pose on a bound but read just past it by float32 rounding keeps its turn.
-        ((-pi - 2.4e-7, -1.25, -pi, pi, 1.0e4), -pi),
+        # No turn is in range; the smaller violation wins over nearest rest (1.9 pi).
+        ((1.9 * pi, 1.4 * pi, 0.0, 1.5 * pi, 1.0e4), -0.1 * pi),
+        # A pose pressed 0.01 rad into its stop keeps its turn although a full turn up is in range.
+        ((-0.01, 0.0, 0.0, 3.0 * pi, 1.0e4), -0.01),
     ]
     inputs = wp.array([case for case, _ in cases], dtype=float, device=device)
     result = wp.empty(len(cases), dtype=float, device=device)

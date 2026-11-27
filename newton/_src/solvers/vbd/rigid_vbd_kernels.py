@@ -62,8 +62,8 @@ wp.set_module_options({"enable_backward": False})
 _SMALL_ANGLE_EPS = wp.constant(1.0e-7)
 """Small-angle threshold [rad] for guards and series expansions"""
 
-_HINGE_ANCHOR_BOUND_SLACK = wp.constant(1.0e-4)
-"""Rounding slack [rad] within which a re-anchored hinge angle still counts as on a limit bound"""
+_HINGE_ANCHOR_BOUND_TOLERANCE = wp.constant(0.1)
+"""Largest limit violation [rad] at which a re-anchored hinge still counts as resting on that bound"""
 
 _DRIVE_LIMIT_MODE_NONE = wp.constant(0)
 _DRIVE_LIMIT_MODE_LIMIT_LOWER = wp.constant(1)
@@ -2917,8 +2917,7 @@ def _anchor_hinge_angle(angle: float, rest: float, lower: float, upper: float, l
     if not _limit_row_exists(limit_ke, lower, upper):
         return theta
     two_pi = 2.0 * wp.pi
-    # Step to the in-range equivalent nearest rest; if the range has none, theta
-    # lands just past the opposite bound and competes with the branch before it.
+    # Compare the two equivalents that straddle the bound the nearest-rest angle violates.
     other = theta
     if theta < lower:
         theta = theta + two_pi * wp.ceil((lower - theta) / two_pi)
@@ -2926,10 +2925,11 @@ def _anchor_hinge_angle(angle: float, rest: float, lower: float, upper: float, l
     elif theta > upper:
         theta = theta - two_pi * wp.ceil((theta - upper) / two_pi)
         other = theta + two_pi
-    # A pose on a bound but read just past it by rounding ties, so it keeps the turn nearest rest.
-    slack = _HINGE_ANCHOR_BOUND_SLACK
-    violation = wp.max(wp.max(lower - theta, theta - upper) - slack, 0.0)
-    other_violation = wp.max(wp.max(lower - other, other - upper) - slack, 0.0)
+    # A hinge pressed into a compliant stop sits slightly past it. Within the tolerance
+    # both equivalents tie, so that pose keeps its turn instead of moving a full turn.
+    tolerance = _HINGE_ANCHOR_BOUND_TOLERANCE
+    violation = wp.max(wp.max(lower - theta, theta - upper) - tolerance, 0.0)
+    other_violation = wp.max(wp.max(lower - other, other - upper) - tolerance, 0.0)
     if other_violation < violation or (other_violation == violation and wp.abs(other - rest) < wp.abs(theta - rest)):
         return other
     return theta
