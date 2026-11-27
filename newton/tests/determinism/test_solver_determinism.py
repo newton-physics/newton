@@ -692,6 +692,7 @@ for solver_name in ("featherstone", "mujoco"):
         devices=devices,
         solver_name=solver_name,
         check_output=False,
+        requires=("mujoco", "mujoco_warp") if solver_name == "mujoco" else (),
     )
 
 add_function_test(
@@ -700,6 +701,7 @@ add_function_test(
     test_mujoco_sparse_articulation_construction,
     devices=devices,
     check_output=False,
+    requires=("mujoco", "mujoco_warp"),
 )
 
 
