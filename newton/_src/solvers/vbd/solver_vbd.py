@@ -288,7 +288,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           including six-component world-frame wrenches for ROD joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
-          :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
+          :attr:`~newton.Model.joint_target_mode`, and equality constraints.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
           They contribute implicit finite-stiffness rows to the body solve, using
           ``rigid_joint_linear_ke`` or ``rigid_joint_angular_ke`` for each follower coordinate.

@@ -20,7 +20,6 @@ from .types import (
     vec1f,
     vec1i,
     vec5i,
-    vec6f,
     vec6i,
     vec7f,
 )
@@ -667,6 +666,9 @@ class JointDoFType(IntEnum):
         None
     """
 
+    D6 = 11
+    """A D6 layout with model-defined linear and angular axis counts."""
+
     ###
     # Operations
     ###
@@ -819,6 +821,9 @@ class JointDoFType(IntEnum):
             return wp.constant(wp.vec3i(0, 1, 2))
         elif self.value == self.FIXED:
             return []  # Empty vector (TODO: wp.constant(vec0i()))
+        elif self.value == self.D6:
+            # D6 Jacobian columns are packed with the authored DoFs first.
+            return wp.constant(vec6i(0, 1, 2, 3, 4, 5))
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -965,6 +970,7 @@ class JointDoFType(IntEnum):
             JointDoFType.CARTESIAN: JointType.D6,
             JointDoFType.CYLINDRICAL: JointType.D6,
             JointDoFType.UNIVERSAL: JointType.D6,
+            JointDoFType.D6: JointType.D6,
         }
         joint_type = _MAP_TO_NEWTON.get(dof_type, None)
         if joint_type is None:
@@ -978,8 +984,6 @@ class JointDoFType(IntEnum):
         q_count: int,
         qd_count: int,
         dof_dim: wp.vec2i,
-        limit_lower: vec6f,
-        limit_upper: vec6f,
         dof_axes: mat63f,
     ) -> wp.int32:
         """
@@ -990,9 +994,7 @@ class JointDoFType(IntEnum):
             q_count: The Newton coordinates count for this joint.
             qd_count: The Newton dofs count for this joint.
             dof_dim: The Newton dof dimension (linear/angular dof counts) for this joint.
-            limit_lower: The lower position limits from Newton for this joint (in dof space).
-            limit_upper: The upper position limits from Newton for this joint (in dof space).
-            dof_axes: The Newton joint axes, used to distinguish gimbal handedness.
+            dof_axes: The Newton joint axes, used to select equivalent specialized layouts.
 
         Returns:
             The corresponding joint DoF type, or -1 if the joint type is not
@@ -1014,35 +1016,38 @@ class JointDoFType(IntEnum):
                 return JointDoFType.ROD
             return -1
 
-        # If the type is not directly supported, attempt to infer the DoF type based
-        # on the dimensions of the joint and number of DoFs.
-        if q_count == 0 and qd_count == 0 and dof_dim == wp.vec2i(0, 0):
+        linear_count = dof_dim[0]
+        angular_count = dof_dim[1]
+        if (
+            joint_type != JointType.D6
+            or q_count != qd_count
+            or qd_count != linear_count + angular_count
+            or linear_count < 0
+            or linear_count > 3
+            or angular_count < 0
+            or angular_count > 3
+        ):
+            return -1
+
+        # Keep specialized layouts when they represent the authored axes.
+        if dof_dim == wp.vec2i(0, 0):
             return JointDoFType.FIXED
-        elif q_count == 1 and qd_count == 1 and dof_dim == wp.vec2i(1, 0):
+        elif dof_dim == wp.vec2i(1, 0):
             return JointDoFType.PRISMATIC
-        elif q_count == 1 and qd_count == 1 and dof_dim == wp.vec2i(0, 1):
+        elif dof_dim == wp.vec2i(0, 1):
             return JointDoFType.REVOLUTE
-        elif q_count == 2 and qd_count == 2 and dof_dim == wp.vec2i(0, 2):
+        elif dof_dim == wp.vec2i(0, 2):
             return JointDoFType.UNIVERSAL
-        elif q_count == 2 and qd_count == 2 and dof_dim == wp.vec2i(1, 1):
+        elif dof_dim == wp.vec2i(1, 1) and wp.length_sq(dof_axes[0] - dof_axes[1]) <= 1.0e-12:
             return JointDoFType.CYLINDRICAL
-        elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(3, 0):
-            return JointDoFType.CARTESIAN
-        elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
+        elif dof_dim == wp.vec2i(3, 0):
+            if wp.dot(wp.cross(dof_axes[0], dof_axes[1]), dof_axes[2]) >= 0.0:
+                return JointDoFType.CARTESIAN
+        elif dof_dim == wp.vec2i(0, 3):
             if wp.dot(wp.cross(dof_axes[0], dof_axes[1]), dof_axes[2]) < 0.0:
                 return JointDoFType.GIMBAL_LEFT_HANDED
             return JointDoFType.GIMBAL
-        elif q_count == 4 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
-            return JointDoFType.SPHERICAL
-        elif q_count == 7 and qd_count == 6:
-            for i in range(qd_count):
-                if limit_lower[i] <= JOINT_QMIN or limit_upper[i] >= JOINT_QMAX:
-                    return JointDoFType.FREE
-            # Unsupported joint type with 7 coordinates and 6 DoFs but unrecognized limits
-            return -1
-
-        # Return invalid DoF type
-        return -1
+        return JointDoFType.D6
 
     @staticmethod
     @wp.func
@@ -1165,7 +1170,7 @@ class JointDoFType(IntEnum):
         Returns:
             Spatial twist component index in ``[0, 5]``.
         """
-        if dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
+        if dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD or dof_type == JointDoFType.D6:
             return axis
         if dof_type == JointDoFType.REVOLUTE:
             return 3
@@ -1241,6 +1246,17 @@ class JointDoFType(IntEnum):
 ###
 # Containers
 ###
+
+
+@wp.struct
+class D6JointAxes:
+    """D6 axis counts and bases in the authored parent anchor frame."""
+
+    linear_count: wp.int32
+    angular_count: wp.int32
+    linear: wp.mat33f
+    angular: wp.mat33f
+    third_axis_sign: wp.float32
 
 
 @dataclass
@@ -1359,6 +1375,9 @@ class JointsModel:
     Orientation of the joint frame on the follower body, expressed in the follower body coordinate frame.
     Shape of ``(num_joints,)``.
     """
+
+    d6_axes: wp.array[D6JointAxes] | None = None
+    """Completed bases for general D6 joints, indexed by joint."""
 
     ###
     # Limits

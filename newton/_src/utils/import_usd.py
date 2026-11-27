@@ -38,8 +38,6 @@ from ..solvers.mujoco.enums import EqType, _ActuatorBiasType, _ActuatorDynamicsT
 from ..solvers.mujoco.equality import _add_equality_constraint, _register_equality_constraint_attributes
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
-    mjc_add_equality_mimic,
-    mjc_polycoef_has_higher_order,
 )
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
@@ -488,12 +486,12 @@ def parse_usd(
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
             colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the scene's ``mjc:flag:filterparent``, which sets ``collision_filter_parent`` on imported joints that do not author ``physics:collisionEnabled``, is then ignored as well. Default is True.
-        convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
-            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
-            becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
-            and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+        convert_mjc_equality_constraints: Whether MuJoCo CONNECT and WELD equality schemas should be converted to
+            Newton loop joints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld becomes a FIXED
+            loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds and MuJoCo
+            welds" in the articulation docs). If False, they are preserved only in the
             ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
-            ``model.mujoco.equality_constraint_*``.
+            ``model.mujoco.equality_constraint_*``. Joint equalities are always preserved this way.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -810,12 +808,14 @@ def parse_usd(
 
         filtered_paths = {path for path in non_regex_ignore_paths if cuts_articulation(path)}
         if filtered_paths:
-            # PhysicsScenes are not filtered by ignore_paths, so keep the ones found outside these paths.
-            scenes = ret_dict.get(UsdPhysics.ObjectType.Scene, ((), ()))
             native_exclude_paths = [path for path in native_exclude_paths if path not in filtered_paths]
             ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
-            ret_dict[UsdPhysics.ObjectType.Scene] = scenes
-    physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
+    # The parser only skips scenes below ignore paths without ".*".
+    physics_scenes = [
+        scene
+        for scene in usd._get_physics_scenes_from_results(stage, ret_dict)
+        if not any(re.match(pattern, str(scene.GetPath())) for pattern in ignore_paths)
+    ]
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
     legacy_rigid_object_types = (
@@ -2923,35 +2923,16 @@ def parse_usd(
                 # runtime enabled flag here rather than dropping the constraint.
                 eq_enabled = enabled and bool(usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True))
 
-                if convert_mjc_equality_constraints:
-                    if mjc_polycoef_has_higher_order(polycoef):
-                        warnings.warn(
-                            f"Joint equality '{joint_path}' uses higher-order polycoef terms. "
-                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
-                            "only coef0/coef1.",
-                            NewtonWarning,
-                            stacklevel=2,
-                        )
-                    mjc_add_equality_mimic(
-                        builder,
-                        joint1_idx,
-                        joint2_idx,
-                        polycoef,
-                        joint_path,
-                        eq_enabled,
-                        eq_custom_attrs,
-                    )
-                else:
-                    _add_equality_constraint(
-                        builder,
-                        constraint_type=EqType.JOINT,
-                        joint1=joint1_idx,
-                        joint2=joint2_idx,
-                        polycoef=polycoef,
-                        label=joint_path,
-                        enabled=eq_enabled,
-                        custom_attributes=eq_custom_attrs,
-                    )
+                _add_equality_constraint(
+                    builder,
+                    constraint_type=EqType.JOINT,
+                    joint1=joint1_idx,
+                    joint2=joint2_idx,
+                    polycoef=polycoef,
+                    label=joint_path,
+                    enabled=eq_enabled,
+                    custom_attributes=eq_custom_attrs,
+                )
 
     _parse_mjc_equality_constraints()
 
@@ -3174,7 +3155,9 @@ def parse_usd(
         for path, idx in path_joint_map.items()
         if idx < len(builder.joint_q_start)
     }
-    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+    # Include instance proxies so actuators and batteries under instanceable prims are imported
+    # together with the joints they drive, which the joint traversal above also reaches.
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
         prim_path = str(prim.GetPath())
         if any(re.match(pattern, prim_path) for pattern in ignore_paths):
             continue
