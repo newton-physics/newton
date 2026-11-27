@@ -6640,6 +6640,15 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     test.assertGreater(float(np.linalg.norm(particle_q[particle] - initial_particle_pos)), 1.0e-3)
 
 
+def _pin_fast_math(test, *kernels):
+    """Compile ``kernels`` like the default ``SolverVBD``, whatever earlier solvers left on their modules."""
+    for kernel in kernels:
+        if not wp.get_module_options(module=kernel.module)["fast_math"]:
+            wp.set_module_options({"fast_math": True}, module=kernel.module)
+            test.addCleanup(wp.set_module_options, {"fast_math": False}, module=kernel.module)
+    return kernels
+
+
 def _two_particle_tile_solve_matches_scalar(test, device):
     """Solve odd-sized, high-valence cloth work in packed and 16-lane tiles like the scalar kernel."""
     ring_count = 20
@@ -6726,15 +6735,21 @@ def _two_particle_tile_solve_matches_scalar(test, device):
         hessians_device,
         None,  # particle_world
     ]
-    wp.launch(
+    scalar_kernel, legacy_kernel, packed_kernel = _pin_fast_math(
+        test,
         solve_elasticity,
+        make_solve_elasticity_tile(True, True, False),
+        make_solve_elasticity_tile(True, False, True),
+    )
+    wp.launch(
+        scalar_kernel,
         dim=model.particle_count,
         inputs=inputs,
         outputs=[scalar_displacements, None],
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(True, True, False),
+        legacy_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=inputs,
@@ -6742,7 +6757,7 @@ def _two_particle_tile_solve_matches_scalar(test, device):
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(True, False, True),
+        packed_kernel,
         dim=((model.particle_count + 1) // 2) * (2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE),
         block_dim=2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=inputs,
@@ -6751,6 +6766,7 @@ def _two_particle_tile_solve_matches_scalar(test, device):
     )
     # The tiles sum element contributions in a different order than the scalar kernel.
     expected = scalar_displacements.numpy()
+    test.assertTrue(np.isfinite(expected).all())
     np.testing.assert_allclose(legacy_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
     np.testing.assert_allclose(packed_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
 
@@ -6986,15 +7002,21 @@ def _tet_only_tile_solve_matches_scalar(test, device):
         hessians_device,
         None,  # particle_world
     ]
-    wp.launch(
+    scalar_kernel, legacy_kernel, specialized_kernel = _pin_fast_math(
+        test,
         solve_elasticity,
+        make_solve_elasticity_tile(True, True, False),
+        make_solve_elasticity_tile(False, True, False),
+    )
+    wp.launch(
+        scalar_kernel,
         dim=model.particle_count,
         inputs=inputs,
         outputs=[scalar_displacements, None],
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(True, True, False),
+        legacy_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=inputs,
@@ -7002,7 +7024,7 @@ def _tet_only_tile_solve_matches_scalar(test, device):
         device=device,
     )
     wp.launch(
-        make_solve_elasticity_tile(False, True, False),
+        specialized_kernel,
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=inputs,
@@ -7011,6 +7033,7 @@ def _tet_only_tile_solve_matches_scalar(test, device):
     )
 
     expected = scalar_displacements.numpy()
+    test.assertTrue(np.isfinite(expected).all())
     np.testing.assert_allclose(legacy_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
     np.testing.assert_allclose(specialized_displacements.numpy(), expected, rtol=1.0e-5, atol=1.0e-7)
 
