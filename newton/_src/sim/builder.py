@@ -4848,9 +4848,15 @@ class ModelBuilder:
         self.actuator_count += copy_count * counts["actuator"]
 
         eq_count = builder._equality_constraint_count
-        if eq_count and len(moved_copies):
+        if eq_count:
             eq_base = self._equality_constraint_count - copy_count * eq_count
-            self._transform_world_equalities(builder, eq_base + moved_copies * eq_count, moved_xforms)
+            if len(moved_copies):
+                self._transform_world_equalities(builder, eq_base + moved_copies * eq_count, moved_xforms)
+            # A full frame column stays full when these copies add nothing to it, or finalize() warns.
+            for name in ("anchor", "relpose"):
+                values = self._eq_attr(f"equality_constraint_{name}").values
+                if values and len(values) == eq_base:
+                    values.extend([None] * (copy_count * eq_count))
 
     def _transform_world_equalities(self, builder: ModelBuilder, starts: np.ndarray, xforms: np.ndarray) -> None:
         """Place the world-side equality frames of the copies of ``builder`` whose rows begin at ``starts``."""

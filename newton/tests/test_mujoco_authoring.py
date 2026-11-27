@@ -929,6 +929,9 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 # finalize() warns about columns shorter than the equality count.
                 self.assertEqual(len(anchors), builder._equality_constraint_count)
                 self.assertEqual(len(relposes), builder._equality_constraint_count)
+                # A later unmoved copy adds no relpose and must not leave the column short.
+                builder.add_world(blueprint)
+                self.assertEqual(len(relposes), builder._equality_constraint_count)
 
     @requires(*MUJOCO_MODULES)
     def test_weld_preserves_each_world_initial_pose(self):
