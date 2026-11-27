@@ -2988,6 +2988,43 @@ def test_backward_collider_motion_after_mode_switch_uses_proxy_velocity(test, de
     np.testing.assert_allclose(body_qd.numpy()[body][:3], [0.0, 0.0, -2.0], atol=1.0e-6)
 
 
+def test_proxy_wrench_torque_is_about_model_com(test, device):
+    """Harvest proxy torque about the model center of mass when the collider center of mass is offset."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    body = builder.add_body(mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+    model = builder.finalize(device=device)
+    model.body_flags.assign(model.body_flags.numpy() | int(newton.BodyFlags.PROXY))
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.1
+    config.grid_type = "fixed"
+    config.grid_padding = 2
+    solver = SolverImplicitMPM(model, config)
+    collider_com = model.body_com.numpy()[body] + np.array([0.1, 0.0, 0.0], dtype=np.float32)
+    solver.setup_collider(body_com=wp.array([collider_com], dtype=wp.vec3, device=device))
+
+    # A vertical impulse through the collider center of mass, accumulated over the coupled step.
+    dt = 0.1
+    solver._proxy_body_impulse.assign([wp.spatial_vector(0.0, 0.0, 2.0, 0.0, 0.0, 0.0)])
+    wrench = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    state = model.state()
+    solver.coupling_harvest_proxy_wrenches(
+        wp.array([0], dtype=int, device=device),
+        wrench,
+        body_qd_before=state.body_qd,
+        state=state,
+        state_out=state,
+        contacts=None,
+        dt=dt,
+    )
+
+    # Torque about the model COM: (0.1, 0, 0) x (0, 0, 20) = (0, -2, 0).
+    np.testing.assert_allclose(wrench.numpy()[0], [0.0, 0.0, 20.0, 0.0, -2.0, 0.0], atol=1.0e-5)
+
+
 def _settle_proxy_box_on_sand(
     device, mpm_substeps, in_place=True, step_count=60, dt=0.01, collider_velocity_mode="forward"
 ):
@@ -3915,6 +3952,14 @@ add_function_test(
     TestImplicitMPM,
     "test_backward_collider_motion_after_mode_switch_uses_proxy_velocity",
     test_backward_collider_motion_after_mode_switch_uses_proxy_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_proxy_wrench_torque_is_about_model_com",
+    test_proxy_wrench_torque_is_about_model_com,
     devices=devices,
     check_output=False,
 )

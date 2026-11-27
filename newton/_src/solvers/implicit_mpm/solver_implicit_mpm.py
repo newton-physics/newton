@@ -1003,7 +1003,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
         collider_velocity_mode: Literal["forward", "backward"] = "forward"
         """Collider velocity computation mode. ``'forward'`` uses the current velocity,
-        ``'backward'`` uses the previous timestep position."""
+        ``'backward'`` uses the previous timestep position. Proxy bodies with a finite collider mass
+        (:attr:`~newton.BodyFlags.PROXY`) use their integrated ``body_qd`` in both modes."""
 
         # grid
         voxel_size: float = 0.1
@@ -2623,11 +2624,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         Returns the impulses of all steps since the last proxy sync divided by ``dt``, and consumes them.
         """
-        del body_qd_before, state, state_out, contacts
+        del body_qd_before, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
         out_body_f.zero_()
-        if self._proxy_body_impulse is None:
+        if self._proxy_body_impulse is None or state.body_q is None:
             return
 
         wp.launch(
@@ -2638,6 +2639,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 body_local_to_proxy_global,
                 int(newton.BodyFlags.PROXY),
                 self.model.body_flags,
+                self._mpm_model.collider.body_com,
+                self.model.body_com,
+                state.body_q,
                 self._proxy_body_impulse,
                 out_body_f,
             ],
@@ -2709,16 +2713,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if self._proxy_body_impulse is None or state_in.body_q is None or collider_body_qd is None:
             return
 
-        impulses, positions, collider_ids = self.collect_collider_impulses(state_out)
         step_impulse = self._proxy_body_step_impulse
         step_impulse.zero_()
         wp.launch(
             _sum_mpm_proxy_body_impulses_kernel,
-            dim=collider_ids.shape[0],
+            dim=state_out.collider_ids.shape[0],
             inputs=[
-                collider_ids,
-                impulses,
-                positions,
+                -(self._mpm_model.voxel_size**3),
+                state_out.collider_ids,
+                state_out.impulse_field.dof_values,
+                state_out.collider_position_field.dof_values,
                 self.collider_body_index,
                 int(newton.BodyFlags.PROXY),
                 self.model.body_flags,
@@ -5633,6 +5637,7 @@ def _select_mpm_backward_collider_motion_kernel(
 
 @wp.kernel(enable_backward=False)
 def _sum_mpm_proxy_body_impulses_kernel(
+    impulse_scale: float,
     collider_ids: wp.array[int],
     collider_impulses: wp.array[wp.vec3],
     collider_impulse_pos: wp.array[wp.vec3],
@@ -5653,7 +5658,7 @@ def _sum_mpm_proxy_body_impulses_kernel(
     if body < 0 or body >= body_impulse.shape[0] or (body_flags[body] & proxy_flag) == 0:
         return
 
-    impulse = collider_impulses[i]
+    impulse = impulse_scale * collider_impulses[i]
     r = collider_impulse_pos[i] - wp.transform_point(body_q[body], body_com[body])
     wp.atomic_add(body_impulse, body, wp.spatial_vector(impulse, wp.cross(r, impulse)))
 
@@ -5693,6 +5698,9 @@ def _harvest_mpm_proxy_wrenches_kernel(
     body_local_to_proxy_global: wp.array[int],
     proxy_flag: int,
     body_flags: wp.array[wp.int32],
+    collider_body_com: wp.array[wp.vec3],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
     body_impulse: wp.array[wp.spatial_vector],
     out_body_f: wp.array[wp.spatial_vector],
 ):
@@ -5701,5 +5709,10 @@ def _harvest_mpm_proxy_wrenches_kernel(
     if proxy_global < 0 or proxy_global >= out_body_f.shape[0] or (body_flags[body] & proxy_flag) == 0:
         return
 
-    wp.atomic_add(out_body_f, proxy_global, body_impulse[body] / dt)
+    # Impulses are summed about the collider COM; body_f is referenced to the model COM.
+    impulse = body_impulse[body]
+    linear = wp.spatial_top(impulse)
+    offset = wp.transform_vector(body_q[body], collider_body_com[body] - body_com[body])
+    torque = wp.spatial_bottom(impulse) + wp.cross(offset, linear)
+    wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(linear, torque) / dt)
     body_impulse[body] = wp.spatial_vector()
