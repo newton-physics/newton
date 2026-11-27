@@ -270,6 +270,15 @@ def triangle_contains_projection(geom: GenericShapeData, point: wp.vec3, toleran
 
 
 @wp.func
+def triangle_edge_outward(start: wp.vec3, end: wp.vec3, opposite: wp.vec3) -> wp.vec3:
+    """Return the unit normal of edge ``start``-``end`` in the triangle's plane, pointing away from ``opposite``."""
+    edge = end - start
+    inward = opposite - start
+    inward = inward - edge * (wp.dot(inward, edge) / wp.max(wp.dot(edge, edge), 1.0e-30))
+    return -wp.normalize(inward)
+
+
+@wp.func
 def _has_verified_hull(geom: Any, provider: Any) -> bool:
     """Check topology independently of whether a mesh has support acceleration."""
     if geom.shape_type != int(GeoType.CONVEX_MESH):

@@ -22,7 +22,12 @@ from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
 from .penetration import create_solve_box_penetration
 from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
-from .support_function import triangle_contains_projection, triangle_seam_normal, triangle_witness_tolerance
+from .support_function import (
+    triangle_contains_projection,
+    triangle_edge_outward,
+    triangle_seam_normal,
+    triangle_witness_tolerance,
+)
 
 
 @wp.struct
@@ -152,6 +157,39 @@ def _create_triangle_seam_contact(support_map_b: Any):
     """Create the resolution of contacts at coplanar mesh seams."""
 
     @wp.func
+    def reaches_past_boundary(
+        geom_a: Any,
+        geom_b: Any,
+        relative_orientation_b: wp.quat,
+        relative_position_b: wp.vec3,
+        data_provider: Any,
+        tolerance: float,
+    ) -> bool:
+        """Return whether B extends, in the face plane, past an edge of triangle A without a coplanar neighbor."""
+        # Triangle vertex A is the frame origin; B and C are stored relative to it.
+        a = wp.vec3(0.0)
+        b = geom_a.scale
+        c = geom_a.auxiliary
+        mask = geom_a.smooth_edges
+        # Edge bits: 1 = AB, 2 = BC, 4 = CA.
+        if (mask & 1) == 0:
+            outward = triangle_edge_outward(a, b, c)
+            reach = support_map_b(geom_b, outward, relative_orientation_b, relative_position_b, data_provider)
+            if wp.dot(outward, reach - a) > tolerance:
+                return True
+        if (mask & 2) == 0:
+            outward = triangle_edge_outward(b, c, a)
+            reach = support_map_b(geom_b, outward, relative_orientation_b, relative_position_b, data_provider)
+            if wp.dot(outward, reach - b) > tolerance:
+                return True
+        if (mask & 4) == 0:
+            outward = triangle_edge_outward(c, a, b)
+            reach = support_map_b(geom_b, outward, relative_orientation_b, relative_position_b, data_provider)
+            if wp.dot(outward, reach - c) > tolerance:
+                return True
+        return False
+
+    @wp.func
     def triangle_seam_contact(
         geom_a: Any,
         geom_b: Any,
@@ -184,7 +222,13 @@ def _create_triangle_seam_contact(support_map_b: Any):
         if deepest_depth < signed_distance - tolerance:
             # A shape sunk through a flat triangulated surface reaches deepest
             # over the face, while the shallowest direction leans across a seam.
-            if triangle_contains_projection(geom_a, deepest, tolerance):
+            # The face is the surface there only if B lies within the face's
+            # true boundary. Past a crease or open edge, as when a board
+            # overhangs the end cap of a belt strand, the deepest point is just
+            # B's far end beyond that boundary, not a penetration.
+            if triangle_contains_projection(geom_a, deepest, tolerance) and not reaches_past_boundary(
+                geom_a, geom_b, relative_orientation_b, relative_position_b, data_provider, tolerance
+            ):
                 return True, deepest - deepest_depth * face, deepest, face, deepest_depth
             return False, point_a, point_b, normal, signed_distance
         depth = wp.dot(face, point_b)

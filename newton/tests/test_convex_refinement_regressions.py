@@ -607,6 +607,66 @@ def test_refinement_triangle_capsule_sunk_across_seam(test, device):
     test.assertGreater(float(np.min(np.abs(normals[:, 2]))), 0.9999, normals)
 
 
+def test_refinement_triangle_board_across_strand_side(test, device):
+    """Keep a board crossing a belt strand's free end from a deep side-face contact.
+
+    A pallet's bottom deck board lies across a narrow chain strand (a box mesh),
+    sunk 0.04 mm into its top face, and its rear edge sits on the strand's end.
+    The witness on the strand's side face lands where that face's diagonal seam
+    meets the end corner. The board's far end lies 80 mm beyond the side face
+    and projects onto it, but the board also reaches past the side face's top
+    edge, a crease, so the side face does not support it there. A side-face
+    contact 80 mm deep pushed full pallets sideways off a wrap-line conveyor.
+    """
+    builder = newton.ModelBuilder()
+    box = newton.Mesh.create_box(0.5, compute_inertia=False)
+    strand = newton.Mesh(box.vertices, box.indices, compute_inertia=False)
+    builder.add_shape_mesh(
+        -1,
+        mesh=strand,
+        xform=wp.transform(wp.vec3(0.0, -0.5375, 0.48), wp.quat_identity()),
+        scale=(1.8596, 0.036, 0.04),
+        cfg=builder.ShapeConfig(density=0.0, gap=0.01, margin=0.0),
+    )
+    # Pallet pose one step before the kick in a full pallet's crossing.
+    pallet = wp.transform(
+        wp.vec3(0.5296056, -1.4537889e-05, 0.4998623),
+        wp.normalize(wp.quat(-1.0956683e-06, -8.50166e-06, 5.773905e-05, 1.0)),
+    )
+    board = builder.add_body(
+        xform=wp.transform_multiply(pallet, wp.transform(wp.vec3(0.4497, 0.0, 0.0101), wp.quat_identity())),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_box(board, hx=0.05, hy=0.6, hz=0.01, cfg=builder.ShapeConfig(density=0.0, gap=0.001, margin=0.0))
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "the strand lost the board's support")
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    points0 = contacts.rigid_contact_point0.numpy()[:count]
+    points1 = contacts.rigid_contact_point1.numpy()[:count]
+    shape_body = model.shape_body.numpy()
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    pose = state.body_q.numpy()
+
+    def world(shape, point):
+        body = shape_body[shape]
+        if body < 0:
+            return point
+        return np.asarray(wp.transform_point(wp.transform(pose[body, :3], pose[body, 3:]), wp.vec3(point)))
+
+    depths = [
+        float(np.dot(normals[k], world(shape1[k], points1[k]) - world(shape0[k], points0[k]))) for k in range(count)
+    ]
+    # Honest contacts here are the 0.04 mm top-face sink and sub-millimetre end-cap slivers.
+    test.assertGreater(min(depths), -0.002, (normals, depths))
+
+
 def test_refinement_triangle_box_tilted_rest(test, device):
     """Keep a slightly tilted mesh resting on a wide box at its true depth.
 
@@ -895,6 +955,7 @@ for function in (
     test_refinement_triangle_hull_rim_on_seam,
     test_refinement_triangle_sliver_seam_normal,
     test_refinement_triangle_capsule_sunk_across_seam,
+    test_refinement_triangle_board_across_strand_side,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
     test_refinement_triangle_box_tilted_face,
