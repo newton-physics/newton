@@ -14,7 +14,7 @@ Success criteria:
 - Positions and velocities remain finite.
 
 Runs:
-- `python -m newton.examples style3d_balls_dropped_into_bag`
+- `python -m newton.examples balls_dropped_into_bag`
 """
 
 import numpy as np

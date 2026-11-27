@@ -207,10 +207,10 @@ The ``basic_shapes``, ``basic_dzhanibekov``, ``balance_bird``,
    uv run -m newton.examples domino_spiral --solver style3d
    uv run -m newton.examples pyramid --solver style3d
 
-The coupled ``style3d_balls_dropped_into_bag`` example drops five rigid balls
+The coupled ``balls_dropped_into_bag`` example drops five rigid balls
 into an open cloth bag suspended by two fixed handles at 60 FPS with two
 substeps per frame:
 
 .. code-block:: console
 
-   uv run -m newton.examples style3d_balls_dropped_into_bag
+   uv run -m newton.examples balls_dropped_into_bag

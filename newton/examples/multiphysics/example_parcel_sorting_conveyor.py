@@ -20,8 +20,8 @@ Success criteria:
 - The cloth can fold around each parcel while the sewn panels enclose it through discharge.
 
 Runs:
-- `python -m newton.examples style3d_parcel_sorting_conveyor`
-- `python -m newton.examples style3d_parcel_sorting_conveyor --belt-speed 0.4`
+- `python -m newton.examples parcel_sorting_conveyor`
+- `python -m newton.examples parcel_sorting_conveyor --belt-speed 0.4`
 """
 
 import math

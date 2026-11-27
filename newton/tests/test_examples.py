@@ -1865,7 +1865,7 @@ class TestMultiphysicsExamples(NewtonTestCase):
 
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_style3d_parcel_sorting_conveyor",
+    name="multiphysics.example_parcel_sorting_conveyor",
     devices=test_devices,
     use_viewer=True,
     # By frame 8 the flat parcel has contacted the belt and started moving.
@@ -1874,7 +1874,7 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_style3d_balls_dropped_into_bag",
+    name="multiphysics.example_balls_dropped_into_bag",
     devices=test_devices,
     test_options={"num-frames": 180},
     test_options_cpu={"num-frames": 60},
