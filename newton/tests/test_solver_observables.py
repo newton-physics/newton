@@ -565,7 +565,8 @@ class TestSolverObservables(unittest.TestCase):
         mujoco = object.__new__(newton.solvers.SolverMuJoCo)
         newton.solvers.SolverBase.__init__(mujoco, self.model)
         mujoco.use_mujoco_cpu = False
-        mujoco.mjw_model = SimpleNamespace(opt=SimpleNamespace(run_collision_detection=True))
+        mujoco.mjw_model = SimpleNamespace(opt=SimpleNamespace(run_collision_detection=True, integrator=0))
+        mujoco._mujoco = SimpleNamespace(mjtIntegrator=SimpleNamespace(mjINT_RK4=1))
         mujoco.mjw_data = SimpleNamespace(naconmax=3)
         kamino = object.__new__(newton.solvers.SolverKamino)
         newton.solvers.SolverBase.__init__(kamino, self.model)
