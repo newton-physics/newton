@@ -5,6 +5,7 @@
 
 import array
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -926,12 +927,18 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
                 np.testing.assert_allclose(
                     [pose.q for pose in relposes[3:6:2]], np.tile(wp.quat_inverse(placement.q), (2, 1)), atol=1e-6
                 )
-                # finalize() warns about columns shorter than the equality count.
-                self.assertEqual(len(anchors), builder._equality_constraint_count)
-                self.assertEqual(len(relposes), builder._equality_constraint_count)
-                # A later unmoved copy adds no relpose and must not leave the column short.
+                # Later rows may leave frames the placed copies filled to their defaults, also in a copy of the builder.
                 builder.add_world(blueprint)
-                self.assertEqual(len(relposes), builder._equality_constraint_count)
+                builder.add_custom_values(**row)
+                outer = newton.ModelBuilder()
+                outer.add_builder(builder)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    outer.finalize(device="cpu")
+                warned = " ".join(str(warning.message) for warning in caught)
+                self.assertNotIn("equality_constraint_relpose", warned)
+                if not explicit_anchor:
+                    self.assertNotIn("equality_constraint_anchor", warned)
 
     @requires(*MUJOCO_MODULES)
     def test_weld_preserves_each_world_initial_pose(self):

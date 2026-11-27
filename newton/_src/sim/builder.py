@@ -2847,6 +2847,8 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
         self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
         """Row counts covered by the latest custom-frequency owner resolution."""
+        self._placement_filled_attribute_keys: set[str] = set()
+        """Custom attributes whose defaults a placed copy replaced; later rows may omit them without a warning."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
@@ -4847,16 +4849,11 @@ class ModelBuilder:
                     self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
+        self._placement_filled_attribute_keys |= builder._placement_filled_attribute_keys
         eq_count = builder._equality_constraint_count
-        if eq_count:
+        if eq_count and len(moved_copies):
             eq_base = self._equality_constraint_count - copy_count * eq_count
-            if len(moved_copies):
-                self._transform_world_equalities(builder, eq_base + moved_copies * eq_count, moved_xforms)
-            # A full frame column stays full when these copies add nothing to it, or finalize() warns.
-            for name in ("anchor", "relpose"):
-                values = self._eq_attr(f"equality_constraint_{name}").values
-                if values and len(values) == eq_base:
-                    values.extend([None] * (copy_count * eq_count))
+            self._transform_world_equalities(builder, eq_base + moved_copies * eq_count, moved_xforms)
 
     def _transform_world_equalities(self, builder: ModelBuilder, starts: np.ndarray, xforms: np.ndarray) -> None:
         """Place the world-side equality frames of the copies of ``builder`` whose rows begin at ``starts``."""
@@ -4871,7 +4868,9 @@ class ModelBuilder:
             attr = self._eq_attr(f"equality_constraint_{name}")
             if attr.values is None:
                 attr.values = []
-            # Full length: finalize() warns about a partially populated column.
+            # Defaults become values here, so a row added later that omits this frame is no missed row.
+            if len(builder._eq_values_raw(f"equality_constraint_{name}")) < builder._equality_constraint_count:
+                self._placement_filled_attribute_keys.add(attr.key)
             attr.values.extend([None] * (self._equality_constraint_count - len(attr.values)))
             return attr.values
 
@@ -17879,13 +17878,13 @@ class ModelBuilder:
             # Only MODEL attributes are checked here; non-MODEL ones are filled at runtime via
             # _add_custom_attributes. An empty values list opts into defaults and stays silent;
             # partial population (some values, but fewer than the frequency expects) usually
-            # signals a missed row, so it warns.
+            # signals a missed row, so it warns, unless a placed copy filled the column.
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
                 if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
-                    if 0 < attr_count < expected_count:
+                    if 0 < attr_count < expected_count and full_key not in self._placement_filled_attribute_keys:
                         warnings.warn(
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",
