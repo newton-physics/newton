@@ -96,37 +96,6 @@ class Contacts:
         prior notice.
     """
 
-    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
-    """
-    Deprecated optional solver-produced contact attributes.
-
-    .. deprecated:: 1.7
-
-        Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
-        solver instead.
-    """
-
-    @classmethod
-    def validate_extended_attributes(cls, attributes: tuple[str, ...]) -> None:
-        """Validate names passed to request_contact_attributes().
-
-        Only extended contact attributes listed in :attr:`EXTENDED_ATTRIBUTES` are accepted.
-
-        Args:
-            attributes: Tuple of attribute names to validate.
-
-        Raises:
-            ValueError: If any attribute name is not in :attr:`EXTENDED_ATTRIBUTES`.
-        """
-        if not attributes:
-            return
-
-        invalid = sorted(set(attributes).difference(cls.EXTENDED_ATTRIBUTES))
-        if invalid:
-            allowed = ", ".join(sorted(cls.EXTENDED_ATTRIBUTES))
-            bad = ", ".join(invalid)
-            raise ValueError(f"Unknown extended contact attribute(s): {bad}. Allowed: {allowed}.")
-
     def __init__(
         self,
         rigid_contact_max: int,
@@ -137,7 +106,6 @@ class Contacts:
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
         clear_buffers: bool = False,
-        requested_attributes: set[str] | None = None,
         contact_matching: bool = False,
         contact_report: bool = False,
         rigid_contact_surface_velocity: bool = False,
@@ -171,8 +139,6 @@ class Contacts:
                 If False (default), clear() only resets counts in a single fused kernel launch,
                 relying on collision detection to overwrite active contacts. This is much faster
                 than the conservative path and safe since solvers only read up to contact_count.
-            requested_attributes: Deprecated set of solver-produced contact
-                attribute names to allocate. See :attr:`EXTENDED_ATTRIBUTES`.
             contact_matching: Allocate a per-contact match index array
                 (:attr:`rigid_contact_match_index`) that stores frame-to-frame
                 contact correspondences filled by the collision pipeline.
@@ -418,28 +384,6 @@ class Contacts:
             # lives at the consuming solver. Kept private to avoid a public API/deprecation surface.
             self._enable_rigid_soft_full_surface_contact = False
 
-            # Deprecated contact attributes (optional compatibility allocation)
-            self.force: wp.array | None = None
-            """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
-            Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
-            First three entries: linear force [N]; last three entries: torque (moment) [N·m].
-            Rigid contact ``i`` occupies row ``i``; soft contact ``i`` occupies row ``rigid_contact_max + i``.
-
-            For a soft contact the contacted shape (:attr:`soft_contact_shape`) takes the role of shape0 and the
-            soft feature -- particle, edge, or face -- the role of shape1: the row holds the force exerted on the
-            shape's body by the soft feature, applied at the shape-side contact point (:attr:`soft_contact_body_pos`
-            in world space), and its torque about that body's COM, or about the world origin when the shape is
-            static. Negating the force gives the force on the soft contact point. Which rows a solver populates
-            is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
-
-            .. deprecated:: 1.7
-                Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` and read
-                :attr:`newton.solvers.SolverBase.Observables.contact_f` instead.
-            """
-            if requested_attributes and "force" in requested_attributes:
-                total_contacts = rigid_contact_max + soft_contact_max
-                self.force = wp.zeros(total_contacts, dtype=wp.spatial_vector, requires_grad=requires_grad)
-
         self.soft_self_contact_data: TriMeshCollisionInfo | None = None
         """Tri-mesh self-contact results owned by this container, written by the
         collision pipeline's tri-mesh collision detector; ``None`` unless
@@ -511,9 +455,6 @@ class Contacts:
             self.rigid_contact_shape1.fill_(-1)
             self.rigid_contact_tids.fill_(-1)
             self.rigid_contact_force.zero_()
-
-            if self.force is not None:
-                self.force.zero_()
 
             if self.per_contact_shape_properties:
                 self.rigid_contact_stiffness.zero_()

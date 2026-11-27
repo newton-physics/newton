@@ -17,6 +17,8 @@ from ...core.reset import reset_world_selected
 from ...geometry import ParticleFlags
 from ...math.spatial import velocity_at_point
 from ...sim.contacts import contact_surface_point
+from ...sim.enums import ShapeFrictionMode
+from ..solver import contact_friction_mode
 
 _PARTICLE_FLAG_ACTIVE = wp.constant(int(ParticleFlags.ACTIVE))
 _INACTIVE_U_MIN = wp.constant(-1.0e8)
@@ -1460,6 +1462,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     body_mass_a: wp.array[float],
     body_mass_b: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     use_contact_matching: int,
     contact_matching_force_scale: float,
     capacity: int,
@@ -1563,6 +1566,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     W[dst] = weight
     # Geometric-mean combining of shape material friction (matches SolverVBD).
     friction[dst] = wp.sqrt(shape_material_mu[sa] * shape_material_mu[sb])
+    if contact_friction_mode(shape_material_friction_mode, sa, sb) == int(ShapeFrictionMode.NONE):
+        friction[dst] = 0.0
 
     lambda_out = wp.vec3(0.0, 0.0, 0.0)
     if use_contact_matching != 0:
@@ -1756,6 +1761,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
     body_mass: wp.array[float],
     particle_mass: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     particle_mu: float,
     capacity: int,
     active_count: wp.array[int],
@@ -1815,7 +1821,10 @@ def contact_rp_fill_from_soft_contacts_kernel(
 
     lambda0 = wp.vec3(0.0, 0.0, 0.0)
     for j in range(capacity):
-        if prev_active[j] != 0 and prev_particle_id[j] == p and prev_shape_id[j] == s:
+        # The fill kernel writes active contacts as a dense prefix.
+        if prev_active[j] == 0:
+            break
+        if prev_particle_id[j] == p and prev_shape_id[j] == s:
             lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 
@@ -1829,6 +1838,8 @@ def contact_rp_fill_from_soft_contacts_kernel(
     W[dst] = weight
     # Geometric-mean combining of shape and particle friction.
     friction[dst] = wp.sqrt(shape_material_mu[s] * particle_mu)
+    if contact_friction_mode(shape_material_friction_mode, s, -1) == int(ShapeFrictionMode.NONE):
+        friction[dst] = 0.0
     lambda_[dst] = lambda0
 
 
@@ -2072,7 +2083,10 @@ def contact_pp_fill_from_particle_contacts_kernel(
 
     lambda0 = wp.vec3(0.0, 0.0, 0.0)
     for j in range(capacity):
-        if prev_active[j] != 0 and prev_particle_a[j] == pa and prev_particle_b[j] == pb:
+        # The fill kernel writes active contacts as a dense prefix.
+        if prev_active[j] == 0:
+            break
+        if prev_particle_a[j] == pa and prev_particle_b[j] == pb:
             lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 

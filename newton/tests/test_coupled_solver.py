@@ -671,8 +671,6 @@ class TestModelView(unittest.TestCase):
 
     def test_state_creation_respects_view_count_overrides(self):
         """view.state() should size state arrays from view-local counts."""
-        with self.assertWarns(DeprecationWarning):
-            self.model.request_state_attributes("body_qdd", "body_parent_f")
         view = ModelView(self.model, "test")
         view.body_count = 1
 
@@ -681,8 +679,6 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(state.body_count, 1)
         self.assertEqual(state.body_qd.shape[0], 1)
         self.assertEqual(state.body_f.shape[0], 1)
-        self.assertEqual(state.body_qdd.shape[0], 1)
-        self.assertEqual(state.body_parent_f.shape[0], 1)
 
     def test_state_creation_respects_view_zero_count(self):
         """view.state() should clear state fields hidden by view-local counts."""
@@ -921,8 +917,6 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 builder.add_world(world)
                 builder.add_world(world)
                 model = builder.finalize(device="cpu")
-                with self.assertWarns(DeprecationWarning):
-                    model.request_state_attributes("body_qdd", "body_parent_f")
                 coupled = SolverCoupled(
                     model,
                     [SolverCoupled.Entry("recording", _ResetRecordingCopySolver, bodies=range(3), substeps=2)],
@@ -938,11 +932,8 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 for index, entry_state in enumerate(entry_states, start=1):
                     entry_state.body_qd.assign(spatial((100 * index + 1, 100 * index + 2, 100 * index + 3)))
                     entry_state.body_f.assign(spatial((100 * index + 4, 100 * index + 5, 100 * index + 6)))
-                    entry_state.body_qdd.fill_(100 * index + 7)
-                    entry_state.body_parent_f.fill_(100 * index + 8)
                     before[entry_state] = {
-                        name: getattr(entry_state, name).numpy().copy()
-                        for name in ("body_qd", "body_f", "body_qdd", "body_parent_f")
+                        name: getattr(entry_state, name).numpy().copy() for name in ("body_qd", "body_f")
                     }
                 parent_before = {name: getattr(parent, name).numpy().copy() for name in ("body_qd", "body_f")}
                 coupled._entry_output_state_valid = True
@@ -959,7 +950,7 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                     expected_qd = before[entry_state]["body_qd"].copy()
                     expected_qd[list(selected_rows)] = parent_before["body_qd"][list(selected_rows)]
                     np.testing.assert_array_equal(entry_state.body_qd.numpy(), expected_qd)
-                    for name in ("body_f", "body_qdd", "body_parent_f"):
+                    for name in ("body_f",):
                         expected = before[entry_state][name].copy()
                         expected[list(selected_rows)] = 0.0
                         np.testing.assert_array_equal(getattr(entry_state, name).numpy(), expected)
@@ -1348,6 +1339,38 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(view.attachment_particle_body_count, 1)
         np.testing.assert_array_equal(view.attachment_particle_body_body.numpy(), [0])
         np.testing.assert_array_equal(view.attachment_particle_body_particle.numpy(), [owned_particle])
+
+    def test_compact_views_hide_cameras(self):
+        """Hide cameras from compact entry views, whose body indices no longer match the model."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_camera(body_b, label="mounted")
+        builder.add_camera(-1, label="fixed")
+        external_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        owned_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry("other", _StepCountingCopySolver, particles=(external_particle,)),
+                SolverCoupled.Entry(
+                    "vbd",
+                    lambda view: SolverVBD(view, iterations=0),
+                    bodies=(body_a, body_b),
+                    particles=(owned_particle,),
+                ),
+            ),
+        )
+        view = coupled.view("vbd")
+        self.assertEqual(model.camera_count, 2)
+        self.assertEqual(view.camera_count, 0)
+        self.assertEqual(view.camera_body.shape[0], 0)
+        self.assertEqual(view.camera_label, [])
+        self.assertEqual(len(model.camera_label), 2)
 
     def test_noncompact_views_hide_cross_entry_attachments(self):
         """Filter attachment ownership even when an owned joint's out-of-entry child prevents compaction."""
@@ -4680,6 +4703,28 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         self.assertEqual(view.vbd.dahl_eps_max.shape[0], view.joint_count)
         np.testing.assert_array_equal(view.vbd.dahl_eps_max.numpy(), parent_dahl_eps_max[vbd_joint_order])
 
+    @requires(*MUJOCO_MODULES)
+    def test_deprecated_condim_edits_reach_compact_entries(self):
+        """Apply edits of the deprecated ``mujoco:condim`` copy before the entry views are built."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(4):
+            body = builder.add_body(xform=wp.transform((float(i), 0.0, 1.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            model.mujoco.condim.fill_(4)
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=SolverXPBD, bodies=[0, 1]),
+                SolverCoupled.Entry(name="dst", solver=SolverMuJoCo, bodies=[2, 3]),
+            ],
+        )
+
+        np.testing.assert_array_equal(coupled.solver("dst").mjw_model.geom_condim.numpy(), [4, 4])
+
     def test_compacted_custom_frequency_namespace_metadata_is_generic(self):
         builder = newton.ModelBuilder()
         for _ in range(4):
@@ -5109,6 +5154,87 @@ class TestSolverCoupledProxyPipelineCapacity(unittest.TestCase):
         count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(count, 0)
         self.assertTrue(np.any(observables.contact_f.numpy()[:count, 2] != 0.0))
+
+
+class _ParticleTargetRecordingCopySolver(_StepCountingCopySolver):
+    """Copy solver that records the entry-local particle targets it receives."""
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        target_q = control.particle_target_q
+        self.particle_target_q = None if target_q is None else target_q.numpy().copy()
+        super().step(state_in, state_out, control, contacts, dt)
+
+
+class TestSolverCoupledKinematicParticles(unittest.TestCase):
+    def _model(self):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        for i in range(3):
+            builder.add_particle(pos=(float(i), 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        builder.particle_flags[2] |= int(ParticleFlags.KINEMATIC)
+        return builder.finalize(device="cpu")
+
+    def test_particle_targets_are_gathered_per_entry(self):
+        """Forward global particle targets to every particle-owning entry."""
+        model = self._model()
+        coupled = SolverCoupled(
+            model,
+            [
+                SolverCoupled.Entry("a", _ParticleTargetRecordingCopySolver, particles=[0, 1]),
+                SolverCoupled.Entry("b", _ParticleTargetRecordingCopySolver, particles=[2]),
+            ],
+        )
+        control = model.control()
+        targets = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]], dtype=np.float32)
+        control.particle_target_q.assign(targets)
+        coupled.step(model.state(), model.state(), control, None, 0.01)
+        np.testing.assert_array_equal(coupled._entries["a"].solver.particle_target_q, targets)
+        np.testing.assert_array_equal(coupled._entries["b"].solver.particle_target_q, targets)
+
+    def test_unsupported_entry_ignores_foreign_kinematic_particles(self):
+        """Build an entry without kinematic support next to an entry that owns KINEMATIC particles."""
+
+        class _NoKinematicSolver(_StepCountingCopySolver):
+            def __init__(self, model):
+                super().__init__(model)
+                self._raise_if_kinematic_particles()
+
+        model = self._model()
+        SolverCoupled(
+            model,
+            [
+                SolverCoupled.Entry("a", _NoKinematicSolver, particles=[0, 1]),
+                SolverCoupled.Entry("b", _StepCountingCopySolver, particles=[2]),
+            ],
+        )
+        with self.assertRaises(NotImplementedError):
+            SolverCoupled(model, [SolverCoupled.Entry("a", _NoKinematicSolver, particles=[0, 1, 2])])
+
+    def test_substepped_entry_rejects_kinematic_particles(self):
+        """Refuse substeps > 1 for an entry owning KINEMATIC particles, since targets are not interpolated."""
+        model = self._model()
+        with self.assertRaises(NotImplementedError):
+            SolverCoupled(
+                model,
+                [
+                    SolverCoupled.Entry("a", _StepCountingCopySolver, particles=[0, 1]),
+                    SolverCoupled.Entry("b", _StepCountingCopySolver, particles=[2], substeps=2),
+                ],
+            )
+        SolverCoupled(
+            model,
+            [
+                SolverCoupled.Entry("a", _StepCountingCopySolver, particles=[0, 1], substeps=2),
+                SolverCoupled.Entry("b", _StepCountingCopySolver, particles=[2]),
+            ],
+        )
+
+    def test_mark_proxy_particles_rejects_kinematic(self):
+        """Refuse to turn a KINEMATIC particle into a coupling proxy."""
+        view = ModelView(self._model(), "test")
+        with self.assertRaises(ValueError):
+            view.mark_proxy_particles(wp.array([2], dtype=int, device="cpu"))
+        view.mark_proxy_particles(wp.array([0], dtype=int, device="cpu"))
+        self.assertTrue(view.particle_flags.numpy()[0] & int(ParticleFlags.PROXY))
 
 
 if __name__ == "__main__":

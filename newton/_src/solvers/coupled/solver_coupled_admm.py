@@ -17,6 +17,7 @@ import warp as wp
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
 from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
+from ..solver import warn_unsupported_friction_modes
 from .admm_contact_stream import (
     AdmmContactStream,
     AdmmContactType,
@@ -2161,6 +2162,8 @@ class SolverCoupledADMM(SolverCoupled):
         self._admm_rigid_rigid_contact_specs = [
             spec for spec in rr_specs if matching_pair(spec.owner_a, spec.owner_b) is not None
         ]
+        if self._admm_rigid_rigid_contact_specs:
+            warn_unsupported_friction_modes(self.model, "SolverCoupledADMM")
         self._admm_particle_particle_contact_specs = [
             spec for spec in pp_specs if matching_pair(spec.owner_a, spec.owner_b) is not None
         ]
@@ -2456,6 +2459,16 @@ class SolverCoupledADMM(SolverCoupled):
         if local < 0:
             raise ValueError(f"Body {body} is not visible in coupled solver entry {entry_name!r}")
         return local
+
+    def _body_local_ids(self, entry_name: str, bodies: np.ndarray) -> np.ndarray:
+        """Vectorized :meth:`_body_local_id` with one host copy of the body map."""
+        mapping = self._entries[entry_name].body_global_to_local.numpy()
+        valid = (bodies >= 0) & (bodies < len(mapping))
+        local = np.where(valid, mapping[np.where(valid, bodies, 0)], -1)
+        invalid = np.flatnonzero(local < 0)
+        if len(invalid):
+            raise ValueError(f"Body {int(bodies[invalid[0]])} is not visible in coupled solver entry {entry_name!r}")
+        return local.astype(np.int32)
 
     def _cross_solver_joint_entries(self, joint: int, parent: int, child: int) -> tuple[str, str] | None:
         parent_entry = self._entry_name_for_body(parent)
@@ -3085,6 +3098,7 @@ class SolverCoupledADMM(SolverCoupled):
                     buf_a.body_effective_mass,
                     buf_b.body_effective_mass,
                     self.model.shape_material_mu,
+                    self.model.shape_material_friction_mode,
                     1 if use_contact_matching else 0,
                     float(self._coupling.contact_matching_force_scale),
                     int(group.count),
@@ -3179,6 +3193,7 @@ class SolverCoupledADMM(SolverCoupled):
                         body_buf.body_effective_mass,
                         particle_buf.particle_effective_mass,
                         self.model.shape_material_mu,
+                        self.model.shape_material_friction_mode,
                         float(self.model.particle_mu),
                         int(group.count),
                         group.active_count,
@@ -3427,15 +3442,12 @@ class SolverCoupledADMM(SolverCoupled):
                 continue
             self._require_effective_mass(spec.body_owner, CouplingEndpointKind.BODY)
             self._require_effective_mass(spec.particle_owner, CouplingEndpointKind.PARTICLE)
-            body_global_ids = []
-            candidate_body_ids = []
-            candidate_particle_ids = []
-            for particle in particle_candidates:
-                for shape in shape_candidates:
-                    body = int(shape_body[shape])
-                    body_global_ids.append(body)
-                    candidate_body_ids.append(self._body_local_id(spec.body_owner, body))
-                    candidate_particle_ids.append(int(particle))
+            # Particle-major Cartesian product of the candidates.
+            shape_bodies = np.asarray(shape_body, dtype=np.int32)[np.asarray(shape_candidates, dtype=np.int64)]
+            local_bodies = self._body_local_ids(spec.body_owner, shape_bodies)
+            body_global_ids = np.tile(shape_bodies, len(particle_candidates))
+            candidate_body_ids = np.tile(local_bodies, len(particle_candidates))
+            candidate_particle_ids = np.repeat(np.asarray(particle_candidates, dtype=np.int32), len(shape_candidates))
             candidate_W = self._compute_interface_weights(
                 body_global_ids,
                 self._admm_buffers[spec.body_owner].body_effective_mass,

@@ -422,7 +422,6 @@ class Example:
                 self.model.rigid_contact_max,
                 0,
                 device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
             )
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)

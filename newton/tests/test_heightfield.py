@@ -261,22 +261,28 @@ class TestHeightfield(unittest.TestCase):
         builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
 
         model = builder.finalize()
-        solver = newton.solvers.SolverMuJoCo(model)
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
 
         state_in = model.state()
         state_out = model.state()
         control = model.control()
         sim_dt = 1.0 / 240.0
 
+        def step(state_in, state_out):
+            pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt)
+
         device = model.device
         use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps for full ping-pong cycle)
-            solver.step(state_in, state_out, control, None, sim_dt)
-            solver.step(state_out, state_in, control, None, sim_dt)
+            step(state_in, state_out)
+            step(state_out, state_in)
             with wp.ScopedCapture(device) as capture:
-                solver.step(state_in, state_out, control, None, sim_dt)
-                solver.step(state_out, state_in, control, None, sim_dt)
+                step(state_in, state_out)
+                step(state_out, state_in)
             graph = capture.graph
 
         remaining = 500 - (4 if use_graph else 0)
@@ -284,10 +290,10 @@ class TestHeightfield(unittest.TestCase):
             if use_graph:
                 wp.capture_launch(graph)
             else:
-                solver.step(state_in, state_out, control, None, sim_dt)
+                step(state_in, state_out)
                 state_in, state_out = state_out, state_in
         if use_graph and remaining % 2 == 1:
-            solver.step(state_in, state_out, control, None, sim_dt)
+            step(state_in, state_out)
             state_in, state_out = state_out, state_in
 
         final_z = float(state_in.body_q.numpy()[sphere_body, 2])
@@ -398,7 +404,7 @@ class TestHeightfield(unittest.TestCase):
         builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(600):
             solver.step(state_in, state_out, control, None, 1.0 / 240.0)
@@ -429,8 +435,8 @@ class TestHeightfield(unittest.TestCase):
 
     @staticmethod
     def _sphere_heights(model, steps):
-        """Step the model with SolverMuJoCo and return each body's final height."""
-        solver = SolverMuJoCo(model)
+        """Return each body's final height after stepping with native MuJoCo contacts."""
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(steps):
             solver.step(state_in, state_out, control, None, 0.002)

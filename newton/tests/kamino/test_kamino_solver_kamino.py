@@ -549,6 +549,7 @@ class TestSolverKaminoConfig(NewtonTestCase):
         SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
         self.assertEqual(SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau").integrator, "moreau")
         kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="anderson")
+        kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="nesterov")
         kamino_config.LOXSolverConfig(
             contact_compliance=True, contact_implicit_restitution=True, contact_spatial_friction=True
         )
@@ -556,7 +557,6 @@ class TestSolverKaminoConfig(NewtonTestCase):
         invalid_values = (
             ({"contact_warmstart_method": "geom_pair_net_wrench"}, "contact warmstart method is not implemented"),
             ({"projection_acceleration": "invalid"}, "projection_acceleration"),
-            ({"gauss_seidel_max_colors": 4, "projection_acceleration": "apgd"}, "requires gauss_seidel_max_colors=1"),
             ({"gauss_seidel_max_colors": True}, "gauss_seidel_max_colors"),
             ({"max_iterations": 0}, "max_iterations"),
             ({"use_graph_conditionals": 1}, "use_graph_conditionals"),
@@ -566,6 +566,9 @@ class TestSolverKaminoConfig(NewtonTestCase):
             ({"projected_twist_fraction": float("nan")}, "projected_twist_fraction"),
             ({"weight_beta": 0.5}, "weight_beta"),
             ({"max_joint_penalty_ratio": 50.0}, "max_joint_penalty_ratio"),
+            ({"contact_proximal_regularization": -0.01}, "contact_proximal_regularization"),
+            ({"contact_proximal_warmstart_scale": 1.5}, "contact_proximal_warmstart_scale"),
+            ({"contact_proximal_warmstart_window": float("nan")}, "contact_proximal_warmstart_window"),
         )
         for kwargs, message in invalid_values:
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
@@ -832,51 +835,39 @@ class TestCollisionCapacityInitialization(NewtonTestCase):
             warnings.simplefilter("error", DeprecationWarning)
             solver.update_contacts(contacts, model.state())
 
-    def test_update_contacts_warns_only_for_force_export(self):
-        """Keep geometry-only export warning-free and deprecate only legacy forces."""
+    def test_update_contacts_exports_geometry(self):
+        """Export contact geometry without a deprecation warning."""
         for native in (False, True):
-            for export_forces in (False, True):
-                with self.subTest(native=native, export_forces=export_forces):
-                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-                    SolverKamino.register_custom_attributes(builder)
-                    basics.build_sphere_on_plane(builder=builder, z_offset=-0.01)
-                    model = builder.finalize(device=self.default_device, skip_validation_joints=True)
-                    solver = SolverKamino(
-                        model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
-                    )
-                    pipeline = newton.CollisionPipeline(model)
-                    contacts = newton.Contacts(
-                        pipeline.rigid_contact_max,
-                        pipeline.soft_contact_max,
-                        device=self.default_device,
-                        requested_attributes={"force"} if export_forces else None,
-                    )
-                    state_in, state_out = model.state(), model.state()
-                    if not native:
-                        pipeline.collide(state_in, contacts)
-                    solver.step(state_in, state_out, None, None if native else contacts, SIM_DT)
+            with self.subTest(native=native):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                SolverKamino.register_custom_attributes(builder)
+                basics.build_sphere_on_plane(builder=builder, z_offset=-0.01)
+                model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+                solver = SolverKamino(
+                    model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
+                )
+                pipeline = newton.CollisionPipeline(model)
+                contacts = newton.Contacts(
+                    pipeline.rigid_contact_max,
+                    pipeline.soft_contact_max,
+                    device=self.default_device,
+                )
+                state_in, state_out = model.state(), model.state()
+                if not native:
+                    pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, None, None if native else contacts, SIM_DT)
 
-                    if export_forces:
-                        with self.assertWarnsRegex(
-                            DeprecationWarning, r"SolverKamino\.update_contacts\(\) force export.*1\.7"
-                        ) as warning:
-                            solver.update_contacts(contacts, state_in)
-                        self.assertEqual(warning.filename, __file__)
-                    else:
-                        self.assertIsNone(contacts.force)
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("error", DeprecationWarning)
-                            solver.update_contacts(contacts, state_in)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", DeprecationWarning)
+                    solver.update_contacts(contacts, state_in)
 
-                    count = int(contacts.rigid_contact_count.numpy()[0])
-                    self.assertGreater(count, 0)
-                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point0.numpy()[:count])))
-                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point1.numpy()[:count])))
-                    np.testing.assert_allclose(
-                        np.linalg.norm(contacts.rigid_contact_normal.numpy()[:count], axis=1), 1.0, atol=1e-6
-                    )
-                    if export_forces:
-                        self.assertGreater(np.linalg.norm(contacts.force.numpy()[:count, :3]), 0.0)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(count, 0)
+                self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point0.numpy()[:count])))
+                self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point1.numpy()[:count])))
+                np.testing.assert_allclose(
+                    np.linalg.norm(contacts.rigid_contact_normal.numpy()[:count], axis=1), 1.0, atol=1e-6
+                )
 
     def test_step_with_zero_max_contacts(self):
         """Verify SolverKamino.step() succeeds when the model admits no possible contacts."""
