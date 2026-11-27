@@ -128,10 +128,10 @@ def _make_rcm_batch_kernels(dtype):
         permutation_dim: wp.array[wp.int32],
         reorder_active: wp.array[wp.int32],
     ):
-        """Mark blocks whose permutation must be computed."""
+        """Mark the non-empty blocks whose permutation must be computed."""
         b = wp.tid()
         cached = permutation_valid[b] != int(0) and permutation_dim[b] == dims[b]
-        reorder_active[b] = wp.where(reuse_permutation and cached, int(0), int(1))
+        reorder_active[b] = wp.where(dims[b] > int(0) and not (reuse_permutation and cached), int(1), int(0))
 
     @wp.kernel(module=module)
     def init_and_degree_kernel(
@@ -688,6 +688,10 @@ def create_rcm_batch_launch(
 
     def callback():
         prepare_reorder_launch.launch()
+
+        # Skip the staged traversal on CPU when all permutations are cached
+        if not device.is_cuda and not scratch["reorder_active"].numpy().any():
+            return
         init_and_degree_launch.launch()
         if complete_cuda_launch is not None:
             complete_cuda_launch.launch()

@@ -393,6 +393,42 @@ class TestLinAlgLLTBlockedRCMSolver(NewtonTestCase):
         recompute()
         self.assertFalse(np.array_equal(recomputed.numpy(), cached))
 
+    def test_empty_block_is_skipped(self):
+        """Verify a block emptied after a cached ordering leaves the shared scratch buffers untouched."""
+        for device in ("cpu", self.default_device):
+            with self.subTest(device=str(device)):
+                matrix = wp.ones((2, 1), dtype=wp.float32, device=device)
+                dims = wp.array([1, 1], dtype=wp.int32, device=device)
+                offsets = wp.array([0, 1], dtype=wp.int32, device=device)
+                permutation = wp.zeros(2, dtype=wp.int32, device=device)
+
+                # Pad the per-vertex scratch to expose writes past the last block
+                scratch = rcm_batch.allocate_rcm_batch_scratch(3, 2, device)
+                reorder = rcm_batch.create_rcm_batch_launch(
+                    A_flat=matrix,
+                    perm_flat=permutation,
+                    dims=dims,
+                    vio=offsets,
+                    scratch=scratch,
+                    num_blocks=2,
+                    max_dim=1,
+                    use_cuda_graph=False,
+                    reuse_permutation=True,
+                    device=device,
+                )
+                reorder()
+
+                # Empty the second block and check that no traversal buffer is written
+                dims.assign([1, 0])
+                for name in ("degree", "level", "order_buf"):
+                    scratch[name].fill_(-7)
+                head = scratch["head"].numpy().copy()
+                reorder()
+                for name in ("degree", "level", "order_buf"):
+                    np.testing.assert_array_equal(scratch[name].numpy(), -7, err_msg=name)
+                np.testing.assert_array_equal(scratch["head"].numpy(), head)
+                np.testing.assert_array_equal(permutation.numpy(), [0, 0])
+
     def test_solve_with_fewer_threads_than_tile_rows(self):
         """Verify the solve gathers every right-hand-side row."""
         n = 65
