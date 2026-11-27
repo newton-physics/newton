@@ -1561,8 +1561,12 @@ class SolverSteel(SolverBase, CouplingInterface):
     its contact scratch from :attr:`model.rigid_contact_max <newton.Model.rigid_contact_max>` when it is constructed.
     For a contact-buffer overflow, construct a new :class:`~newton.CollisionPipeline` with a larger
     ``rigid_contact_max``, which it publishes to the model, allocate a new :class:`~newton.Contacts` from it, and then
-    construct a new solver. For contacts dropped by contact reduction, construct the pipeline with larger reduction
-    capacities, such as ``max_triangle_pairs`` and ``contact_reduction_hashtable_size_factor``.
+    construct a new solver. For contacts dropped by mesh contact reduction, construct the pipeline with larger
+    reduction capacities, such as ``max_triangle_pairs`` and ``contact_reduction_hashtable_size_factor``. With
+    ``body_pair_reduction``, raw contacts are staged in a buffer sized by the larger of ``rigid_contact_max`` and the
+    automatic contact estimate, so a staging overflow needs a ``rigid_contact_max`` above that estimate, rebuilt as for
+    a contact-buffer overflow. When the group table is too small, a frame keeps every primitive and convex contact,
+    which can overflow the contact buffer; raise ``BodyPairReductionConfig.hashtable_size_factor`` for that.
     The unsolvable cross-world contacts above set the same flag, and no capacity clears them. Which
     contacts keep their rows is described under ``deterministic``. As that set changes, a contact that penetrated
     while it had no rows is pushed out by the position correction when it regains them, which can add energy and
