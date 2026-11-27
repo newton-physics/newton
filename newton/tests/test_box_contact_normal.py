@@ -793,11 +793,13 @@ add_function_test(
 
 
 def test_nearly_parallel_cylinder_line_contact(test, device, *, split=False):
-    """Span the whole side line of touching cylinders whose axes are tilted or twisted slightly.
+    """Span the whole side line of round sides touching cylinders or ridges, with axes tilted or twisted slightly.
 
     Standing bottles touch along their sides with axes a fraction of a degree
     apart. A single point, or points that move along the side from pose to
-    pose, leave the bottles without support against rocking.
+    pose, leave the bottles without support against rocking. A capsule side
+    on a convex-hull ridge curves with its full radius, although the narrow
+    phase collides its core.
     """
     radius, half_height = 0.03, 0.06
     poses = []
@@ -805,17 +807,30 @@ def test_nearly_parallel_cylinder_line_contact(test, device, *, split=False):
         rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.radians(twist))) * wp.quat_from_axis_angle(
             wp.vec3(0.0, 1.0, 0.0), float(np.radians(tilt))
         )
-        poses.append(rotation)
+        poses.append((rotation, tilt == 0.0))
     builder = newton.ModelBuilder()
     cfg = builder.ShapeConfig(gap=0.002)
-    pairs = []
-    for i, rotation in enumerate(poses):
-        origin = wp.vec3(0.0, float(i), 0.0)
-        a = builder.add_body(xform=wp.transform(origin))
-        b = builder.add_body(xform=wp.transform(origin + wp.vec3(2.0 * radius - 2.0e-4, 0.0, 0.0), rotation))
-        pairs.append(
-            tuple(builder.add_shape_cylinder(body, radius=radius, half_height=half_height, cfg=cfg) for body in (a, b))
-        )
+    # A box hull turned 45 degrees about its z axis has a sharp ridge along z at +x.
+    ridge = newton.Mesh.create_box(0.05, 0.05, 0.1, duplicate_vertices=False, compute_inertia=False)
+    ridge_xform = wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.25 * np.pi))
+    ridge_x = 0.05 * np.sqrt(2.0)
+    cases = []
+    for support, side in (("cylinder", "cylinder"), ("ridge", "cylinder"), ("ridge", "capsule")):
+        support_x = radius if support == "cylinder" else ridge_x
+        for rotation, untilted in poses:
+            # A tilted side meets a sharp ridge only at its end rim.
+            if support == "ridge" and not untilted:
+                continue
+            origin = wp.vec3(0.0, float(len(cases)), 0.0)
+            a = builder.add_body(xform=wp.transform(origin))
+            b = builder.add_body(xform=wp.transform(origin + wp.vec3(support_x + radius - 2.0e-4, 0.0, 0.0), rotation))
+            if support == "cylinder":
+                shape_a = builder.add_shape_cylinder(a, radius=radius, half_height=half_height, cfg=cfg)
+            else:
+                shape_a = builder.add_shape_convex_hull(a, xform=ridge_xform, mesh=ridge, cfg=cfg)
+            add_side = builder.add_shape_cylinder if side == "cylinder" else builder.add_shape_capsule
+            shape_b = add_side(b, radius=radius, half_height=half_height, cfg=cfg)
+            cases.append(((support, side), rotation, shape_a, shape_b))
     model = builder.finalize(device)
     pipeline = newton.CollisionPipeline(model)
     test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
@@ -823,19 +838,17 @@ def test_nearly_parallel_cylinder_line_contact(test, device, *, split=False):
     pipeline.collide(state, contacts)
     count = int(contacts.rigid_contact_count.numpy()[0])
     shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
     point0 = contacts.rigid_contact_point0.numpy()[:count]
-    shape_body = model.shape_body.numpy()
-    body_q = state.body_q.numpy()
-    for (a, b), rotation in zip(pairs, poses, strict=True):
-        with test.subTest(rotation=rotation):
+    point1 = contacts.rigid_contact_point1.numpy()[:count]
+    for kinds, rotation, a, b in cases:
+        with test.subTest(kinds=kinds, rotation=rotation):
             rows = np.flatnonzero((shape0 == a) | (shape0 == b))
             test.assertGreaterEqual(len(rows), 2)
-            # Heights of the contact points along the side, in the first cylinder's frame.
-            heights = []
-            for k in rows:
-                q = body_q[shape_body[shape0[k]]]
-                heights.append(wp.transform_point(wp.transform(q[:3], q[3:]), wp.vec3(*point0[k]))[2])
-            np.testing.assert_allclose([min(heights), max(heights)], [-half_height, half_height], atol=2.0e-3)
+            # Heights of the witnesses along the round side, in its body frame.
+            heights = np.where(shape0[rows] == b, point0[rows, 2], point1[rows, 2])
+            test.assertTrue(np.all((shape0[rows] == b) | (shape1[rows] == b)))
+            np.testing.assert_allclose([heights.min(), heights.max()], [-half_height, half_height], atol=2.0e-3)
 
 
 add_function_test(
@@ -858,6 +871,52 @@ add_function_test(
     TestBoxContactNormal,
     "test_nearly_parallel_cylinder_line_contact_split",
     test_nearly_parallel_cylinder_line_contact_split,
+    devices=get_test_devices(),
+)
+
+
+def test_crossed_cylinders_of_unequal_radii_keep_witnesses_on_surfaces(test, device):
+    """Keep the witnesses of a thin cylinder crossing a thick one on the thin cylinder.
+
+    The side contacts spread along the axes while the curved surfaces stay
+    within EPS of each other, which is millimeters for a meter-radius side.
+    The thin side's witnesses must stay on its surface rather than on its
+    tangent plane that far from its line, in either shape order.
+    """
+    thick, thin, half_height = 1.0, 0.001, 0.3
+    rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.radians(1.0)))
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(gap=0.002)
+    thin_shapes = []
+    for i, thin_first in enumerate((False, True)):
+        origin = wp.vec3(0.0, 4.0 * float(i), 0.0)
+        thick_body = builder.add_body(xform=wp.transform(origin))
+        thin_body = builder.add_body(xform=wp.transform(origin + wp.vec3(thick + thin - 1.0e-5, 0.0, 0.0), rotation))
+        bodies = ((thin_body, thin), (thick_body, thick)) if thin_first else ((thick_body, thick), (thin_body, thin))
+        shapes = [builder.add_shape_cylinder(body, radius=r, half_height=half_height, cfg=cfg) for body, r in bodies]
+        thin_shapes.append(shapes[0] if thin_first else shapes[1])
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    state, contacts = model.state(), pipeline.contacts()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    point0 = contacts.rigid_contact_point0.numpy()[:count]
+    point1 = contacts.rigid_contact_point1.numpy()[:count]
+    for thin_shape in thin_shapes:
+        with test.subTest(thin_shape=thin_shape):
+            rows = np.flatnonzero((shape0 == thin_shape) | (shape1 == thin_shape))
+            test.assertGreaterEqual(len(rows), 1)
+            # Witnesses are in the body frame, which is the thin cylinder's frame.
+            witnesses = np.where((shape0[rows] == thin_shape)[:, None], point0[rows], point1[rows])
+            np.testing.assert_array_less(np.hypot(witnesses[:, 0], witnesses[:, 1]), thin + 2.0e-5)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_crossed_cylinders_of_unequal_radii_keep_witnesses_on_surfaces",
+    test_crossed_cylinders_of_unequal_radii_keep_witnesses_on_surfaces,
     devices=get_test_devices(),
 )
 
@@ -1071,7 +1130,7 @@ add_function_test(
 
 @wp.kernel(enable_backward=False)
 def _trim_lines_kernel(trim: wp.array[wp.vec2], loop: wp.array[wp.vec2], count: wp.array[int]):
-    count[0] = trim_all_in_place(trim, 2, loop, 2, 0.0)
+    count[0] = trim_all_in_place(trim, 2, loop, 2, 0.0, 0.0)
 
 
 def test_offset_line_contacts_across_parallel_threshold(test, device):
