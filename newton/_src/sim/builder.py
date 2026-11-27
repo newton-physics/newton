@@ -6936,7 +6936,10 @@ class ModelBuilder:
             xform: Optional transform that places the copy. It moves the root bodies and
                 root joint frames, static shapes, particles, tetrahedral rest poses, and
                 free-root joint state and targets, and rotates their world-frame velocities.
-                Other world-frame data, such as custom attributes, is copied unchanged.
+                It also moves the world-side ``mujoco:equality_constraint_anchor`` and
+                ``mujoco:equality_constraint_relpose`` frames of ``CONNECT`` and ``WELD``
+                equality constraints between a body and the world. Other world-frame data,
+                such as other custom attributes, is copied unchanged.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
