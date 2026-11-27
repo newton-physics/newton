@@ -2241,6 +2241,16 @@ def compute_mesh_plane_block_offsets_scan(
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
+@wp.func
+def _plane_in_mesh_space(
+    mesh_pose: wp.transform, plane_origin: wp.vec3, plane_normal: wp.vec3, mesh_scale: wp.vec3
+) -> tuple[wp.vec3, float]:
+    """Express the world-space signed distance in unscaled mesh coordinates."""
+    normal = wp.quat_rotate_inv(wp.transform_get_rotation(mesh_pose), plane_normal)
+    offset = wp.dot(wp.transform_get_translation(mesh_pose) - plane_origin, plane_normal)
+    return wp.cw_mul(normal, mesh_scale), offset
+
+
 @lru_cache
 def create_narrow_phase_process_mesh_plane_contacts_kernel(
     writer_func: Any,
@@ -2300,7 +2310,6 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
             # Get plane world transform
             X_plane_ws = shape_transform[plane_shape]
-            X_plane_sw = wp.transform_inverse(X_plane_ws)
 
             # Get plane normal in world space (plane normal is along local +Z, pointing upward)
             plane_normal = wp.transform_vector(X_plane_ws, wp.vec3(0.0, 0.0, 1.0))
@@ -2308,6 +2317,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Get mesh scale
             scale_data = shape_data[mesh_shape]
             mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
+            local_normal, local_offset = _plane_in_mesh_space(
+                X_mesh_ws, wp.transform_get_translation(X_plane_ws), plane_normal, mesh_scale
+            )
 
             # Extract per-shape margin offsets (stored in shape_data.w)
             margin_offset_mesh = shape_data[mesh_shape][3]
@@ -2322,23 +2334,11 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Strided loop over vertices across all threads in the launch
             total_num_threads = total_num_blocks * wp.block_dim()
             for vertex_idx in range(tid, num_vertices, total_num_threads):
-                # Get vertex position in mesh local space and transform to world space
-                vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
-                vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
-
-                # Project vertex onto plane to get closest point
-                vertex_in_plane_space = wp.transform_point(X_plane_sw, vertex_world)
-                point_on_plane_local = wp.vec3(vertex_in_plane_space[0], vertex_in_plane_space[1], 0.0)
-                point_on_plane = wp.transform_point(X_plane_ws, point_on_plane_local)
-
-                # Compute distance
-                diff = vertex_world - point_on_plane
-                distance = wp.dot(diff, plane_normal)
-
-                # Check if this vertex generates a contact
+                vertex = mesh_obj.points[vertex_idx]
+                distance = wp.dot(vertex, local_normal) + local_offset
                 if distance < gap_sum + total_margin_offset:
-                    # Contact position is the midpoint
-                    contact_pos = (vertex_world + point_on_plane) * 0.5
+                    vertex_world = wp.transform_point(X_mesh_ws, wp.cw_mul(vertex, mesh_scale))
+                    contact_pos = vertex_world - 0.5 * distance * plane_normal
 
                     # Normal points from mesh to plane (negate plane normal since plane normal points up/away from plane)
                     contact_normal = -plane_normal
@@ -2432,7 +2432,6 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
             # Get plane world transform
             X_plane_ws = shape_transform[plane_shape]
-            X_plane_sw = wp.transform_inverse(X_plane_ws)
 
             # Get plane normal in world space (plane normal is along local +Z)
             plane_normal = wp.transform_vector(X_plane_ws, wp.vec3(0.0, 0.0, 1.0))
@@ -2440,6 +2439,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Get mesh scale
             scale_data = shape_data[mesh_shape]
             mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
+            local_normal, local_offset = _plane_in_mesh_space(
+                X_mesh_ws, wp.transform_get_translation(X_plane_ws), plane_normal, mesh_scale
+            )
 
             # Extract per-shape margin offsets (stored in shape_data.w)
             margin_offset_mesh = scale_data[3]
@@ -2454,23 +2456,11 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Process this block's chunk of vertices — write contacts directly
             # to the global reducer buffer (no per-block shared memory reduction).
             for vertex_idx in range(vert_start + t, vert_end, wp.block_dim()):
-                # Get vertex position in mesh local space and transform to world space
-                vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
-                vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
-
-                # Project vertex onto plane to get closest point
-                vertex_in_plane_space = wp.transform_point(X_plane_sw, vertex_world)
-                point_on_plane_local = wp.vec3(vertex_in_plane_space[0], vertex_in_plane_space[1], 0.0)
-                point_on_plane = wp.transform_point(X_plane_ws, point_on_plane_local)
-
-                # Compute distance
-                diff = vertex_world - point_on_plane
-                distance = wp.dot(diff, plane_normal)
-
-                # Check if this vertex generates a contact
+                vertex = mesh_obj.points[vertex_idx]
+                distance = wp.dot(vertex, local_normal) + local_offset
                 if distance < gap_sum + total_margin_offset:
-                    # Contact position is the midpoint
-                    contact_pos = (vertex_world + point_on_plane) * 0.5
+                    vertex_world = wp.transform_point(X_mesh_ws, wp.cw_mul(vertex, mesh_scale))
+                    contact_pos = vertex_world - 0.5 * distance * plane_normal
 
                     # Normal points from mesh to plane
                     contact_normal = -plane_normal

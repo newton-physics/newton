@@ -3464,6 +3464,38 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         pipeline.collide(model.state(), contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
+    def test_mesh_plane_contact_admission_is_translation_invariant(self):
+        """Keep shallow separation and penetration at a translated, rotated plane."""
+        rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        box = newton.Mesh.create_box(0.25, 0.25, 0.1, duplicate_vertices=False)
+        cfg = newton.ModelBuilder.ShapeConfig(gap=0.0, margin=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        pairs = []
+        for position in (wp.vec3(0.0), wp.vec3(32768.0, -32768.0, 32768.0)):
+            pose = wp.transform(position, rotation)
+            plane = builder.add_shape_plane(xform=pose, width=0.0, length=0.0, cfg=cfg)
+            for height in (0.1002, 0.0998):
+                vertices = box.vertices.copy()
+                vertices[:, 2] += height
+                mesh = newton.Mesh(vertices, box.indices)
+                shape = builder.add_shape_mesh(builder.add_body(xform=pose), mesh=mesh, cfg=cfg)
+                pairs.append((shape, plane))
+        model = builder.finalize(device="cpu")
+        shape_pairs = wp.array(pairs, dtype=wp.vec2i, device="cpu")
+        for reduce_contacts in (False, True):
+            with self.subTest(reduce_contacts=reduce_contacts):
+                pipeline = newton.CollisionPipeline(
+                    model, broad_phase="explicit", shape_pairs_filtered=shape_pairs, reduce_contacts=reduce_contacts
+                )
+                contacts = pipeline.contacts()
+                pipeline.collide(model.state(), contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                a = contacts.rigid_contact_shape0.numpy()[:count]
+                b = contacts.rigid_contact_shape1.numpy()[:count]
+                for i, (mesh_shape, _plane) in enumerate(pairs):
+                    rows = np.count_nonzero((a == mesh_shape) | (b == mesh_shape))
+                    self.assertEqual(rows, 4 if i % 2 else 0, f"pair {i}")
+
     def test_explicit_cross_world_mesh_pair_uses_explicit_bound(self):
         """Keep explicit cross-world mesh pairs in mesh work buffers."""
         world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
