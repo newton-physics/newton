@@ -1487,6 +1487,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.joint_visco_kappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_visco_bias = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_visco_tangent = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            # Start-of-step branch history for a coupler's restarted solve; allocated only when
+            # coupling_notify_iteration_restarts(True) declares that restarts can follow.
+            self._coupling_iteration_restarts = False
+            self._coupling_visco_moment_snapshot = None
+            self._coupling_visco_kappa_snapshot = None
 
             visco_names = ("visco_bend_ke", "visco_twist_ke", "visco_tau")
             if model.joint_count > 0 and vbd_attrs is not None and all(hasattr(vbd_attrs, n) for n in visco_names):
@@ -1660,6 +1665,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def coupling_supports_full_surface_soft_contacts(self) -> bool:
         return True
 
+    def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
+        """Save the cable viscoelastic history for restarted solves only when a restart can follow.
+
+        Args:
+            enabled: Whether the coupler may restart a step's solve.
+        """
+        self._coupling_iteration_restarts = bool(enabled)
+        # Rod material state exists only when the solver integrates rigid bodies.
+        if self._coupling_iteration_restarts and getattr(self, "enable_viscoelasticity", False):
+            self._coupling_visco_moment_snapshot = wp.clone(self.joint_visco_moment_prev)
+            self._coupling_visco_kappa_snapshot = wp.clone(self.joint_visco_kappa_prev)
+        else:
+            self._coupling_visco_moment_snapshot = None
+            self._coupling_visco_kappa_snapshot = None
+
     def coupling_notify_input_state_update(
         self,
         state: State,
@@ -1703,6 +1723,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if iteration_restart:
             # Restore the beginning-of-iteration history after a previous solve advanced it.
             wp.copy(dest=self.body_q_prev, src=self._coupling_body_q_prev_snapshot)
+            if getattr(self, "_coupling_visco_moment_snapshot", None) is not None:
+                # Cable branch history as the first attempt's solve started from it, rebaseline included.
+                wp.copy(dest=self.joint_visco_moment_prev, src=self._coupling_visco_moment_snapshot)
+                wp.copy(dest=self.joint_visco_kappa_prev, src=self._coupling_visco_kappa_snapshot)
 
         wp.launch(
             _update_vbd_body_input_state_kernel,
@@ -4216,6 +4240,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     dim=model.joint_count,
                     device=self.device,
                 )
+                if self._coupling_visco_moment_snapshot is not None:
+                    # The launch above applied any rebaseline; a restarted solve of this step resumes here.
+                    wp.copy(dest=self._coupling_visco_moment_snapshot, src=self.joint_visco_moment_prev)
+                    wp.copy(dest=self._coupling_visco_kappa_snapshot, src=self.joint_visco_kappa_prev)
 
             # The forward step and any enabled rod update have consumed the mask.
             self._rigid_pose_rebaseline_mask.zero_()
