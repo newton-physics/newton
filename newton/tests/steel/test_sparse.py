@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import NewtonWarning
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.friction import friction_pair_candidate
 from newton._src.solvers.steel.friction_patches import FrictionPatches
@@ -2094,8 +2095,17 @@ def _build_chain(device, *, links=6):
     return builder.finalize(device=device)
 
 
-def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=False, heterogeneous=False, boxes=False):
-    """Replicate a contacting tripod, optionally surrounded by separate free bodies.
+def _build_model(
+    *,
+    free_count=0,
+    free_first=False,
+    robot_count=1,
+    prescribed=False,
+    heterogeneous=False,
+    boxes=False,
+    friction_mode=None,
+):
+    """Replicate a contacting tripod, optionally surrounded by separate free bodies, all with a friction mode.
 
     With ``boxes`` the feet and the free bodies are boxes, whose resting contacts form patch regions of
     several contacts each (spheres touch the ground at one point).
@@ -2173,7 +2183,10 @@ def _build_model(*, free_count=0, free_first=False, robot_count=1, prescribed=Fa
         builder.replicate(env, 2)
     if not prescribed:
         builder.add_ground_plane()
-    return builder.finalize(device="cuda:0")
+    model = builder.finalize(device="cuda:0")
+    if friction_mode is not None:
+        model.shape_material_friction_mode.fill_(int(friction_mode))
+    return model
 
 
 def _make_solver(model, sparse, **overrides):
@@ -2643,6 +2656,26 @@ class TestSteelSparseSolver(unittest.TestCase):
         self.assertIsNone(SolverSteel(_build_chain("cuda:0"), **point)._sparse_mass_matrix_size)
         # Persistent friction patches, the default friction, take the sparse factors too.
         self.assertEqual(SolverSteel(_build_model())._sparse_mass_matrix_size, 9)
+
+    def test_free_body_angular_rows_keep_dense_factors(self):
+        """Keep dense factors, and solve the angular rows, when a free body has the rolling friction mode."""
+        model = _build_model(free_count=1, friction_mode=newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING)
+        # The tripod's rolling shapes have no torsion radius, which leaves their contacts with sliding friction.
+        with self.assertWarnsRegex(NewtonWarning, "articulated contacts"):
+            solver = SolverSteel(model, friction_anchor_beta=0.0)
+        self.assertTrue(solver._free_rigid_angular_rows)
+        self.assertIsNone(solver._sparse_mass_matrix_size)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(4):
+            state_0.clear_forces()
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertIn(6, solver._contact_slots_needed.numpy()[:count].tolist())
+        self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
 
     def test_unsupported_configurations_keep_existing_path(self):
         """Keep dense factors for full-support chains, velocity-limit rows, no iterations and large row capacities."""

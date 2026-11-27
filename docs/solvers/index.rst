@@ -235,11 +235,13 @@ formulation.
   friction budget). Other solvers apply sliding friction only, and warn if they
   solve rigid contacts. :class:`~newton.solvers.SolverSteel` provides
   experimental torsion on shapes whose mode enables torsional friction and that also set
-  ``steel:min_torsional_patch_radius``.
+  ``steel:min_torsional_patch_radius``, and experimental torsional and rolling
+  friction on the contacts of free bodies.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
   :class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverVBD`,
-  and the LOX backend of :class:`~newton.solvers.SolverKamino`, on contacts
-  whose ``friction_mode`` enables them.
+  the LOX backend of :class:`~newton.solvers.SolverKamino`, and the free-body
+  contacts of :class:`~newton.solvers.SolverSteel` (larger of the two shapes),
+  on contacts whose ``friction_mode`` enables them.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact

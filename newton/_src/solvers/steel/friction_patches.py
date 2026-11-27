@@ -35,7 +35,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...math.spatial import velocity_at_point
-from ...sim.enums import ShapeFrictionMode
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT, ShapeFrictionMode
 from ..solver import contact_friction_mode
 from .friction import contact_tangent_basis
 
@@ -65,6 +65,8 @@ class _PatchFrame:
     normal: wp.array[wp.vec3]
     displacement: wp.array[wp.vec3]
     mu: wp.array[wp.vec2]
+    # Gated free-rigid (torsional, rolling) pair coefficients [m]; zero unless angular rows are enabled.
+    angular: wp.array[wp.vec2]
     radius: wp.array[float]
     body_a: wp.array[int]
     body_b: wp.array[int]
@@ -110,6 +112,35 @@ def _local_point(q: wp.array[wp.transform], body: int, point: wp.vec3):
     return result
 
 
+@wp.func
+def free_rigid_angular_friction_coefficients(
+    shape_a: int,
+    shape_b: int,
+    shape_material_friction_mode: wp.array[wp.int32],
+    free_rigid_mu_torsional: wp.array[float],
+    free_rigid_mu_rolling: wp.array[float],
+):
+    """Return a free-rigid pair's torsional and rolling coefficients [m], as either shape's friction mode enables them.
+
+    Each enabled coefficient is the larger of the two shapes' values; a disabled one is zero.
+    """
+    mode = contact_friction_mode(shape_material_friction_mode, shape_a, shape_b)
+    torsional = float(0.0)
+    rolling = float(0.0)
+    if (mode & (FRICTION_TORSIONAL_BIT | FRICTION_ROLLING_BIT)) != 0:
+        if shape_a >= 0:
+            torsional = wp.max(torsional, free_rigid_mu_torsional[shape_a])
+            rolling = wp.max(rolling, free_rigid_mu_rolling[shape_a])
+        if shape_b >= 0:
+            torsional = wp.max(torsional, free_rigid_mu_torsional[shape_b])
+            rolling = wp.max(rolling, free_rigid_mu_rolling[shape_b])
+    if (mode & FRICTION_TORSIONAL_BIT) == 0:
+        torsional = 0.0
+    if (mode & FRICTION_ROLLING_BIT) == 0:
+        rolling = 0.0
+    return torsional, rolling
+
+
 @wp.kernel(enable_backward=False)
 def _prepare(
     count: wp.array[int],
@@ -128,6 +159,10 @@ def _prepare(
     q: wp.array[wp.transform],
     contact_gap_limit: float,
     friction_gap_limit: float,
+    angular_enabled: int,
+    shape_mu_torsional: wp.array[float],
+    shape_mu_rolling: wp.array[float],
+    free_rigid_route_body: wp.array[wp.int32],
     recovery_phi: wp.array[float],
     frame: _PatchFrame,
     patches: FrictionPatches,
@@ -210,6 +245,20 @@ def _prepare(
         mu_a = 0.0
         mu_b = 0.0
     frame.mu[c] = wp.vec2(mu_a, mu_b)
+    # One patch carries one set of angular rows, so its free-rigid contacts must share the angular coefficients.
+    # Contacts that cannot take the free-rigid route keep a zero key and group as without angular rows.
+    angular = wp.vec2(0.0)
+    free_rigid_route = angular_enabled != 0
+    if free_rigid_route and a >= 0:
+        free_rigid_route = free_rigid_route_body[a] != 0
+    if free_rigid_route and b >= 0:
+        free_rigid_route = free_rigid_route_body[b] != 0
+    if free_rigid_route:
+        torsional, rolling = free_rigid_angular_friction_coefficients(
+            sa, sb, shape_material_friction_mode, shape_mu_torsional, shape_mu_rolling
+        )
+        angular = wp.vec2(torsional, rolling)
+    frame.angular[c] = angular
     r = float(1.0e10)
     if a >= 0:
         r = wp.min(r, body_radius[a])
@@ -226,6 +275,8 @@ def _compatible(frame: _PatchFrame, seed: int, c: int):
         wp.dot(frame.normal[seed], frame.normal[c]) >= 0.995
         and frame.mu[seed][0] == frame.mu[c][0]
         and frame.mu[seed][1] == frame.mu[c][1]
+        and frame.angular[seed][0] == frame.angular[c][0]
+        and frame.angular[seed][1] == frame.angular[c][1]
         and wp.abs(wp.dot(d, frame.normal[seed])) <= 0.02 * r
         and wp.length_sq(d) <= 4.0 * r * r
     )
@@ -331,6 +382,7 @@ _FLOOD_CUDA = """
         const wp::vec3 seed_center = center.data[seed];
         const wp::vec3 seed_normal = normal.data[seed];
         const wp::vec2 seed_mu = mu.data[seed];
+        const wp::vec2 seed_angular = angular.data[seed];
         const float r = radius.data[seed];
         int cursor = seed;
         int expanded_a = -2, expanded_b = -2;
@@ -350,8 +402,10 @@ _FLOOD_CUDA = """
                         if (owner.data[c] < 0) {
                             const wp::vec3 d = wp::sub(center.data[c], seed_center);
                             const wp::vec2 cmu = mu.data[c];
+                            const wp::vec2 cangular = angular.data[c];
                             const bool compatible = wp::dot(seed_normal, normal.data[c]) >= 0.995f
                                 && seed_mu[0] == cmu[0] && seed_mu[1] == cmu[1]
+                                && seed_angular[0] == cangular[0] && seed_angular[1] == cangular[1]
                                 && wp::abs(wp::dot(d, seed_normal)) <= 0.02f * r
                                 && wp::length_sq(d) <= 4.0f * r * r;
                             if (compatible && shapes_adjacent(sa, shape_a.data[c]) && shapes_adjacent(sb, shape_b.data[c]))
@@ -457,6 +511,7 @@ def _flood_native(
     center: wp.array[wp.vec3],
     normal: wp.array[wp.vec3],
     mu: wp.array[wp.vec2],
+    angular: wp.array[wp.vec2],
     radius: wp.array[float],
     shape_a: wp.array[int],
     shape_b: wp.array[int],
@@ -549,6 +604,7 @@ def _flood_regions(
         frame.center,
         frame.normal,
         frame.mu,
+        frame.angular,
         frame.radius,
         frame.shape_a,
         frame.shape_b,
@@ -1336,6 +1392,7 @@ class _FrictionPatchState:
         self._flood_pair_count = wp.zeros(1, dtype=int, device=device)
         self._flood_tiles = min(pair_capacity, 1024)
         self._no_frozen_bodies = wp.zeros(0, dtype=int, device=device)
+        self._no_route_bodies = wp.zeros(0, dtype=wp.int32, device=device)
 
     def update_geometry(self, model):
         """Refresh body radii and retire history whose geometry changed, on the device."""
@@ -1387,6 +1444,7 @@ class _FrictionPatchState:
         ):
             setattr(frame, field, wp.zeros(n, dtype=wp.vec3, device=device))
         frame.mu = wp.zeros(n, dtype=wp.vec2, device=device)
+        frame.angular = wp.zeros(n, dtype=wp.vec2, device=device)
         frame.radius = wp.zeros(n, dtype=float, device=device)
         frame.support_gap_limit = wp.zeros(n, dtype=float, device=device)
         frame.separation = wp.zeros(n, dtype=float, device=device)
@@ -1420,9 +1478,16 @@ class _FrictionPatchState:
         contact_gap_limit=float("inf"),
         friction_gap_limit=float("inf"),
         frozen_bodies=None,
+        angular_mu=None,
         recovery_phi=None,
         dt=0.0,
     ):
+        """Build this step's friction patches.
+
+        ``angular_mu`` is ``(torsional, rolling, route)`` with free-rigid angular rows: the per-shape
+        coefficients [m] and a per-body flag of the bodies whose contacts take the free-rigid route. Such
+        contacts then share a patch only if their pair coefficients match.
+        """
         wp.launch(
             _prepare,
             dim=self.capacity,
@@ -1443,6 +1508,10 @@ class _FrictionPatchState:
                 state.body_q,
                 contact_gap_limit,
                 friction_gap_limit,
+                int(angular_mu is not None),
+                angular_mu[0] if angular_mu is not None else model.shape_gap,
+                angular_mu[1] if angular_mu is not None else model.shape_gap,
+                angular_mu[2] if angular_mu is not None else self._no_route_bodies,
                 recovery_phi,
                 self.current,
                 self.view,
@@ -1604,7 +1673,7 @@ def link_patch_rows(
 
     Row builders write the unscaled friction coefficient; this kernel divides it by
     the number of anchors that actually received rows, so the pooled normal load
-    is shared exactly once.
+    is shared exactly once. Angular rows sit on one anchor per patch and keep the whole coefficient.
     """
     c = wp.tid()
     if c >= count[0] or slot[c] < 0 or path[c] != route:

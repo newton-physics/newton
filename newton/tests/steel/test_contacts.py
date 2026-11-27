@@ -134,6 +134,10 @@ def _launch_contact_allocator(
             _friction_threshold(enable_friction, friction_gap),
             _disabled_patches(device),
             0,
+            wp.zeros((1,), dtype=wp.int32, device=device),
+            wp.zeros((1,), dtype=wp.float32, device=device),
+            wp.zeros((1,), dtype=wp.float32, device=device),
+            0,
             wp.zeros((1,), dtype=wp.float32, device=device),
             0,
             None,
@@ -209,6 +213,10 @@ def _launch_articulation_pair_contact_allocator(
             float("inf") if gate is None else gate,
             _friction_threshold(enable_friction, friction_gap),
             _disabled_patches(device),
+            0,
+            wp.zeros((1,), dtype=wp.int32, device=device),
+            wp.zeros((1,), dtype=wp.float32, device=device),
+            wp.zeros((1,), dtype=wp.float32, device=device),
             0,
             wp.zeros((1,), dtype=wp.float32, device=device),
             0,
@@ -4363,6 +4371,8 @@ class TestSteelPairedResponse(unittest.TestCase):
                     free_body_constraint_max=32,
                 )
             set_torsion_radius(model, 0.0)
+            # The torsion radius raised the friction modes; without it, TORSIONAL would add free-body spin rows.
+            model.shape_material_friction_mode.fill_(int(newton.ShapeFrictionMode.SLIDING))
             point = SolverSteel(
                 model,
                 enable_joint_limits=True,

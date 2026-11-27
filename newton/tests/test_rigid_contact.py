@@ -1235,7 +1235,9 @@ for device in devices:
             test_shape_friction_modes,
             devices=[device],
             solver_fn=solver_fn,
-            supports_torsion=solver_name in ("mujoco_cpu", "mujoco_warp", "xpbd", "kamino_lox", "vbd"),
+            # Steel applies them through its free-body rows, which need CUDA.
+            supports_torsion=solver_name in ("mujoco_cpu", "mujoco_warp", "xpbd", "kamino_lox", "vbd")
+            or (solver_name == "steel" and device.is_cuda),
         )
 
 

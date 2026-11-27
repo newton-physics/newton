@@ -37,6 +37,15 @@ from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
+from .contact_angular_friction import (
+    accumulate_free_rigid_angular_wrenches,
+    configure_free_rigid_angular_friction,
+    free_rigid_angular_friction_gs_sources,
+    free_rigid_angular_rows_supported,
+    launch_free_rigid_angular_friction_rows,
+    refresh_free_rigid_angular_friction,
+    validate_free_rigid_angular_friction,
+)
 from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
@@ -53,6 +62,7 @@ from .kernels import (
     CONTACT_GENERATION_NONE,
     CONTACT_ROW_FAMILIES,
     PGS_CONSTRAINT_TYPE_CONTACT,
+    PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -1520,8 +1530,29 @@ class SolverSteel(SolverBase, CouplingInterface):
       regularization, warm start from the previous step's impulses, velocity-only
       iterations and gap gates for speculative contacts are configured on the
       constructor. Experimental contact torsion (per-shape ``steel:min_torsional_patch_radius``)
-      adds a load-bounded spin-friction row per contact group, and experimental implicit
+      adds a load-bounded spin-friction row per contact group. Experimental rolling and spin
+      friction rows for free-body contacts follow the shapes'
+      :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` (see below), and experimental implicit
       compliance of hydroelastic contacts is opt-in (``contact_compliance``).
+
+      The free-body angular rows act on contacts between free bodies, and of free bodies with static
+      or kinematic geometry. A contact gets a row when either shape's :class:`~newton.ShapeFrictionMode`
+      enables its component: torsional friction adds a spin row about the normal bounded by
+      :attr:`~newton.Model.shape_material_mu_torsional` [m] times the normal load, and rolling friction
+      a rolling pair bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is
+      the larger of the two shapes' values, times ``contact_friction_scale``. Under friction patches,
+      contacts share a patch only if their angular coefficients match. A contact with angular rows takes
+      up to 6 free-body rows instead of 3; raise ``free_body_constraint_max`` if
+      :attr:`constraint_overflow` reports dropped rows. The rows need a CUDA device,
+      ``solve_mode="serial"`` with ``articulated_contact_response="immediate"``,
+      ``row_schedule="interleaved"``, ``friction_mode="fixed_normal"`` and no contact compliance; otherwise
+      free-body contacts keep sliding friction. Construction warns about rolling friction on shapes that
+      get no rolling pair: all of them under unsupported options, else those on articulated bodies. The
+      solver decides at construction whether to build the rows, so a solver built without them must be
+      rebuilt to gain them. On a solver with the rows, construction and an eager ``SHAPE_PROPERTIES``
+      notification raise :class:`ValueError` for a mode outside :class:`~newton.ShapeFrictionMode`, or for
+      a coefficient that a mode enables if it is negative or non-finite, or not finite in float32 once
+      scaled.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds. A body
       outside every articulation, such as a link without a joint, enters contacts, including
       the friction-patch slide check, with its pose and zero velocity; :meth:`step` passes its
@@ -2714,20 +2745,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
-        torsion_radius = self._contact_torsion_shape_radius
-        if model.shape_count and model.shape_material_friction_mode is not None:
-            modes = model.shape_material_friction_mode.numpy()
-            radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
-            limits = []
-            if np.any(modes & FRICTION_ROLLING_BIT):
-                limits.append("does not support rolling friction")
-            if np.any((modes & FRICTION_TORSIONAL_BIT != 0) & (radii <= 0.0)):
-                limits.append(
-                    "applies torsional friction only to contacts of shapes with a positive "
-                    "steel:min_torsional_patch_radius"
-                )
-            if limits:
-                warnings.warn(f"SolverSteel {' and '.join(limits)}.", NewtonWarning, stacklevel=2)
         self._nesterov_momentum = bool(nesterov_momentum)
         if self._nesterov_momentum and (
             articulated_contact_response != "immediate" or self._row_schedule != "interleaved"
@@ -2919,6 +2936,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         # Kinematic bodies and moving mesh surfaces both enter contact rows as target velocities.
         self._has_contact_target_velocity = self._has_prescribed_response or self._has_surface_velocity
         self._compute_articulation_metadata(model)
+        configure_free_rigid_angular_friction(self, model)
+        self._warn_unsupported_friction_modes(model)
         self._init_joint_friction(model)
         if self._enable_joint_friction:
             self._validate_joint_friction()
@@ -3088,6 +3107,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._shape_mu_invalid_world = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         self._shape_friction_rejected = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         self._shape_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        # Free-rigid angular coefficients, clamped; the kernels read them only when the rows are enabled.
+        self._free_rigid_mu_torsional = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        self._free_rigid_mu_rolling = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
         self._validate_shape_friction()
 
@@ -3193,6 +3215,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ],
                 device=model.device,
             )
+        refresh_free_rigid_angular_friction(self)
 
     def _validate_shape_friction(self) -> None:
         """Raise if the last material refresh found a scaled friction coefficient that is not finite."""
@@ -3404,7 +3427,11 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
-        raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
+        raises :class:`ValueError` for invalid values, after applying every other update. Likewise, on a
+        solver constructed with free-body angular rows, an eager shape notification reads the friction modes and the
+        torsional and rolling coefficients they enable on the host and raises :class:`ValueError` for a mode outside
+        :class:`~newton.ShapeFrictionMode` or an invalid coefficient, as construction does; a captured one skips
+        this check. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
         DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
         Steel spring, an eager joint DOF or DOF force notification also reads
@@ -3507,6 +3534,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
             if flags & dof_force:
                 self._warn_ignored_spring_stiffness(stacklevel=3)
+        if flags & ModelFlags.SHAPE_PROPERTIES and not self.model.device.is_capturing:
+            validate_free_rigid_angular_friction(self)
 
     @override
     def _non_graphable_model_flags(self) -> int:
@@ -3528,6 +3557,36 @@ class SolverSteel(SolverBase, CouplingInterface):
             # Sparse mass factors check restitution support on the host.
             flags |= ModelFlags.SHAPE_PROPERTIES
         return int(flags)
+
+    def _warn_unsupported_friction_modes(self, model) -> None:
+        """Warn once, in one message, for the friction components this configuration leaves as sliding friction."""
+        if not model.shape_count or model.shape_material_friction_mode is None:
+            return
+        rows = self._free_rigid_angular_rows
+        modes = model.shape_material_friction_mode.numpy()
+        torsion_radius = self._contact_torsion_shape_radius
+        radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
+        missing = ((modes & FRICTION_TORSIONAL_BIT) != 0) & (radii <= 0.0)
+        rolling = (modes & FRICTION_ROLLING_BIT) != 0
+        if rows:
+            # The free-body angular rows cover the shapes whose contacts take the free-body route.
+            shape_body = model.shape_body.numpy()
+            route = self._free_rigid_route_body.numpy()
+            articulated = (shape_body >= 0) & (route[np.maximum(shape_body, 0)] == 0)
+            missing &= articulated
+            rolling &= articulated
+        limits = []
+        if np.any(rolling):
+            where = "on articulated contacts" if free_rigid_angular_rows_supported(self) else "in this configuration"
+            limits.append(f"does not support rolling friction {where}")
+        if np.any(missing):
+            limits.append(
+                "applies torsional friction to articulated contacts only for shapes with a positive "
+                "steel:min_torsional_patch_radius"
+            )
+        if limits:
+            message = f"SolverSteel {' and '.join(limits)}; the other contacts of those shapes use sliding friction."
+            warnings.warn(message, NewtonWarning, stacklevel=3)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
@@ -5094,16 +5153,17 @@ class SolverSteel(SolverBase, CouplingInterface):
         They solve hard contacts with point friction or persistent friction patches (one
         normal row per contact and two tangent rows per point contact or surviving patch
         anchor, the patch load pooled over the region's linked normal rows), so the
-        propagation responses, the other friction modes, contact torsion, contact compliance,
-        warm start, regularization, velocity-only iterations, a friction gap threshold and late
-        friction (``contact_friction_position_iterations``) keep the dense path, and so does enabled
-        restitution when a shape has a positive restitution coefficient (with all coefficients zero
-        it does not).
+        propagation responses, the other friction modes, contact torsion, free-body angular
+        friction rows, contact compliance, warm start, regularization, velocity-only iterations,
+        a friction gap threshold and late friction (``contact_friction_position_iterations``)
+        keep the dense path, and so does enabled restitution when a shape has a positive
+        restitution coefficient (with all coefficients zero it does not).
         """
         if (
             self._articulated_contact_response != "immediate"
             or self._friction_mode != "fixed_normal"
             or self._contact_torsion_enabled
+            or self._free_rigid_angular_rows
             or self._contact_compliance
             or self._contact_warmstart
             or self._regularization_enabled
@@ -5202,6 +5262,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             and not self._enable_joint_friction
             # The factor-coordinate solve owns no torsion rows.
             and not self._contact_torsion_enabled
+            and not self._free_rigid_angular_rows
         )
         # Patches allocate one tangent pair per surviving anchor, so their rows are not uniform triples.
         self._factor_coordinate_contact_triples = bool(
@@ -5439,8 +5500,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             and not self._contact_warmstart
             and not self._preelim_active
             and self._local_solve_max_rows > 0
-            # The local owners do not solve torsion rows.
+            # The local owners do not solve torsion or free-rigid angular rows.
             and not self._contact_torsion_enabled
+            and not self._free_rigid_angular_rows
             # Nor do they add the compliant residual term, and they rebuild the diagonal that compliance replaces.
             and not self._contact_compliance
             and not self._nesterov_momentum
@@ -6553,6 +6615,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 skip_local_internal_worlds=self._local_internal_fast_path,
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
+                free_rigid_angular_friction=self._free_rigid_angular_rows,
                 pair_cache=self._mfgs_pair_cache,
                 torsion_links=self._mfgs_torsion_links,
                 nesterov_momentum=self._nesterov_momentum,
@@ -7796,6 +7859,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 outputs=[contact_wrench, dense_slot_contact, propagation_slot_contact],
                 device=model.device,
             )
+            if self._free_rigid_angular_rows:
+                accumulate_free_rigid_angular_wrenches(self, contacts, rigid_contact_max, inv_dt, contact_wrench)
             spin_families = []
             if self._contact_torsion_enabled:
                 spin_families.append(
@@ -10210,6 +10275,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                     contact_gap_limit=self._contact_gap_limit,
                     friction_gap_limit=self._friction_gap,
                     frozen_bodies=frozen_bodies,
+                    angular_mu=(self._free_rigid_mu_torsional, self._free_rigid_mu_rolling, self._free_rigid_route_body)
+                    if self._free_rigid_angular_rows
+                    else None,
                     recovery_phi=recovery_phi,
                     dt=dt,
                 )
@@ -10245,6 +10313,10 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._contact_gap_limit,
                     self._friction_gap,
                     self._friction_patches.view,
+                    int(self._free_rigid_angular_rows),
+                    model.shape_material_friction_mode,
+                    self._free_rigid_mu_torsional,
+                    self._free_rigid_mu_rolling,
                     int(self._ordered_rows),
                     self._contact_torsion_shape_radius if self._propagation_torsion_rows else self._no_torsion_radius,
                     int(self._propagation_torsion_rows),
@@ -10469,6 +10541,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                     ],
                     device=model.device,
                 )
+                if self._free_rigid_angular_rows:
+                    launch_free_rigid_angular_friction_rows(self, state_aug, contacts, contact_build_threads)
                 wp.launch(
                     finalize_mf_constraint_counts,
                     dim=self._world_count,
@@ -15464,6 +15538,7 @@ def _get_pgs_solve_mf_gs_kernel(
     skip_local_internal_worlds: bool = False,
     joint_friction: bool = False,
     contact_compliance: bool = False,
+    free_rigid_angular_friction: bool = False,
     row_phase: int | None = None,
     pair_cache: bool = False,
     torsion_links: bool = False,
@@ -15540,7 +15615,12 @@ def _get_pgs_solve_mf_gs_kernel(
             (``enable_joint_friction``).
         contact_compliance: Add ``gamma * lambda`` to every contact-normal residual in each
             sweep (``contact_compliance``); ``gamma`` is zero on rigid rows.
+        free_rigid_angular_friction: Solve the rolling pair and spin row that follow free-body
+            contacts' sliding pairs (a shape mode with torsional or rolling friction); requires
+            ``"fixed_normal"`` and no factor coordinates.
     """
+    if free_rigid_angular_friction and (friction_mode != "fixed_normal" or factor_coordinates):
+        raise ValueError("free-rigid angular friction rows require the fixed-normal free-body solve")
     if fuse_vel_limits and not has_drive_rows:
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if row_phase is not None and not row_phases:
@@ -15935,6 +16015,11 @@ def _get_pgs_solve_mf_gs_kernel(
         dense_friction_denominator_guard = ""
         mf_friction_denominator_guard = ""
 
+    mf_angular_skip, mf_angular_radius, mf_angular_update = "", "", ""
+    if free_rigid_angular_friction:
+        mf_angular_skip, mf_angular_radius, mf_angular_update = free_rigid_angular_friction_gs_sources()
+        mf_friction_denominator_guard += f" && mf_rt != {int(PGS_CONSTRAINT_TYPE_CONTACT_ROLLING)}"
+
     # The pair solve at a contact's first friction row also writes the second, so the sweep skips that row.
     dense_second_friction_skip = (
         f"            if (row_type == {friction_type} && i != ((s_meta_dense[i] >> {type_bits}) - 1) + 1) continue;"
@@ -16184,9 +16269,9 @@ def _get_pgs_solve_mf_gs_kernel(
                 __syncwarp();
                 continue;
             }}
-            if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i != mf_par + 1) continue;
+            if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i != mf_par + 1) continue;{mf_angular_skip}
             if (mf_diag <= 0.0f{mf_friction_denominator_guard}) continue;
-{mf_friction_radius}
+{mf_friction_radius}{mf_angular_radius}
 
             float my_sum = 0.0f;
             if (lane < 6 && dof_a >= 0) my_sum = cur_Ja * s_v[dof_a + lane];
@@ -16205,7 +16290,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 if (new_impulse < 0.0f) new_impulse = 0.0f;
             }} else if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
 {mf_friction_update}
-            }}
+            }}{mf_angular_update}
             float delta_impulse = new_impulse - old_impulse;
             __syncwarp();
             s_lam_mf[i] = new_impulse;
@@ -16357,6 +16442,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 factor_coordinates,
                 joint_friction,
                 contact_compliance,
+                free_rigid_angular_friction,
                 row_phase,
                 pair_cache,
                 torsion_links,
@@ -16508,6 +16594,7 @@ def _get_pgs_solve_mf_gs_kernel(
         factor_coordinates,
         joint_friction,
         contact_compliance,
+        free_rigid_angular_friction,
         row_phase,
         pair_cache,
         torsion_links,
@@ -16532,6 +16619,7 @@ def _mf_gs_kernel_name(
     factor_coordinates: bool,
     joint_friction: bool,
     contact_compliance: bool,
+    free_rigid_angular_friction: bool = False,
     row_phase: int | None = None,
     pair_cache: bool = False,
     torsion_links: bool = False,
@@ -16550,6 +16638,7 @@ def _mf_gs_kernel_name(
         f"{'_factor' if factor_coordinates else ''}"
         f"{'_jfric' if joint_friction else ''}"
         f"{'_compliance' if contact_compliance else ''}"
+        f"{'_free_rigid_angular' if free_rigid_angular_friction else ''}"
         f"{'_momentum' if nesterov_momentum else ''}"
     )
 

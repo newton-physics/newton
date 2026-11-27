@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from dataclasses import replace
 
 import numpy as np
@@ -566,10 +567,13 @@ def test_steel_torsion_covers_variants(test, device):
     # Torsion does not support meshes, even ones that are not selected at construction.
     with test.assertRaisesRegex(ValueError, r"geometry of shapes \[0\]"):
         steel(model(0.01, 0.0, initial=1), **options)
-    # A cube with a torsion radius enables torsion while the mesh is selected.
+    # A cube with a torsion radius enables torsion while the mesh is selected. The object is a free body, so its
+    # free-body spin row covers the mesh without a radius and the radius warning does not apply.
     variants = model(0.0, 0.01, initial=0)
-    with test.assertWarnsRegex(newton.NewtonWarning, "positive steel:min_torsional_patch_radius"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", newton.NewtonWarning)
         solver = steel(variants, **options)
+    test.assertTrue(solver._free_rigid_angular_rows)
     test.assertEqual(solver._device_torsion.supported.numpy().tolist(), [0])
     solver.notify_model_changed(_select(variants, [1]))
     test.assertEqual(solver._device_torsion.supported.numpy().tolist(), [1])
