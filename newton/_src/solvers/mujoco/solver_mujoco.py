@@ -6958,6 +6958,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # A body pair is excluded when it has colliding shape pairs and none of
         # them can collide. Owners without colliding shapes need no exclude, so
         # only owners of colliding shapes get a row.
+        if not honor_collision_groups and len(model.shape_collision_filter_pairs) == 0:
+            return []
         owners = np.append(selected_bodies, -1) if honor_collision_groups else np.asarray(selected_bodies)
         owner_row = np.full(model.body_count + 1, -1, dtype=np.int64)  # index -1 is the world
         owner_row[owners] = np.arange(len(owners))
@@ -6973,24 +6975,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if row_count < 2:
             return []
         groups = model.shape_collision_group.numpy()[shapes]
-
-        # Allowed shape pairs per row pair, before filters.
-        if honor_collision_groups:
-            positive, negative = groups > 0, groups < 0
-            positive_count = np.bincount(shape_row[positive], minlength=row_count)
-            negative_count = np.bincount(shape_row[negative], minlength=row_count)
-            # Positive groups meet their own group and every negative group;
-            # negative groups meet every nonzero group except their own.
-            allowed = (
-                np.outer(positive_count, negative_count)
-                + np.outer(negative_count, positive_count)
-                + np.outer(negative_count, negative_count)
-                + SolverMuJoCo._same_group_pair_counts(shape_row[positive], groups[positive], row_count)
-                - SolverMuJoCo._same_group_pair_counts(shape_row[negative], groups[negative], row_count)
-            )
-        else:
-            shape_count = np.bincount(shape_row, minlength=row_count)
-            allowed = np.outer(shape_count, shape_count)
 
         # Filtered pairs between different rows. The sparse filter set spans every
         # replicated world; read it only when it is smaller than the candidate
@@ -7010,12 +6994,35 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             first, second = pairs[:, 0], pairs[:, 1]
         row_a, row_b = shape_row[first], shape_row[second]
         low, high = np.minimum(row_a, row_b), np.maximum(row_a, row_b)
-        weights = SolverMuJoCo._groups_collide(groups[first], groups[second]) if honor_collision_groups else None
-        filtered_allowed = np.bincount(low * row_count + high, weights=weights, minlength=row_count * row_count)
-
-        rows_a, rows_b = np.triu_indices(row_count, k=1)
-        excluded = allowed[rows_a, rows_b] == filtered_allowed[rows_a * row_count + rows_b]
-        return [(int(owners[rows[rows_a[k]]]), int(owners[rows[rows_b[k]]])) for k in np.flatnonzero(excluded)]
+        if honor_collision_groups:
+            # Group rejections can exclude row pairs without any filter, so count
+            # allowed and filtered-but-allowed pairs for every row pair.
+            positive, negative = groups > 0, groups < 0
+            positive_count = np.bincount(shape_row[positive], minlength=row_count)
+            negative_count = np.bincount(shape_row[negative], minlength=row_count)
+            # Positive groups meet their own group and every negative group;
+            # negative groups meet every nonzero group except their own.
+            allowed = (
+                np.outer(positive_count, negative_count)
+                + np.outer(negative_count, positive_count)
+                + np.outer(negative_count, negative_count)
+                + SolverMuJoCo._same_group_pair_counts(shape_row[positive], groups[positive], row_count)
+                - SolverMuJoCo._same_group_pair_counts(shape_row[negative], groups[negative], row_count)
+            )
+            weights = SolverMuJoCo._groups_collide(groups[first], groups[second])
+            filtered_allowed = np.bincount(low * row_count + high, weights=weights, minlength=row_count * row_count)
+            rows_a, rows_b = np.triu_indices(row_count, k=1)
+            excluded = allowed[rows_a, rows_b] == filtered_allowed[rows_a * row_count + rows_b]
+            rows_a, rows_b = rows_a[excluded], rows_b[excluded]
+        else:
+            # Only row pairs with filters can be fully filtered: compare their filter
+            # counts with their shape-pair counts, without dense row matrices.
+            shape_count = np.bincount(shape_row, minlength=row_count)
+            keys, filtered_count = np.unique(low * row_count + high, return_counts=True)
+            rows_a, rows_b = np.divmod(keys, row_count)
+            excluded = filtered_count == shape_count[rows_a] * shape_count[rows_b]
+            rows_a, rows_b = rows_a[excluded], rows_b[excluded]
+        return [(int(owners[rows[a]]), int(owners[rows[b]])) for a, b in zip(rows_a, rows_b, strict=True)]
 
     @staticmethod
     def _same_group_pair_counts(shape_row: np.ndarray, groups: np.ndarray, row_count: int) -> np.ndarray:
