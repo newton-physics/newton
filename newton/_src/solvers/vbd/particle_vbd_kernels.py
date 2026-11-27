@@ -1414,7 +1414,10 @@ def evaluate_spring_force_and_hessian_both_vertices(
     return v0, v1, force_v0, force_v1, hessian_total
 
 
-@wp.kernel
+# This kernel emits a fixed number of atomics per thread. It has its own module so that
+# the per-thread record bound SolverVBD sets on this file's module for the self-contact
+# kernels, whose atomics sit in data-dependent loops, does not size its record buffers.
+@wp.kernel(module="unique", enable_backward=False)
 def accumulate_spring_force_and_hessian(
     # inputs
     dt: float,
@@ -1748,7 +1751,8 @@ def step_particle_body_attachment_lambda_rho(
     rho[i] = _attachment_auto_rho(support, stiffness)
 
 
-@wp.kernel
+# Own module for the same reason as accumulate_spring_force_and_hessian.
+@wp.kernel(module="unique", enable_backward=False)
 def accumulate_body_particle_attachment_force_and_hessian(
     dt: float,
     current_color: int,

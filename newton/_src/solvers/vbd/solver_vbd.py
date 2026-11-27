@@ -970,6 +970,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 },
                 module=particle_vbd_kernels,
             )
+            # The spring and attachment kernels emit a fixed number of atomics per
+            # thread, so they need no record bound. They live in their own modules
+            # to keep the self-contact bound above from sizing their record buffers.
+            for kernel in (
+                accumulate_spring_force_and_hessian,
+                accumulate_body_particle_attachment_force_and_hessian,
+            ):
+                self._set_module_options(
+                    {
+                        "deterministic": effective_deterministic,
+                        "deterministic_max_records": 0,
+                        "fast_math": enable_fast_math,
+                    },
+                    module=kernel.module,
+                )
         self._set_module_options(
             {
                 "deterministic": effective_deterministic,

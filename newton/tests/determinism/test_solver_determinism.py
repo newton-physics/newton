@@ -167,6 +167,71 @@ def test_particle_determinism(test, device, solver_name):
     _run_isolated(test, "_check_particle_determinism", str(device), solver_name)
 
 
+def _build_spring_cloth_with_attachments(device):
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.7), wp.quat_identity()), mass=1.0)
+    builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.15, -0.15, 0.5),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, -0.1),
+        dim_x=6,
+        dim_y=6,
+        cell_x=0.05,
+        cell_y=0.05,
+        mass=0.01,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-5,
+        edge_ke=1.0,
+        edge_kd=1.0e-5,
+        add_springs=True,
+        spring_ke=1.0e3,
+        spring_kd=0.0,
+        particle_radius=0.01,
+    )
+    # Several attachments share particle 0, so its force sums more than one record.
+    for particle in (0, 0, 0, 1, 2):
+        builder.add_attachment_particle_body(particle, body, stiffness=1.0e3)
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _run_spring_cloth_rollout(device):
+    model = _build_spring_cloth_with_attachments(device)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=5,
+        particle_enable_self_contact=True,
+        particle_enable_tile_solve=False,
+        particle_vertex_contact_buffer_size=64,
+        particle_edge_contact_buffer_size=64,
+        deterministic=DETERMINISTIC_MODE,
+    )
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    contacts = newton.CollisionPipeline(model).contacts()
+
+    # Eager stepping makes Warp raise if a kernel emits more records than its bound.
+    for _ in range(20):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+
+    return _snapshot(state_0, ("particle_q", "particle_qd", "body_q"))
+
+
+def _check_vbd_spring_attachment_determinism(device):
+    with wp.ScopedDevice(device):
+        first = _run_spring_cloth_rollout(device)
+        second = _run_spring_cloth_rollout(device)
+    _assert_snapshots_equal(first, second)
+
+
+def test_vbd_spring_attachment_determinism(test, device):
+    _run_isolated(test, "_check_vbd_spring_attachment_determinism", str(device))
+
+
 def _build_branching_articulation(device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
@@ -499,6 +564,38 @@ class TestSolverDeterminismWarnings(unittest.TestCase):
 
 
 class TestSolverDeterminismOptions(unittest.TestCase):
+    def test_vbd_fixed_atomic_kernels_skip_record_bound(self):
+        """Verify the self-contact record bound stays off the spring and attachment kernels."""
+        kernels = (
+            particle_vbd_kernels.accumulate_spring_force_and_hessian,
+            particle_vbd_kernels.accumulate_body_particle_attachment_force_and_hessian,
+        )
+        with wp.ScopedDevice("cpu"):
+            model = _build_soft_body("cpu")
+            newton.solvers.SolverVBD(
+                model,
+                particle_enable_self_contact=True,
+                particle_enable_tile_solve=False,
+                particle_vertex_contact_buffer_size=64,
+                particle_edge_contact_buffer_size=64,
+                deterministic=DETERMINISTIC_MODE,
+            )
+            self.assertGreater(wp.get_module_options(module=particle_vbd_kernels)["deterministic_max_records"], 0)
+            for kernel in kernels:
+                options = wp.get_module_options(module=kernel.module)
+                self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
+                self.assertEqual(options["deterministic_max_records"], 0)
+
+            newton.solvers.SolverVBD(
+                model,
+                particle_enable_self_contact=False,
+                particle_enable_tile_solve=False,
+                deterministic=wp.DeterministicMode.NOT_GUARANTEED,
+            )
+            for kernel in kernels:
+                options = wp.get_module_options(module=kernel.module)
+                self.assertEqual(options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
+
     def setUp(self):
         self._modules = (
             xpbd_kernels,
@@ -667,6 +764,14 @@ for solver_name in ("xpbd", "semi_implicit", "vbd"):
         solver_name=solver_name,
         check_output=False,
     )
+
+add_function_test(
+    TestSolverDeterminism,
+    "test_vbd_spring_attachment_determinism",
+    test_vbd_spring_attachment_determinism,
+    devices=devices,
+    check_output=False,
+)
 
 for solver_name in ("xpbd", "semi_implicit", "featherstone"):
     for use_graph in (False, True):
