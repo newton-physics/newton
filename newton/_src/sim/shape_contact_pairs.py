@@ -572,7 +572,7 @@ def _shape_contact_pair_count_for_mask(
 
 def _match_counts(rows: np.ndarray, row_categories: np.ndarray, queries: np.ndarray, category_count: int) -> np.ndarray:
     """Count the rows equal to each query row, per category."""
-    # Factorize column by column into one integer code per row; sorting integers is much faster than sorting rows.
+    # Factorize column by column into one integer code per row, so that rows sort as integers.
     values = np.concatenate([rows, queries])
     codes = np.zeros(len(values), dtype=np.int64)
     for column in values.T:
