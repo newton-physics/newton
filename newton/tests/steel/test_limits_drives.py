@@ -3115,6 +3115,40 @@ def test_equal_distance_bounds_on_a_step_through_the_anchor(test, device):
     test.assertAlmostEqual(distances[-1], cap, delta=1.0e-5)
 
 
+def test_contact_push_can_pass_max_distance_for_a_step(test, device):
+    """Let a sideways contact push carry a capped weight past ``max_distance`` within one step, then return it."""
+    cap, radius, speed = 0.005, 0.01, 4.0
+    builder = _tether_builder(start=tuple(_TETHER_ANCHOR + np.array((cap, 0.0, 0.0))), upper=cap, gravity=False)
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0)
+    builder.add_shape_sphere(0, radius=radius, cfg=cfg)
+    start = _TETHER_ANCHOR + np.array((cap, -2.0 * radius - 1.0e-4, 0.0))
+    striker = builder.add_body(
+        xform=wp.transform(wp.vec3(*start), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3)
+    )
+    builder.add_shape_sphere(striker, radius=radius, cfg=cfg)
+    # The striker's free joint is the last one; its linear velocity comes first.
+    builder.joint_qd[builder.joint_qd_start[-1] + 1] = speed
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, enable_joint_limits=True)
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    distances, sideways_speeds = [], []
+    for _ in range(12):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, _TETHER_DT)
+        state_0, state_1 = state_1, state_0
+        distances.append(float(np.linalg.norm(state_0.joint_q.numpy()[0:3])))
+        sideways_speeds.append(float(state_0.joint_qd.numpy()[1]))
+    # The row's direction comes from the velocity before the solve, so the contact's sideways velocity change u
+    # carries the anchor to sqrt(cap^2 + (dt u)^2), 6.48 mm here; the row then returns it within three steps.
+    test.assertGreater(sideways_speeds[0], 1.0)
+    test.assertAlmostEqual(distances[0], np.hypot(cap, _TETHER_DT * sideways_speeds[0]), delta=1.0e-6)
+    test.assertLess(distances[0], 6.48e-3)
+    test.assertLess(max(distances[3:]), cap + 1.0e-5)
+
+
 def test_zero_max_distance_drift_with_an_offset_com(test, device):
     """Keep the drift of an offset-COM body from a zero ``max_distance`` small, and smaller at a shorter timestep."""
 
@@ -3249,6 +3283,7 @@ for _name, _func in (
         "test_equal_distance_bounds_on_a_step_through_the_anchor",
         test_equal_distance_bounds_on_a_step_through_the_anchor,
     ),
+    ("test_contact_push_can_pass_max_distance_for_a_step", test_contact_push_can_pass_max_distance_for_a_step),
     ("test_zero_max_distance_drift_with_an_offset_com", test_zero_max_distance_drift_with_an_offset_com),
     ("test_kinematic_distance_root_gets_no_limit_rows", test_kinematic_distance_root_gets_no_limit_rows),
     ("test_distance_rows_count_toward_the_capacity_warning", test_distance_rows_count_toward_the_capacity_warning),

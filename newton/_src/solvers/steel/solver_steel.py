@@ -1466,8 +1466,11 @@ class SolverSteel(SolverBase, CouplingInterface):
       child's center of mass, its impulse can also change the anchor's transverse velocity, and
       rotation adds integration error, so the anchor can pass a bound and drift from a zero
       ``max_distance``. A step that would cross the parent anchor with both bounds active can
-      also pass ``max_distance``. A shorter timestep reduces these errors; more iterations of the
-      same rows do not remove them. A kinematic root gets no rows. Any other
+      also pass ``max_distance``. The rows take their direction from the anchor velocity before
+      the solve, so a transverse velocity change ``du`` from contacts or other rows in the same
+      step can carry the anchor up to ``sqrt(max_distance**2 + (dt du)**2)`` from the parent
+      anchor; the following steps return it. A shorter timestep reduces these errors; more
+      iterations of the same rows do not remove them. A kinematic root gets no rows. Any other
       DISTANCE joint raises :class:`NotImplementedError` when
       limits are enabled. Joint limits are not enforced by default. Joint velocity limits
       (:attr:`~newton.Model.joint_velocity_limit`) are enforced as rows when
