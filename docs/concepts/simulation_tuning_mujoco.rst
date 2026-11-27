@@ -157,8 +157,9 @@ automatically. For the hydroelastic opt-in, follow
 before constructing the solver.
 
 For hydroelastic pressure contacts with the default pressure law, tune ``kh``
-for stiffness and ``kd / ke`` for damping. The two shapes' ratios add to give
-the contact relaxation time. Set both shapes' ``kd=0`` for no generated damping.
+for stiffness. With ``HydroelasticSDF.Config(generate_damping=True)``, tune
+``kd / ke`` for damping. The two shapes' ratios add to give the contact relaxation
+time; see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
 The ordinary-contact gain and ``solimp`` recipes below exclude these contacts;
 see :ref:`mujoco-hydroelastic-patch-response` for timestep and impedance limits.
 

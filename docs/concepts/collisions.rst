@@ -2286,21 +2286,43 @@ For a pair, the material slope is the series combination
 
 **Hydroelastic damping:**
 
-The collision pipeline writes damping to :attr:`Contacts.rigid_contact_damping`
+Hydroelastic contacts generate zero damping by default, preserving each
+solver's fallback. MuJoCo selects damping automatically; SemiImplicit and
+Featherstone use the shape damping. Opt in when constructing the pipeline:
+
+.. code-block:: python
+
+    from newton.geometry import HydroelasticSDF
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(generate_damping=True),
+    )
+
+This experimental option applies to all hydroelastic pairs in the pipeline.
+It is a runtime pipeline setting; shape gains can still be authored in USD.
+Rebuild the pipeline to change the option.
+
+When enabled, the pipeline writes damping to :attr:`Contacts.rigid_contact_damping`
 for penetrating hydroelastic contacts. Each shape contributes
 ``tau = max(kd, 0) / ke`` when ``ke > 0``, or zero otherwise. The two times add,
 and each contact receives its stiffness times that sum. Separated speculative
-contacts receive zero damping. This applies to all hydroelastic pairs,
-independent of the solver or MuJoCo's ``solref_mode``.
+contacts receive zero damping. Ordinary contacts are unaffected.
 
 The default ``ke=2500`` and ``kd=100`` give a pair time of 0.08 s. Tune ``kh``
 for stiffness and ``kd / ke`` for damping. Custom pressure laws and reduced
 contacts use their exported stiffness; this does not establish their solver
 convergence or preserve all damping moments after reduction.
 
-Previously, generated contact damping was zero. Set ``kd=0`` on both
-hydroelastic shapes to disable damping. This also disables shape damping in
-solvers that already used it. Solver-specific overrides still apply.
+With MuJoCo's Euler, RK4, implicit, or implicitfast integration and ``refsafe``
+enabled, the adapter caps excessive damping to preserve stiffness when the
+timestep can resolve it. Contacts that are too stiff for the timestep can
+still soften. See :ref:`mujoco-contact-solref-conversion` for details.
+
+SemiImplicit and Featherstone apply the generated damping explicitly. Large
+coefficients can cause excessive rebound unless the timestep is reduced.
+Leaving ``generate_damping=False`` preserves their previous shape-damping
+fallback without changing ``kd``. Solver-specific overrides still apply.
 
 **Custom pressure laws:**
 
@@ -2437,6 +2459,11 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.restitution`
      - :attr:`~Model.shape_material_restitution`
+   * - ``friction_mode``
+     - Friction components the shape's contacts enable
+     - ``SLIDING``
+     - :attr:`~ModelBuilder.ShapeConfig.friction_mode`
+     - :attr:`~Model.shape_material_friction_mode`
    * - ``mu_torsional``
      - Resistance to spinning at contact
      - 0.005
@@ -2462,6 +2489,32 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 .. note::
    :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
    the solver constructor before ``restitution`` takes effect.
+
+:class:`~newton.ShapeFrictionMode` selects which friction components a
+contact applies: ``NONE`` (frictionless), ``SLIDING`` (``mu`` only),
+``SLIDING_TORSIONAL`` (adds ``mu_torsional``), ``SLIDING_ROLLING`` (adds
+``mu_rolling``), or ``SLIDING_TORSIONAL_ROLLING`` (adds both).
+A contact enables the components that either of its shapes enables (in
+:class:`~newton.solvers.SolverMuJoCo`, a higher ``mujoco:geom_priority`` or an
+explicit contact pair decides instead) and then combines the coefficients of
+both shapes by the solver's usual rule, so torsional and rolling coefficients
+take effect only in contacts where a shape's mode enables them. A
+``SLIDING_ROLLING`` ball on a ``SLIDING`` ground, for example, gets rolling
+resistance but no torsional friction, whatever the ground's ``mu_torsional``
+(for :class:`~newton.solvers.SolverMuJoCo`, see :ref:`mujoco-friction-modes`).
+A rigid contact is only frictionless
+when both shapes are ``NONE``. Particles have no mode and count as ``NONE``,
+so particle contacts follow the shape's mode, and torsional and rolling
+friction do not act on them because particles do not rotate
+(:class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction, see
+:ref:`mujoco-flexes`). Solvers and the collision pipeline may read the modes
+only when they are constructed, so changing a mode afterwards is not supported. See :ref:`Contact material support` for the modes each solver
+supports.
+
+Torsional friction matters most for contacts that touch at a single point,
+such as spheres, capsules, and edges, for example on fingertips. Contacts
+with several points or a hydroelastic patch already resist spinning through
+their distributed sliding friction.
 
 Example:
 
@@ -2575,7 +2628,15 @@ respectively.
 
 Extends ``PhysicsMaterialAPI`` with torsional/rolling friction
 (``newton:torsionalFriction``, ``newton:rollingFriction``) and contact response
-attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
+attributes. Authoring a torsional or rolling coefficient raises the
+:attr:`~ModelBuilder.ShapeConfig.friction_mode` of the shapes bound to the
+material to enable that component (``SLIDING_TORSIONAL``, ``SLIDING_ROLLING``,
+or ``SLIDING_TORSIONAL_ROLLING``). Colliders that apply
+``MjcCollisionAPI`` select friction components through ``mjc:condim`` alone.
+A positive PhysX ``physxCollision:minTorsionalPatchRadius`` ``r`` [m] enables
+torsional friction with ``mu_torsional = mu * r``, unless the material authors
+Newton torsional friction; Newton does not model PhysX's depth-scaled
+``physxCollision:torsionalPatchRadius``. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
 fields as follows: ``newton:contactStiffness`` → ``ke``,
 ``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
@@ -2909,6 +2970,9 @@ captured region so it is replayed each frame:
 
         # Each frame:
         wp.capture_launch(graph)
+
+This loop assumes an even ``sim_substeps``. For odd counts, see
+:ref:`performance-odd-substeps`.
 
 .. _Solver Integration:
 

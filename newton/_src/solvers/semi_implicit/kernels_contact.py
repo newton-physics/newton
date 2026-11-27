@@ -11,7 +11,9 @@ from ...geometry.sdf_planar_recovery import (
     empty_mesh_recovery,
     recovery_step_depth,
 )
-from ...sim import Contacts, Model, State
+from ...sim import Contacts, Model, ShapeFrictionMode, State
+from ..contact_gather import contact_side_body, gather_contact_side_wrenches, sort_contact_sides_by_body
+from ..solver import contact_friction_mode
 
 
 @wp.func
@@ -160,6 +162,7 @@ def eval_particle_body_contact(
     shape_material_kd: wp.array[float],
     shape_material_kf: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_material_ka: wp.array[float],
     particle_ke: float,
     particle_kd: float,
@@ -217,6 +220,8 @@ def eval_particle_body_contact(
     kd = 0.5 * (particle_kd + shape_material_kd[shape_index])
     kf = 0.5 * (particle_kf + shape_material_kf[shape_index])
     mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
+    if contact_friction_mode(shape_material_friction_mode, shape_index, -1) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     body_w = wp.spatial_bottom(body_v_s)
     body_v = wp.spatial_top(body_v_s)
@@ -261,10 +266,12 @@ def eval_particle_body_contact(
     wp.atomic_sub(particle_f, particle_index, f_total)
 
     if body_index >= 0:
+        # Select the wrench first so the update is a single atomic call site, which
+        # halves the records that Warp's deterministic mode reserves per thread.
+        wrench = wp.spatial_vector(f_total, wp.cross(r, f_total))
         if body_f_in_world_frame:
-            wp.atomic_sub(body_f, body_index, wp.spatial_vector(f_total, wp.cross(bx, f_total)))
-        else:
-            wp.atomic_add(body_f, body_index, wp.spatial_vector(f_total, wp.cross(r, f_total)))
+            wrench = -wp.spatial_vector(f_total, wp.cross(bx, f_total))
+        wp.atomic_add(body_f, body_index, wrench)
 
 
 @wp.func
@@ -277,6 +284,7 @@ def _eval_body_contact(
     shape_material_kf: wp.array[float],
     shape_material_ka: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_body: wp.array[int],
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
@@ -293,13 +301,18 @@ def _eval_body_contact(
     recovery: MeshRecoveryData,
     contact_generation: wp.array[int],
     force_in_world_frame: bool,
-    body_f: wp.array[wp.spatial_vector],
     tid: int,
 ):
+    """Evaluate one rigid contact's penalty force.
+
+    Returns:
+        The wrenches on body A and body B, and 1 when the contact exerts a force,
+        otherwise 0 with zero wrenches.
+    """
 
     count = contact_count[0]
     if tid >= count:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     # retrieve contact margins, compute average contact material properties
     ke = 0.0  # contact normal force stiffness
@@ -313,7 +326,7 @@ def _eval_body_contact(
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
     body_a = -1
     body_b = -1
     if shape_a >= 0:
@@ -338,6 +351,8 @@ def _eval_body_contact(
         kf /= float(mat_nonzero)
         ka /= float(mat_nonzero)
         mu /= float(mat_nonzero)
+    if contact_friction_mode(shape_material_friction_mode, shape_a, shape_b) == int(ShapeFrictionMode.NONE):
+        mu = 0.0
 
     # per-contact stiffness/damping/friction
     if rigid_contact_stiffness:
@@ -372,12 +387,12 @@ def _eval_body_contact(
     d = wp.dot(n, bx_a - bx_b)
 
     if d >= ka:
-        return
+        return wp.spatial_vector(), wp.spatial_vector(), 0
 
     if recovery.keys.shape[0] > 0:
         slot = active_recovery_contact(recovery, contact_generation[0], shape_a, shape_b, X_wb_a, X_wb_b, -n)
         if slot < -1:
-            return
+            return wp.spatial_vector(), wp.spatial_vector(), 0
         if slot >= 0:
             d = -recovery_step_depth(recovery.contacts[slot].thickness, -d)
 
@@ -435,17 +450,12 @@ def _eval_body_contact(
     # f_total = n * (fn + fd)
     # f_total = n * fn
 
-    if body_a >= 0:
-        if force_in_world_frame:
-            wp.atomic_add(body_f, body_a, wp.spatial_vector(f_total, wp.cross(bx_a, f_total)))
-        else:
-            wp.atomic_sub(body_f, body_a, wp.spatial_vector(f_total, wp.cross(r_a, f_total)))
-
-    if body_b >= 0:
-        if force_in_world_frame:
-            wp.atomic_sub(body_f, body_b, wp.spatial_vector(f_total, wp.cross(bx_b, f_total)))
-        else:
-            wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
+    wrench_a = -wp.spatial_vector(f_total, wp.cross(r_a, f_total))
+    wrench_b = wp.spatial_vector(f_total, wp.cross(r_b, f_total))
+    if force_in_world_frame:
+        wrench_a = wp.spatial_vector(f_total, wp.cross(bx_a, f_total))
+        wrench_b = -wp.spatial_vector(f_total, wp.cross(bx_b, f_total))
+    return wrench_a, wrench_b, 1
 
 
 @wp.kernel
@@ -458,6 +468,7 @@ def eval_body_contact(
     shape_material_kf: wp.array[float],
     shape_material_ka: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_body: wp.array[int],
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
@@ -476,11 +487,12 @@ def eval_body_contact(
     force_in_world_frame: bool,
     body_f: wp.array[wp.spatial_vector],
 ):
+    """Add each contact's wrenches to ``body_f`` with atomics."""
     tid = wp.tid()
     surface_velocity = wp.vec3(0.0)
     if contact_surface_velocity:
         surface_velocity = contact_surface_velocity[tid]
-    _eval_body_contact(
+    wrench_a, wrench_b, active = _eval_body_contact(
         body_q,
         body_qd,
         body_com,
@@ -489,6 +501,7 @@ def eval_body_contact(
         shape_material_kf,
         shape_material_ka,
         shape_material_mu,
+        shape_material_friction_mode,
         shape_body,
         contact_count,
         contact_point0,
@@ -505,9 +518,87 @@ def eval_body_contact(
         recovery,
         contact_generation,
         force_in_world_frame,
-        body_f,
         tid,
     )
+    if active == 0:
+        return
+    body_a = contact_side_body(contact_shape0[tid], shape_body)
+    body_b = contact_side_body(contact_shape1[tid], shape_body)
+    # One atomic call site per body keeps Warp's deterministic record buffers small.
+    if body_a >= 0:
+        wp.atomic_add(body_f, body_a, wrench_a)
+    if body_b >= 0:
+        wp.atomic_add(body_f, body_b, wrench_b)
+
+
+@wp.kernel
+def eval_body_contact_per_contact(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_kf: wp.array[float],
+    shape_material_ka: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_margin0: wp.array[float],
+    contact_margin1: wp.array[float],
+    rigid_contact_stiffness: wp.array[float],
+    rigid_contact_damping: wp.array[float],
+    rigid_contact_friction_scale: wp.array[float],
+    recovery: MeshRecoveryData,
+    contact_generation: wp.array[int],
+    force_in_world_frame: bool,
+    contact_wrench: wp.array[wp.spatial_vector],
+):
+    """Store each contact's wrenches in its own slots ``2 * tid`` (body A) and ``2 * tid + 1`` (body B).
+
+    :func:`~newton._src.solvers.contact_gather.gather_contact_side_wrenches` sums them per body
+    in a fixed order, so this path needs no atomics.
+    """
+    tid = wp.tid()
+    surface_velocity = wp.vec3(0.0)
+    if contact_surface_velocity:
+        surface_velocity = contact_surface_velocity[tid]
+    wrench_a, wrench_b, _active = _eval_body_contact(
+        body_q,
+        body_qd,
+        body_com,
+        shape_material_ke,
+        shape_material_kd,
+        shape_material_kf,
+        shape_material_ka,
+        shape_material_mu,
+        shape_material_friction_mode,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        surface_velocity,
+        contact_normal,
+        contact_shape0,
+        contact_shape1,
+        contact_margin0,
+        contact_margin1,
+        rigid_contact_stiffness,
+        rigid_contact_damping,
+        rigid_contact_friction_scale,
+        recovery,
+        contact_generation,
+        force_in_world_frame,
+        tid,
+    )
+    contact_wrench[2 * tid] = wrench_a
+    contact_wrench[2 * tid + 1] = wrench_b
 
 
 def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
@@ -560,46 +651,81 @@ def eval_body_contact_forces(
     body_f_out: wp.array | None = None,
     body_q: wp.array | None = None,
     body_qd: wp.array | None = None,
+    deterministic: bool = False,
 ):
-    if contacts is not None and contacts.rigid_contact_max:
-        if body_f_out is None:
-            body_f_out = state.body_f
-        if body_q is None:
-            body_q = state.body_q
-        if body_qd is None:
-            body_qd = state.body_qd
+    """Add rigid-contact penalty wrenches to ``body_f_out``.
+
+    With ``deterministic``, each contact stores its wrenches in its own slots and a
+    gather sums them per body in contact order, so the result does not depend on
+    thread scheduling and no atomics are recorded by Warp's deterministic mode.
+    """
+    if contacts is None or not contacts.rigid_contact_max:
+        return
+    if body_f_out is None:
+        body_f_out = state.body_f
+    if body_q is None:
+        body_q = state.body_q
+    if body_qd is None:
+        body_qd = state.body_qd
+    inputs = [
+        body_q,
+        body_qd,
+        model.body_com,
+        model.shape_material_ke,
+        model.shape_material_kd,
+        model.shape_material_kf,
+        model.shape_material_ka,
+        model.shape_material_mu,
+        model.shape_material_friction_mode,
+        model.shape_body,
+        contacts.rigid_contact_count,
+        contacts.rigid_contact_point0,
+        contacts.rigid_contact_point1,
+        contacts.rigid_contact_surface_velocity,
+        contacts.rigid_contact_normal,
+        contacts.rigid_contact_shape0,
+        contacts.rigid_contact_shape1,
+        contacts.rigid_contact_margin0,
+        contacts.rigid_contact_margin1,
+        contacts.rigid_contact_stiffness,
+        contacts.rigid_contact_damping,
+        contacts.rigid_contact_friction,
+        contacts._mesh_recovery_contacts or empty_mesh_recovery(model.device.alias),
+        contacts.contact_generation,
+        force_in_world_frame,
+    ]
+    if not deterministic or model.body_count == 0:
         wp.launch(
             kernel=eval_body_contact,
             dim=contacts.rigid_contact_max,
-            inputs=[
-                body_q,
-                body_qd,
-                model.body_com,
-                model.shape_material_ke,
-                model.shape_material_kd,
-                model.shape_material_kf,
-                model.shape_material_ka,
-                model.shape_material_mu,
-                model.shape_body,
-                contacts.rigid_contact_count,
-                contacts.rigid_contact_point0,
-                contacts.rigid_contact_point1,
-                contacts.rigid_contact_surface_velocity,
-                contacts.rigid_contact_normal,
-                contacts.rigid_contact_shape0,
-                contacts.rigid_contact_shape1,
-                contacts.rigid_contact_margin0,
-                contacts.rigid_contact_margin1,
-                contacts.rigid_contact_stiffness,
-                contacts.rigid_contact_damping,
-                contacts.rigid_contact_friction,
-                contacts._mesh_recovery_contacts or empty_mesh_recovery(model.device.alias),
-                contacts.contact_generation,
-                force_in_world_frame,
-            ],
+            inputs=inputs,
             outputs=[body_f_out],
             device=model.device,
         )
+        return
+
+    # Keep gradient storage so the gather propagates body_f adjoints back to each contact.
+    contact_wrench = wp.empty(
+        2 * contacts.rigid_contact_max,
+        dtype=wp.spatial_vector,
+        device=model.device,
+        requires_grad=body_f_out.requires_grad,
+    )
+    wp.launch(
+        kernel=eval_body_contact_per_contact,
+        dim=contacts.rigid_contact_max,
+        inputs=inputs,
+        outputs=[contact_wrench],
+        device=model.device,
+    )
+    contact_sides = sort_contact_sides_by_body(model, contacts)
+    wp.launch(
+        kernel=gather_contact_side_wrenches,
+        dim=model.body_count,
+        inputs=[contact_sides.body_start, contact_sides.body_end, contact_sides.sides, contact_wrench],
+        outputs=[body_f_out],
+        device=model.device,
+    )
 
 
 def eval_particle_body_contact_forces(
@@ -634,6 +760,7 @@ def eval_particle_body_contact_forces(
                 model.shape_material_kd,
                 model.shape_material_kf,
                 model.shape_material_mu,
+                model.shape_material_friction_mode,
                 model.shape_material_ka,
                 model.soft_contact_ke,
                 model.soft_contact_kd,

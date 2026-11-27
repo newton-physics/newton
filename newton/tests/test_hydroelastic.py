@@ -1284,6 +1284,7 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
     model.shape_material_ke.assign([1000.0, 2000.0])
     model.shape_material_kd.assign([3.0, 14.0])
     config = HydroelasticSDF.Config(
+        generate_damping=True,
         reduce_contacts=reduce_contacts,
         pre_prune_contacts=reduce_contacts,
         output_contact_surface=True,
@@ -1354,11 +1355,17 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
                 bin_ids = (active_keys >> np.uint64(55)) & np.uint64(0xFF)
                 test.assertTrue(np.all(bin_ids >= 128), "Speculative contacts must use disjoint reduction keys.")
 
+        if expected_distance < 0.0:
+            model.shape_material_kd.zero_()
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            np.testing.assert_array_equal(contacts.rigid_contact_damping.numpy()[:count], 0.0)
+            model.shape_material_kd.assign([3.0, 14.0])
+
 
 def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_contacts):
     """Omit positive-separation hydroelastic contacts when both gaps are zero."""
     model, state, body_b = _build_margin_gap_boxes(device, gaps=(0.0, 0.0))
-    model.shape_material_kd.zero_()
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="explicit",
@@ -2326,7 +2333,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             sdf_narrow_band_range=(-0.1, 0.1),
             gap=0.01,
             kh=kh_val,
-            kd=0.0,  # Keep the original undamped setup for the stiffness check.
             density=0.0,
         )
 
@@ -2383,7 +2389,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_config = HydroelasticSDF.Config(output_contact_surface=True, buffer_fraction=1.0)
+    sdf_config = HydroelasticSDF.Config(output_contact_surface=True, buffer_fraction=1.0, generate_damping=True)
     collision_pipeline = newton.CollisionPipeline(
         model,
         broad_phase="explicit",

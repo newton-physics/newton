@@ -77,6 +77,33 @@ class TestLazySolverImports(unittest.TestCase):
         result = _run_in_fresh_interpreter(code)
         self.assertEqual(result.stdout.strip(), "", f"solver modules imported eagerly: {result.stdout.strip()}")
 
+    def test_import_newton_defers_submodules(self):
+        """Verify that importing newton defers its submodules until first access."""
+        # The core imports newton.config and the implementation of the other submodules itself.
+        deferred = {
+            "actuators": "newton._src.actuators",
+            "controllers": "newton._src.controllers",
+            "ik": "newton._src.sim.ik",
+            "selection": "newton._src.utils.selection",
+            "sensors": "newton._src.sensors",
+            "viewer": "newton._src.viewer",
+        }
+        submodules = (*deferred, "config", "geometry", "math", "solvers", "usd", "utils")
+        code = (
+            "import sys; import newton; "
+            f"deferred = {deferred!r}; submodules = {submodules!r}; "
+            "prefixes = tuple(f'newton.{name}' for name in submodules if name != 'config') + tuple(deferred.values()); "
+            "print(','.join(m for m in sys.modules if m.startswith(prefixes))); "
+            "print(set(submodules) <= set(dir(newton))); "
+            "import newton.viewer; print('newton.selection' in sys.modules); "
+            "print(all(getattr(newton, name) is sys.modules[f'newton.{name}'] for name in submodules))"
+        )
+        loaded, listed, viewer_loads_selection, resolved = _run_in_fresh_interpreter(code).stdout.splitlines()
+        self.assertEqual(loaded, "", f"submodules imported eagerly: {loaded}")
+        self.assertEqual(listed, "True")
+        self.assertEqual(viewer_loads_selection, "False")
+        self.assertEqual(resolved, "True")
+
     def test_public_exports_match_internal_exports(self):
         """Expose the internal solver surface through the public module."""
         self.assertEqual(set(newton.solvers.__all__), set(internal_solvers.__all__) | {"experimental"})

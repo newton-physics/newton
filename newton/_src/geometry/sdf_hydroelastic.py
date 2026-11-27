@@ -385,7 +385,8 @@ class HydroelasticSDF:
             the same traversal grids, used to size refinement buffers.
         shape_material_kh: Hydroelastic stiffness coefficient for each shape.
         shape_material_ke: Shape stiffness [N/m], paired with ``shape_material_kd`` for damping.
-        shape_material_kd: Shape damping [N s/m]. Omitting either array generates zero damping.
+        shape_material_kd: Shape damping [N s/m]. Used when ``config.generate_damping`` is True.
+            Omitting either material array generates zero damping.
         n_shapes: Total number of shapes in the simulation.
         config: Configuration options controlling buffer sizes, contact reduction,
             and other behavior. Defaults to :class:`HydroelasticSDF.Config`.
@@ -519,6 +520,14 @@ class HydroelasticSDF:
         threading-style scenarios like ``nut_bolt_hydro`` where the surface
         bias measurably damps the contact response."""
 
+        generate_damping: bool = False
+        """Whether to generate hydroelastic contact damping from shape ``kd / ke``.
+
+        False preserves each solver's damping fallback. Set this when constructing
+        the pipeline; explicit penalty solvers may need smaller timesteps when enabled.
+        See :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
+        """
+
         def __post_init__(self):
             # NaN fails both bounds (NaN comparisons return False) and lands here too.
             if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
@@ -587,8 +596,8 @@ class HydroelasticSDF:
         self.device = device
 
         self.shape_material_kh = shape_material_kh
-        self.shape_material_ke = shape_material_ke
-        self.shape_material_kd = shape_material_kd
+        self.shape_material_ke = shape_material_ke if config.generate_damping else None
+        self.shape_material_kd = shape_material_kd if config.generate_damping else None
         self.paired_samples = paired_samples
 
         self.n_shapes = n_shapes

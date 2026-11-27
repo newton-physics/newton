@@ -26,6 +26,7 @@ from newton._src.geometry.contact_reduction_global import (
     _make_contact_value_fast,
     _make_preprune_probe_det,
     _unpack_contact_id_det,
+    create_export_marked_contacts_kernel,
     create_export_reduced_contacts_kernel,
     decode_oct,
     encode_oct,
@@ -614,6 +615,7 @@ def test_export_reduced_contacts_kernel(test, device):
 
     # Create the export kernel
     export_kernel = create_export_reduced_contacts_kernel(test_writer)
+    export_marked_kernel = create_export_marked_contacts_kernel(test_writer)
 
     # Store some contacts
     @wp.kernel(module="unique")
@@ -749,7 +751,7 @@ def test_export_reduced_contacts_kernel(test, device):
     # One block must reuse its shared duplicate-bit tile for every active entry.
     total_blocks = 1
 
-    def launch_and_verify():
+    def launch_and_verify(deterministic=0):
         wp.launch_tiled(
             export_kernel,
             dim=total_blocks,
@@ -768,11 +770,18 @@ def test_export_reduced_contacts_kernel(test, device):
                 writer_data,
                 total_blocks,
                 int(not device.is_cpu),
-                0,  # deterministic=0 (fast packing)
+                deterministic,
             ],
             device=device,
             block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
         )
+        if deterministic:
+            wp.launch(
+                export_marked_kernel,
+                dim=total_blocks,
+                inputs=[reducer_data, shape_types, shape_data, shape_gap, writer_data, total_blocks],
+                device=device,
+            )
 
         # ID zero is skipped, leaving five distinct pairs plus one representative
         # from the numerically equivalent winner pair and all seven geometrically
@@ -790,10 +799,11 @@ def test_export_reduced_contacts_kernel(test, device):
         np.testing.assert_array_equal(np.sort(positions[distinct_pair, 0]), np.arange(20.0, 27.0, dtype=np.float32))
 
     launch_and_verify()
-    for _ in range(10):
+    for i in range(10):
         reducer.exported_flags.zero_()
         contact_count_out.zero_()
-        launch_and_verify()
+        # Small contact IDs unpack the same way from fast and deterministic values.
+        launch_and_verify(deterministic=i % 2)
 
 
 def test_key_uniqueness(test, device):

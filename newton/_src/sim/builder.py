@@ -83,7 +83,7 @@ from ..geometry.inertia import (
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
-from ..geometry.types import Heightfield, _normalize_texture_input
+from ..geometry.types import Heightfield, _ConvexSupportData, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
@@ -97,10 +97,12 @@ from .body_variants import (
     _VariantShape,
     _VariantShapeRows,
 )
+from .camera import CAMERA_DEFAULT_VERTICAL_APERTURE, CameraLensType
 from .enums import (
     BodyFlags,
     JointTargetMode,
     JointType,
+    ShapeFrictionMode,
 )
 from .graph_coloring import (
     ColoringAlgorithm,
@@ -459,6 +461,33 @@ def _build_convex_support_acceleration(
         neighbors.extend(sorted(values))
         offsets[vertex + 1] = len(neighbors)
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
+
+
+def _build_convex_support_data(source: Mesh) -> _ConvexSupportData | None:
+    """Pack hull certificates and acceleration tables using mesh-local offsets."""
+    topology = _convex_hull_adjacency(source)
+    adjacent = None
+    flags = 0
+    if topology is not None:
+        adjacent, edges = topology
+        flags = _CONVEX_HULL_VALID
+        # Verified hulls lead the neighbor block with their edge count and faces.
+        edge_block = np.empty(1 + edges.size, dtype=np.int32)
+        edge_block[0] = len(edges)
+        edge_block[1:] = edges.ravel()
+
+    acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
+    if acceleration is None:
+        if topology is None:
+            return None
+        empty = np.empty(0, dtype=np.int32)
+        return _ConvexSupportData(flags, empty, empty, edge_block)
+
+    lut, offsets, neighbors = acceleration
+    if topology is not None:
+        offsets += len(edge_block)
+        neighbors = np.concatenate((edge_block, neighbors))
+    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors)
 
 
 def _build_joint_ancestor(
@@ -1154,7 +1183,8 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m].
 
-        Hydroelastic contacts use ``kd / ke`` as a shape relaxation time;
+        With ``HydroelasticSDF.Config(generate_damping=True)``, hydroelastic
+        contacts use ``kd / ke`` as a shape relaxation time;
         see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
         """
         kf: float = 1000.0
@@ -1196,6 +1226,13 @@ class ModelBuilder:
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
         """The coefficient of rolling friction [m] (resistance to rolling motion)."""
+        friction_mode: ShapeFrictionMode = ShapeFrictionMode.SLIDING
+        """The friction components the shape enables in rigid contacts, see :class:`~newton.ShapeFrictionMode`.
+
+        :attr:`mu_torsional` and :attr:`mu_rolling` only act in contacts whose
+        mode includes them. Solvers and the collision pipeline may read the mode
+        only when they are constructed: in a finalized model, set it before
+        constructing them; changing it afterwards is not supported."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -1343,6 +1380,12 @@ class ModelBuilder:
                         f"mu_static must be >= mu (got mu_static={self.mu_static}, mu={self.mu}). "
                         "Leave mu_static as None for a single friction coefficient."
                     )
+            try:
+                ShapeFrictionMode(self.friction_mode)
+            except ValueError:
+                raise ValueError(
+                    f"friction_mode must be a ShapeFrictionMode value (got {self.friction_mode!r})."
+                ) from None
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
@@ -1640,7 +1683,7 @@ class ModelBuilder:
 
         Built-in string names are also supported (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
-              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
+              ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
               ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
 
         For experimental deformable object types, use ``Model.AttributeFrequency.CURVE``,
@@ -1732,8 +1775,8 @@ class ModelBuilder:
           entities. Keys are ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``,
           ``"joint_coord"``, ``"joint_constraint"``, ``"articulation"``, ``"particle"``,
           ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
-          ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``,
-          ``"constraint_mimic"``, and ``"attachment_particle_body"``.
+          ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``, and
+          ``"attachment_particle_body"``.
         - ``"custom_frequency_offsets"`` (``dict[str, int]``): Destination row counts
           before this copy's custom attributes are merged, keyed by full frequency name
           (for example, ``"mujoco:tendon"``). Missing keys have offset zero.
@@ -2305,6 +2348,8 @@ class ModelBuilder:
         """Torsional friction coefficients accumulated for :attr:`Model.shape_material_mu_torsional`."""
         self.shape_material_mu_rolling: list[float] = []
         """Rolling friction coefficients accumulated for :attr:`Model.shape_material_mu_rolling`."""
+        self.shape_material_friction_mode: list[int] = []
+        """Friction modes accumulated for :attr:`Model.shape_material_friction_mode`."""
         self.shape_material_kh: list[float] = []
         """Hydroelastic stiffness values accumulated for :attr:`Model.shape_material_kh`."""
         self.shape_gap: list[float] = []
@@ -2343,11 +2388,6 @@ class ModelBuilder:
         self._custom_schema_epoch: int = 0
         """Bumped whenever the custom attribute/frequency registry changes; keys the merge-validation cache."""
 
-        self._requested_contact_attributes: set[str] = set()
-        """Optional contact attributes requested via :meth:`request_contact_attributes`."""
-        self._requested_state_attributes: set[str] = set()
-        """Optional state attributes requested via :meth:`request_state_attributes`."""
-
         # particle-body attachments
         self.attachment_particle_body_body: list[int] = []
         """Rigid body indices accumulated for :attr:`Model.attachment_particle_body_body`."""
@@ -2375,6 +2415,28 @@ class ModelBuilder:
         """Spring damping values accumulated for :attr:`Model.spring_damping`."""
         self.spring_control: list[float] = []
         """Spring control activations accumulated for :attr:`Model.spring_control`."""
+
+        # cameras
+        self.camera_label: list[str] = []
+        """Labels accumulated for :attr:`Model.camera_label`."""
+        self.camera_world: list[int] = []
+        """World indices accumulated for :attr:`Model.camera_world`."""
+        self.camera_body: list[int] = []
+        """Parent body indices accumulated for :attr:`Model.camera_body`."""
+        self.camera_transform: list[Transform] = []
+        """Camera mount transforms accumulated for :attr:`Model.camera_transform`."""
+        self.camera_lens_type: list[CameraLensType] = []
+        """Lens types accumulated for :attr:`Model.camera_lens_type`."""
+        self.camera_focal_length: list[float] = []
+        """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`."""
+        self.camera_aperture: list[tuple[float, float]] = []
+        """Apertures [m] accumulated for :attr:`Model.camera_aperture`."""
+        self.camera_aperture_offset: list[tuple[float, float]] = []
+        """Aperture offsets [m] accumulated for :attr:`Model.camera_aperture_offset`."""
+        self.camera_clipping_range: list[tuple[float, float]] = []
+        """Clip ranges [m] accumulated for :attr:`Model.camera_clipping_range`."""
+        self.camera_pixel_aspect_ratio: list[float] = []
+        """Pixel aspect ratios accumulated for :attr:`Model.camera_pixel_aspect_ratio`."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_label: list[str] = []
@@ -2737,22 +2799,6 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # deprecated sparse mimic constraints
-        self.constraint_mimic_joint0: list[int] = []
-        """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
-        self.constraint_mimic_joint1: list[int] = []
-        """Leader joint indices accumulated for :attr:`Model.constraint_mimic_joint1`."""
-        self.constraint_mimic_coef0: list[float] = []
-        """Offset coefficients accumulated for :attr:`Model.constraint_mimic_coef0`."""
-        self.constraint_mimic_coef1: list[float] = []
-        """Scale coefficients accumulated for :attr:`Model.constraint_mimic_coef1`."""
-        self.constraint_mimic_enabled: list[bool] = []
-        """Enabled flags accumulated for :attr:`Model.constraint_mimic_enabled`."""
-        self.constraint_mimic_label: list[str] = []
-        """Mimic constraint labels accumulated for :attr:`Model.constraint_mimic_label`."""
-        self.constraint_mimic_world: list[int] = []
-        """World indices accumulated for :attr:`Model.constraint_mimic_world`."""
-
         # per-world entity start indices
         self.particle_world_start: list[int] = []
         """Per-world particle starts accumulated for :attr:`Model.particle_world_start`."""
@@ -2859,6 +2905,11 @@ class ModelBuilder:
     def _equality_constraint_count(self) -> int:
         """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+
+    @property
+    def camera_count(self) -> int:
+        """Number of declared cameras."""
+        return len(self.camera_label)
 
     @property
     def tendon_count(self) -> int:
@@ -4463,9 +4514,6 @@ class ModelBuilder:
             translated = np.where(tiled >= 0, tiled + offsets, tiled)
             dst.extend(translated.tolist())
 
-        self._requested_contact_attributes.update(builder._requested_contact_attributes)
-        self._requested_state_attributes.update(builder._requested_state_attributes)
-
         attribute_specs.pop("particle_q")
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -4513,6 +4561,18 @@ class ModelBuilder:
                 transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
+
+        # Fixed cameras move with their copy, like static shapes.
+        attribute_specs.pop("camera_transform")
+        camera_transform_start = len(self.camera_transform)
+        self.camera_transform.extend(source_list("camera_transform") * copy_count)
+        if counts["camera"] and len(moved_copies):
+            fixed_cameras = np.flatnonzero(np.asarray(builder.camera_body, dtype=np.int64) == -1)
+            if len(fixed_cameras):
+                source = pack_transforms([builder.camera_transform[camera] for camera in fixed_cameras.tolist()])
+                transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
+                targets = camera_transform_start + moved_copies[:, None] * counts["camera"] + fixed_cameras[None]
+                store_transform_rows(self.camera_transform, targets.ravel(), transformed.reshape(-1, 7))
 
         # World guides carry their own frame; body-local guides follow the placed body.
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
@@ -4810,8 +4870,6 @@ class ModelBuilder:
             count = getattr(builder, count_attr, None)
             if count is not None:
                 counts[key] = count
-            elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
-                counts[key] = len(builder.constraint_mimic_joint0)
             elif key in cls._BUILDER_GROUP_REFERENCES:
                 counts[key] = len(getattr(builder, f"{key}_label"))
         return counts
@@ -5335,6 +5393,7 @@ class ModelBuilder:
         bodies_follow_joint_ordering: bool = True,
         skip_mesh_approximation: bool = False,
         load_sites: bool = True,
+        load_cameras: bool = True,
         load_visual_shapes: bool = True,
         load_static_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
@@ -5346,6 +5405,7 @@ class ModelBuilder:
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
+        legacy_ignore_paths: bool = False,
         return_deformable_results: bool = False,
         allow_unsafe_torch_checkpoints: bool = False,
     ) -> dict[str, Any]:
@@ -5436,17 +5496,29 @@ class ModelBuilder:
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose: If True, log additional information about the parsed USD file. Default is False.
-            ignore_paths: A list of regular expressions matching prim paths to ignore.
+            ignore_paths: A list of regular expressions matched against the start of each prim path (:func:`re.match`).
+                Rigid bodies and joints are imported as if the matching prims were not on the stage. A joint to an
+                ignored body is dropped, and bodies that lose their connection to the rest of an articulation stay
+                in the model with their own base joint, chosen by ``floating`` and ``base_joint`` as for any body
+                without a joint. Add their paths to ``ignore_paths`` to drop them as well.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path: The USD path to import, defaults to "/". Bound physics materials
                 outside this subtree are resolved without importing unrelated bodies
                 or shapes.
-            joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
+            joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD; an articulation that is split into several parts lists its joints part by part, the part attached to the world first. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+            load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
+                (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
+                ancestor or fixed in the world. A camera rendered by one ``UsdRender.Product`` has its aperture
+                conformed to the product's image format and takes its pixel aspect ratio (the resolution
+                itself stays with the sensor); a camera rendered by several products with different image
+                formats keeps its authored aperture with square pixels. An unauthored ``clippingRange`` uses the USD fallback of ``(1, 1000000)`` scene
+                units, a 1 m near plane in meter-scale stages. Orthographic cameras are skipped and logged.
+                Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
                 Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
             load_static_visual_shapes: If True, supported visual-only geometry outside
@@ -5460,12 +5532,12 @@ class ModelBuilder:
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
                 colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the scene's ``mjc:flag:filterparent``, which sets ``collision_filter_parent`` on imported joints that do not author ``physics:collisionEnabled``, is then ignored as well. Default is True.
-            convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
-                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
-                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+            convert_mjc_equality_constraints: Whether MuJoCo CONNECT and WELD equality schemas should be converted to
+                Newton loop joints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld becomes a FIXED
+                loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds and MuJoCo
+                welds" in the articulation docs). If False, they are preserved only in the
                 ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
-                ``model.mujoco.equality_constraint_*``.
+                ``model.mujoco.equality_constraint_*``. Joint equalities are always preserved this way.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -5490,6 +5562,19 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
+            legacy_ignore_paths: Temporary migration option. If True, an ``ignore_paths`` match that cuts an
+                articulation is handled as in earlier releases: a joint to a body ignored by
+                a path without ``.*`` is attached to the world instead of being dropped, and with
+                ``bodies_follow_joint_ordering=True`` a body left without joints is not imported when its
+                articulation keeps other joints. With ``bodies_follow_joint_ordering=False`` such a body is
+                imported in an articulation labeled like the articulation root, without the root's custom
+                attributes, instead of one labeled with the body path. Defaults to False.
+
+                .. deprecated:: 1.9
+                    Enabling this temporary flag emits a :class:`~newton.NewtonDeprecationWarning`. Add the bodies
+                    that should be dropped to ``ignore_paths``, and use ``floating=False`` or ``base_joint`` to
+                    attach the remaining bodies to the world.
+
             return_deformable_results: If True, include the experimental deformable entries in the
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -5578,6 +5663,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_camera_map"``
+                  - Mapping from prim path (str) of an imported ``UsdGeom.Camera`` to the respective camera index in :class:`~newton.ModelBuilder`
                 * - ``"path_particle_map"``
                   - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
@@ -5645,6 +5732,7 @@ class ModelBuilder:
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             skip_mesh_approximation=skip_mesh_approximation,
             load_sites=load_sites,
+            load_cameras=load_cameras,
             load_visual_shapes=load_visual_shapes,
             load_static_visual_shapes=load_static_visual_shapes,
             hide_collision_shapes=hide_collision_shapes,
@@ -5656,6 +5744,7 @@ class ModelBuilder:
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
+            legacy_ignore_paths=legacy_ignore_paths,
             return_deformable_results=return_deformable_results,
             allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints,
         )
@@ -5674,6 +5763,7 @@ class ModelBuilder:
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
         parse_sites: bool = True,
+        parse_cameras: bool = True,
         parse_visuals: bool = True,
         parse_mujoco_options: bool = True,
         up_axis: AxisType = Axis.Z,
@@ -5799,11 +5889,16 @@ class ModelBuilder:
             parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+            parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
+                :meth:`~newton.ModelBuilder.add_camera`). Tracking cameras (``track``, ``trackcom``,
+                ``targetbody``, ``targetbodycom``) are imported as fixed mounts on their body, which match
+                MuJoCo only at the initial pose, and are logged at debug level. Orthographic cameras are
+                skipped and logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
-            ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
-            ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
+            ignore_names: A list of regular expressions. Geoms and sites with a name matching one of the regular expressions will be ignored.
+            ignore_classes: A list of regular expressions. Geoms and sites with a ``class`` matching one of the regular expressions will be ignored, as will bodies with a matching ``childclass`` and everything nested in them.
             visual_classes: A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
             collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
             no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
@@ -5818,14 +5913,12 @@ class ModelBuilder:
             collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             verbose: If True, log additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
-            convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
-                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
-                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+            convert_mjc_equality_constraints: Whether MuJoCo CONNECT and WELD equality constraints should be converted to
+                Newton loop joints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld becomes a FIXED
+                loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds and MuJoCo
+                welds" in the articulation docs). If False, they are preserved only in the
                 ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
-                ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
-                joint (such as joints sharing a body) are preserved this way even when True, with a
-                :class:`~newton.NewtonWarning`; only SolverMuJoCo enforces them.
+                ``model.mujoco.equality_constraint_*``. Joint equalities are always preserved this way.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
                 Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
                 an identity rest orientation. Default is False.
@@ -5870,6 +5963,7 @@ class ModelBuilder:
             parse_visuals_as_colliders=parse_visuals_as_colliders,
             parse_meshes=parse_meshes,
             parse_sites=parse_sites,
+            parse_cameras=parse_cameras,
             parse_visuals=parse_visuals,
             parse_mujoco_options=parse_mujoco_options,
             up_axis=up_axis,
@@ -6501,8 +6595,6 @@ class ModelBuilder:
 
                     if target_kind == 1:
                         return target + entity_offsets["joint"]
-                    if target_kind == 2:
-                        return target + entity_offsets["constraint_mimic"]
                     return value
 
                 def transform_value(
@@ -6984,8 +7076,9 @@ class ModelBuilder:
 
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
-        collision group, and filter pairs, so the i-th colliders of all variants must share a
-        collision group. An
+        collision group, friction mode, and filter pairs, so the i-th colliders of all variants must
+        share a collision group and a :attr:`~ShapeConfig.friction_mode`, as must shapes that
+        collide with particles only. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
@@ -7011,7 +7104,7 @@ class ModelBuilder:
         Raises:
             IndexError: If ``body`` or ``initial`` is out of range.
             ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
-                colliders held by the same row have different collision groups, a shape custom
+                colliders held by the same row have different collision groups or friction modes, a shape custom
                 attribute is declared differently than here or in another variant, shapes of a later
                 world or trailing global shapes were added after ``body``'s world, or a variant
                 builder is this builder, declares variants itself, uses a different up axis, does
@@ -7076,6 +7169,7 @@ class ModelBuilder:
             for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
             self.shape_flags[shape] = flags
+            self.shape_material_friction_mode[shape] = row.friction_mode
             self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(shape, body)
@@ -8544,78 +8638,6 @@ class ModelBuilder:
         self.joint_mimic_joint[joint] = reference_joint
         self.joint_mimic_coeffs[joint] = (offset, multiplier)
 
-    def add_constraint_mimic(
-        self,
-        joint0: int,
-        joint1: int,
-        coef0: float = 0.0,
-        coef1: float = 1.0,
-        enabled: bool = True,
-        label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a mimic constraint to the model.
-
-        .. deprecated:: 1.7
-            Use :meth:`set_joint_mimic` for joints with matching dimensions.
-            Mimic metadata is now stored per joint rather than as a separate
-            constraint.
-
-        A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
-        following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
-        multi-DOF joints are supported. For multi-DOF joints, the mimic behavior is
-        applied equally to all degrees of freedom.
-
-        Args:
-            joint0: Index of the follower joint (the one being constrained)
-            joint1: Index of the leader joint (the one being mimicked)
-            coef0: Offset added after scaling
-            coef1: Scale factor applied to joint1's position/angle
-            enabled: Whether constraint is active
-            label: Optional constraint label
-            custom_attributes: Custom attributes to set on the constraint
-
-        Returns:
-            Constraint index
-        """
-        warnings.warn(
-            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
-            "use set_joint_mimic() for joints with matching dimensions instead.",
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        joint_count = self.joint_count
-        if joint0 < 0 or joint0 >= joint_count:
-            raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
-        if joint1 < 0 or joint1 >= joint_count:
-            raise ValueError(f"Invalid leader joint index {joint1}; expected 0..{joint_count - 1}")
-        if self.joint_world[joint0] != self.current_world or self.joint_world[joint1] != self.current_world:
-            raise ValueError(
-                "Mimic constraint joints must belong to the current world. "
-                f"joint0_world={self.joint_world[joint0]}, joint1_world={self.joint_world[joint1]}, "
-                f"current_world={self.current_world}."
-            )
-
-        self.constraint_mimic_joint0.append(joint0)
-        self.constraint_mimic_joint1.append(joint1)
-        self.constraint_mimic_coef0.append(coef0)
-        self.constraint_mimic_coef1.append(coef1)
-        self.constraint_mimic_enabled.append(enabled)
-        self.constraint_mimic_label.append(label or "")
-        self.constraint_mimic_world.append(self.current_world)
-
-        constraint_idx = len(self.constraint_mimic_joint0) - 1
-
-        # Process custom attributes
-        if custom_attributes:
-            self._process_custom_attributes(
-                entity_index=constraint_idx,
-                custom_attrs=custom_attributes,
-                expected_frequency=Model.AttributeFrequency.CONSTRAINT_MIMIC,
-            )
-
-        return constraint_idx
-
     # endregion
 
     def plot_articulation(
@@ -9626,25 +9648,6 @@ class ModelBuilder:
                     enabled_values.append(None)
                 enabled_values[i] = False
 
-        # Remap mimic constraint joint indices
-        for i in range(len(self.constraint_mimic_joint0)):
-            old_joint0 = self.constraint_mimic_joint0[i]
-            old_joint1 = self.constraint_mimic_joint1[i]
-
-            if old_joint0 in joint_remap:
-                self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
-            elif old_joint0 != -1:
-                if verbose:
-                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint0)
-                self.constraint_mimic_enabled[i] = False
-
-            if old_joint1 in joint_remap:
-                self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
-            elif old_joint1 != -1:
-                if verbose:
-                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint1)
-                self.constraint_mimic_enabled[i] = False
-
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
         target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
         if target_kind_attr is not None and target_attr is not None and target_attr.values:
@@ -9670,9 +9673,6 @@ class ModelBuilder:
                     else:
                         target_attr.values[eq_idx] = -1
                         target_kind_attr.values[eq_idx] = 0
-                elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
-                    target_attr.values[eq_idx] = -1
-                    target_kind_attr.values[eq_idx] = 0
 
         # Remap particle-body attachments onto the reindexed bodies. When the anchored body was
         # merged into its parent, the local anchor must be re-expressed in the surviving parent's
@@ -9684,6 +9684,15 @@ class ModelBuilder:
                 self.attachment_particle_body_body_point[i] = wp.transform_point(
                     merge_xform, self.attachment_particle_body_body_point[i]
                 )
+
+        # Remap cameras like shapes: a camera on a merged body moves to the surviving parent (or the
+        # world) with its mount re-expressed in that frame.
+        for camera, old_body in enumerate(self.camera_body):
+            if old_body in body_merged_parent:
+                self.camera_transform[camera] = body_merged_transform[old_body] * self.camera_transform[camera]
+                self.camera_body[camera] = body_remap[body_merged_parent[old_body]]
+            else:
+                self.camera_body[camera] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -10012,6 +10021,7 @@ class ModelBuilder:
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
+        self.shape_material_friction_mode.append(int(cfg.friction_mode))
         self.shape_material_kh.append(cfg.kh)
         self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
         self.shape_collision_group.append(cfg.collision_group)
@@ -10810,6 +10820,140 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    def add_camera(
+        self,
+        body: int,
+        *,
+        xform: Transform | None = None,
+        lens_type: CameraLensType | int = CameraLensType.PINHOLE,
+        fov: float | None = None,
+        focal_length: float | None = None,
+        horizontal_aperture: float | None = None,
+        vertical_aperture: float | None = None,
+        horizontal_aperture_offset: float = 0.0,
+        vertical_aperture_offset: float = 0.0,
+        clipping_range: tuple[float, float] = (0.01, 1.0e6),
+        pixel_aspect_ratio: float = 1.0,
+        label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Add a camera rigidly attached to a body or fixed in the current world.
+
+        The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``
+        right (USD, OpenGL and MuJoCo convention). Cameras added inside a world
+        context belong to that world. Cameras added at global scope (world ``-1``)
+        are rendered once in every world by :class:`~newton.sensors.SensorCamera`,
+        just as global shapes such as the ground appear in every world.
+
+        Args:
+            body: Parent body index (an integer), or ``-1`` for a fixed camera.
+            xform: Camera frame relative to the parent body [m, unitless
+                quaternion]; the world pose for ``body == -1``. Defaults to identity.
+            lens_type: Lens model. :attr:`~newton.CameraLensType.PINHOLE` projects
+                with the intrinsics below. A rendering sensor may replace a camera's
+                rays with its own (see :meth:`~newton.sensors.SensorCamera.set_camera_rays`).
+            fov: Vertical field of view [rad], in ``(0, pi)``, like MJCF ``fovy``
+                (in radians). Mutually exclusive with ``focal_length``. The horizontal
+                extent follows the image aspect ratio. Defaults to 45 degrees when no
+                intrinsics are given.
+            focal_length: Focal length [m]. Requires at least one positive
+                aperture; only its ratio to the aperture affects the projection.
+            horizontal_aperture: Sensor width [m]. ``None`` or 0 derives it from the
+                vertical aperture and the image aspect ratio.
+            vertical_aperture: Sensor height [m]. ``None`` or 0 derives it from the
+                horizontal aperture and the image aspect ratio. When both apertures
+                are set and the image aspect ratio differs, the aperture is expanded
+                to it, like USD's default ``expandAperture`` conform policy.
+            horizontal_aperture_offset: Horizontal principal-point offset [m].
+            vertical_aperture_offset: Vertical principal-point offset [m].
+            clipping_range: Near and far clip distance [m]. For rays projected
+                from the camera's intrinsics they are depths along the camera's ``-Z``
+                axis (planar clipping, as in USD and MJCF); for rays a sensor gives
+                the camera explicitly they are distances along each ray. Hits outside
+                the range are misses.
+            pixel_aspect_ratio: Pixel width over pixel height [unitless]; 1 for
+                square pixels. The image resolution is chosen by the sensor that
+                renders the camera.
+            label: Unique label; defaults to ``camera_{index}``.
+            custom_attributes: Values of declared ``CAMERA``-frequency custom
+                attributes.
+
+        Returns:
+            The camera index.
+        """
+        if not self._is_integer_scalar(body):
+            raise TypeError(f"Camera body must be an integer index, got {type(body).__name__}")
+        body = int(body)
+        if body < -1 or body >= self.body_count:
+            raise ValueError(f"Camera body {body} is out of range for a builder with {self.body_count} bodies")
+        lens_type = CameraLensType(lens_type)
+
+        if fov is not None and focal_length is not None:
+            raise ValueError("fov and focal_length are mutually exclusive")
+        if focal_length is None:
+            if horizontal_aperture is not None or vertical_aperture is not None:
+                raise ValueError("Apertures require focal_length")
+            fov = math.radians(45.0) if fov is None else float(fov)
+            if not 0.0 < fov < math.pi:
+                raise ValueError(f"fov must be in (0, pi) radians, got {fov}")
+            vertical = CAMERA_DEFAULT_VERTICAL_APERTURE
+            horizontal = 0.0
+            focal_length = 0.5 * vertical / math.tan(0.5 * fov)
+        else:
+            focal_length = float(focal_length)
+            horizontal = float(horizontal_aperture or 0.0)
+            vertical = float(vertical_aperture or 0.0)
+            if focal_length <= 0.0:
+                raise ValueError("focal_length must be positive")
+            if horizontal < 0.0 or vertical < 0.0 or (horizontal == 0.0 and vertical == 0.0):
+                raise ValueError("Apertures must be non-negative and at least one must be positive")
+
+        camera_xform = wp.transform() if xform is None else wp.transform(*xform)
+        aperture_offset = (float(horizontal_aperture_offset), float(vertical_aperture_offset))
+        near, far = (float(v) for v in clipping_range)
+        pixel_aspect_ratio = float(pixel_aspect_ratio)
+        if not pixel_aspect_ratio > 0.0:
+            raise ValueError(f"pixel_aspect_ratio must be positive, got {pixel_aspect_ratio}")
+        # Camera data is stored as float32: reject values that would overflow or underflow there.
+        float32_max = float(np.finfo(np.float32).max)
+        values = (focal_length, horizontal, vertical, *aperture_offset, near, far, pixel_aspect_ratio)
+        if not all(math.isfinite(v) and abs(v) <= float32_max for v in values):
+            raise ValueError("Camera intrinsics and clipping_range must be finite float32 values")
+        if any(v > 0.0 and np.float32(v) == 0.0 for v in (focal_length, horizontal, vertical, pixel_aspect_ratio)):
+            raise ValueError("Camera focal length, apertures and pixel aspect ratio are too small for float32")
+        if not 0.0 <= near < far or not np.float32(near) < np.float32(far):
+            raise ValueError(f"clipping_range must satisfy 0 <= near < far, got {clipping_range}")
+
+        # Validate custom attributes before changing any camera array.
+        for name in custom_attributes or {}:
+            attribute = self.custom_attributes.get(name)
+            if attribute is None:
+                raise AttributeError(
+                    f"Custom attribute '{name}' is not defined; declare it with add_custom_attribute()"
+                )
+            if attribute.frequency != Model.AttributeFrequency.CAMERA:
+                frequency = getattr(attribute.frequency, "name", attribute.frequency)
+                raise ValueError(f"Custom attribute '{name}' has frequency {frequency}, expected CAMERA")
+
+        camera = self.camera_count
+        self.camera_label.append(label or f"camera_{camera}")
+        self.camera_world.append(self.body_world[body] if body >= 0 else self.current_world)
+        self.camera_body.append(body)
+        self.camera_transform.append(camera_xform)
+        self.camera_lens_type.append(lens_type)
+        self.camera_focal_length.append(focal_length)
+        self.camera_aperture.append((horizontal, vertical))
+        self.camera_aperture_offset.append(aperture_offset)
+        self.camera_clipping_range.append((near, far))
+        self.camera_pixel_aspect_ratio.append(pixel_aspect_ratio)
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=camera,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.CAMERA,
+            )
+        return camera
+
     def approximate_meshes(
         self,
         method: Literal["coacd", "vhacd", "bounding_sphere", "bounding_box"] | RemeshingMethod = "convex_hull",
@@ -11110,6 +11254,7 @@ class ModelBuilder:
                             restitution=self.shape_material_restitution[shape],
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
+                            friction_mode=ShapeFrictionMode(self.shape_material_friction_mode[shape]),
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
@@ -12277,7 +12422,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Returns:
             The index of the particle in the system.
@@ -12323,7 +12470,9 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+            Set the mass equal to zero to create a fixed particle that is not subject to dynamics.
+            To drive a particle to prescribed positions, set :attr:`~newton.ParticleFlags.KINEMATIC`
+            in ``flags`` and write :attr:`~newton.Control.particle_target_q`.
 
         Raises:
             ValueError: If a particle input or custom attribute list has a mismatched length.
@@ -13033,10 +13182,10 @@ class ModelBuilder:
             cell_y: The width of each cell in the y-direction
             mass: The mass of each particle
             reverse_winding: Flip the winding of the mesh
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
                 The same name is appended to :attr:`surface_label` for this cloth; if None,
@@ -13444,10 +13593,10 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The viscous damping coefficient [Pa·s].
-            fix_left: Make the left-most edge of particles kinematic (fixed in place)
-            fix_right: Make the right-most edge of particles kinematic
-            fix_top: Make the top-most edge of particles kinematic
-            fix_bottom: Make the bottom-most edge of particles kinematic
+            fix_left: Fix the left-most edge of particles in place (zero mass)
+            fix_right: Fix the right-most edge of particles in place (zero mass)
+            fix_top: Fix the top-most edge of particles in place (zero mass)
+            fix_bottom: Fix the bottom-most edge of particles in place (zero mass)
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
@@ -14197,54 +14346,6 @@ class ModelBuilder:
             # FIXED joint (floating=False or floating=None with parent body)
             return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
 
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional contact attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .contacts import Contacts  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced attributes on the finalized model.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        # Local import to avoid adding more module-level dependencies in this large file.
-        from .state import State  # noqa: PLC0415
-
-        warnings.warn(
-            "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
-
     def set_coloring(self, particle_color_groups: Iterable[Iterable[int] | np.ndarray]) -> None:
         """
         Sets coloring information with user-provided coloring.
@@ -14397,7 +14498,6 @@ class ModelBuilder:
                 ("joint_world", self.joint_world),
                 ("articulation_world", self.articulation_world),
                 ("equality_constraint_world", self._eq_list("equality_constraint_world")),
-                ("constraint_mimic_world", self.constraint_mimic_world),
             ]
 
         all_world_indices = set()
@@ -16064,10 +16164,6 @@ class ModelBuilder:
             m._deformable_visual_meshes, m._deformable_visual_skin_batches = self._finalize_deformable_visual_meshes()
             m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
-            # Preserve deprecated extended-attribute requests without emitting a
-            # second warning after the builder request already warned the caller.
-            m._requested_contact_attributes.update(self._requested_contact_attributes)
-            m._requested_state_attributes.update(self._requested_state_attributes)
             m.requires_grad = requires_grad
 
             m.world_count = self.world_count
@@ -16325,37 +16421,26 @@ class ModelBuilder:
                 if isinstance(source, Mesh):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        topology = _convex_hull_adjacency(source)
-                        adjacent = None
-                        hull_flag = 0
-                        # Verified hulls lead their neighbor block with their edge
-                        # count and faces for exact separating-axis certificates.
-                        edge_block = np.zeros(0, dtype=np.int32)
-                        if topology is not None:
-                            adjacent, edges = topology
-                            hull_flag = _CONVEX_HULL_VALID
-                            edge_block = np.concatenate(([len(edges)], edges.ravel())).astype(np.int32)
-                        cached = (-1, -1, neighbor_offset if len(edge_block) else -1, hull_flag)
-                        acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
-                        neighbors = np.zeros(0, dtype=np.int32)
-                        if acceleration is not None:
-                            lut, offsets, neighbors = acceleration
-                            cached = (
-                                lut_offset,
-                                vertex_offset,
-                                neighbor_offset,
-                                _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
-                            )
-                            # Neighbor offsets are relative to the block start.
-                            offsets = offsets + len(edge_block)
-                            support_lut_chunks.append(lut)
-                            support_offset_chunks.append(offsets)
-                            lut_offset += len(lut)
-                            vertex_offset += len(offsets)
-                        if len(edge_block) or len(neighbors):
-                            support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
-                            neighbor_offset += len(support_neighbor_chunks[-1])
-                        support_cache[source_key] = cached
+                        # A deduplicated collision source can be temporary. Keep
+                        # its tables on the original mesh that owns the geometry.
+                        owner = self.shape_source[shape_idx]
+                        tables = owner._convex_support_data
+                        if tables is None:
+                            tables = _build_convex_support_data(source)
+                            owner._convex_support_data = tables
+
+                        packed = (-1, -1, -1, 0)
+                        if tables is not None:
+                            packed = (-1, -1, neighbor_offset, tables.flags)
+                            if tables.lut.size:
+                                packed = (lut_offset, vertex_offset, neighbor_offset, tables.flags)
+                                support_lut_chunks.append(tables.lut)
+                                support_offset_chunks.append(tables.vertex_offsets)
+                                lut_offset += len(tables.lut)
+                                vertex_offset += len(tables.vertex_offsets)
+                            support_neighbor_chunks.append(tables.neighbors)
+                            neighbor_offset += len(tables.neighbors)
+                        support_cache[source_key] = packed
                     shape_support_data[shape_idx] = support_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
@@ -16406,6 +16491,7 @@ class ModelBuilder:
             m.shape_material_mu_rolling = wp.array(
                 self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_friction_mode = wp.array(self.shape_material_friction_mode, dtype=wp.int32)
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
@@ -17058,6 +17144,21 @@ class ModelBuilder:
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
+            # cameras
+
+            m.camera_count = self.camera_count
+            m.camera_label = list(self.camera_label)
+            m.camera_world = wp.array(self.camera_world, dtype=wp.int32)
+            m.camera_body = wp.array(self.camera_body, dtype=wp.int32)
+            m.camera_transform = wp.array(self.camera_transform, dtype=wp.transformf)
+            m.camera_lens_type = wp.array(self.camera_lens_type, dtype=wp.int32)
+            m.camera_focal_length = wp.array(self.camera_focal_length, dtype=wp.float32)
+            m.camera_aperture = wp.array(self.camera_aperture, dtype=wp.vec2f)
+            m.camera_aperture_offset = wp.array(self.camera_aperture_offset, dtype=wp.vec2f)
+            m.camera_clipping_range = wp.array(self.camera_clipping_range, dtype=wp.vec2f)
+            m.camera_pixel_aspect_ratio = wp.array(self.camera_pixel_aspect_ratio, dtype=wp.float32)
+
+            # ---------------------
             # tendons
 
             tendon_count = len(self.tendon_start)
@@ -17408,15 +17509,6 @@ class ModelBuilder:
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
-            # deprecated sparse mimic constraints
-            m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
-            m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
-            m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
-            m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
-            m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
-            m.constraint_mimic_label = self.constraint_mimic_label
-            m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
-
             # ---------------------
             # per-world start indices
             m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
@@ -17450,7 +17542,6 @@ class ModelBuilder:
             m.articulation_count = len(self.articulation_start)
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
-            m.constraint_mimic_count = len(self.constraint_mimic_joint0)
             m.actuator_count = self.actuator_count
 
             m._shape_contact_pair_data = _ShapeContactPairs(
@@ -17930,6 +18021,7 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "shape_material_restitution": wp.float32,
     "shape_material_mu_torsional": wp.float32,
     "shape_material_mu_rolling": wp.float32,
+    "shape_material_friction_mode": wp.int32,
     "shape_material_kh": wp.float32,
     "shape_gap": wp.float32,
     "shape_is_solid": wp.bool,
@@ -18002,12 +18094,6 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_limit_kd": wp.float32,
     "joint_world": wp.int32,
     "articulation_world": wp.int32,
-    "constraint_mimic_joint0": wp.int32,
-    "constraint_mimic_joint1": wp.int32,
-    "constraint_mimic_coef0": wp.float32,
-    "constraint_mimic_coef1": wp.float32,
-    "constraint_mimic_enabled": wp.bool,
-    "constraint_mimic_world": wp.int32,
 }
 """Builder attributes retained as NumPy arrays between replication and finalization."""
 # could be replaced by introspection if Model instance attribute annotations were moved to class level

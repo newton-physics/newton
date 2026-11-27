@@ -70,6 +70,146 @@ def _option_disableflags(mj_model):
 
 class TestImportMjcfBasic(unittest.TestCase):
     @requires(*MUJOCO_MODULES)
+    def test_cameras_match_native_mujoco(self):
+        """Match native MuJoCo camera intrinsics and mounts through frames and moving bodies."""
+        # Angles are in radians; fovy stays in degrees regardless of the compiler setting.
+        mjcf = """
+<mujoco>
+    <compiler angle="radian"/>
+    <default><camera fovy="60" resolution="640 480"/></default>
+    <worldbody>
+        <camera name="fov"/>
+        <camera name="physical" sensorsize="0.036 0.024"
+                focal="0.030 0.020" principal="0.003 -0.002"/>
+        <camera name="pixels" sensorsize="0.036 0.024"
+                focalpixel="500 400" principalpixel="40 -20"/>
+        <frame pos="1 2 3" euler="0 0 1.5707963267948966">
+            <camera name="fixed" pos="0.2 0.3 0.4" euler="0.5235987755982988 0 0"/>
+            <body name="arm" pos="0.4 0.5 0.6" euler="0 0.7853981633974483 0">
+                <joint name="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <frame pos="0.1 0.2 0.3" euler="0 0 0.5235987755982988">
+                    <camera name="mounted" pos="0.2 0 0.1" euler="0.3490658503988659 0 0"/>
+                </frame>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        data = mujoco.MjData(native)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.camera_count, native.ncam)
+        cameras = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.camera_label)}
+
+        for name in ("fov", "physical", "pixels"):
+            with self.subTest(intrinsics=name):
+                index = cameras[name]
+                camera_id = native.camera(name).id
+                focal = builder.camera_focal_length[index]
+                aperture = np.asarray(builder.camera_aperture[index])
+                offset = np.asarray(builder.camera_aperture_offset[index])
+                if name == "fov":
+                    self.assertAlmostEqual(aperture[1] / (2.0 * focal), np.tan(np.pi / 6), places=6)
+                    self.assertEqual(builder.camera_pixel_aspect_ratio[index], 1.0)
+                else:
+                    # Pixel width over height in the image plane at the native resolution.
+                    extent = native.cam_sensorsize[camera_id] / native.cam_intrinsic[camera_id, :2]
+                    pixel = extent / native.cam_resolution[camera_id]
+                    self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[index], pixel[0] / pixel[1], places=6)
+                    # Projection ratios are invariant to Newton's single-focal-length encoding.
+                    np.testing.assert_allclose(
+                        focal / aperture,
+                        native.cam_intrinsic[camera_id, :2] / native.cam_sensorsize[camera_id],
+                        rtol=1e-6,
+                    )
+                    np.testing.assert_allclose(
+                        offset / aperture,
+                        native.cam_intrinsic[camera_id, 2:] / native.cam_sensorsize[camera_id],
+                        atol=1e-7,
+                    )
+
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        for angle in (0.0, 0.7):
+            with self.subTest(angle=angle):
+                data.qpos[:] = angle
+                mujoco.mj_forward(native, data)
+                model.joint_q.assign([angle])
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                bodies = state.body_q.numpy()
+                for name, index in cameras.items():
+                    camera_id = native.camera(name).id
+                    body = builder.camera_body[index]
+                    pose = builder.camera_transform[index]
+                    # Only the camera on the arm moves; world-body cameras are fixed.
+                    self.assertEqual(body >= 0, native.cam_bodyid[camera_id] != 0, msg=name)
+                    if body >= 0:
+                        pose = wp.transform(*bodies[body]) * pose
+                    np.testing.assert_allclose(np.asarray(pose)[:3], data.cam_xpos[camera_id], atol=1e-6)
+                    np.testing.assert_allclose(
+                        np.asarray(wp.quat_to_matrix(wp.transform_get_rotation(pose))).reshape(3, 3),
+                        data.cam_xmat[camera_id].reshape(3, 3),
+                        atol=1e-6,
+                    )
+
+        disabled = newton.ModelBuilder()
+        disabled.add_mjcf(mjcf, parse_cameras=False)
+        self.assertEqual(disabled.camera_count, 0)
+
+    def test_camera_tracking_modes_import_as_fixed_mounts(self):
+        """Import tracking cameras as fixed mounts on their body and report them in one debug record."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="torso">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+            <camera name="chase" mode="track" pos="0 -2 1" xyaxes="1 0 0 0 0.5 1"/>
+            <camera name="look" mode="targetbody" target="hand" pos="0 0 1"/>
+            <camera name="still" pos="0 0 0.5"/>
+            <body name="hand" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="DEBUG") as logs:
+            builder.add_mjcf(mjcf)
+        tracking = [line for line in logs.output if "tracking modes" in line]
+        self.assertTrue(all(line.startswith("DEBUG:") for line in tracking))
+        self.assertEqual(len(tracking), 1)
+        self.assertIn("chase", tracking[0])
+        self.assertIn("look", tracking[0])
+        self.assertNotIn("still", tracking[0])
+        torso = builder.body_label.index(next(label for label in builder.body_label if label.endswith("torso")))
+        self.assertEqual(builder.camera_count, 3)
+        self.assertTrue(all(body == torso for body in builder.camera_body))
+
+    def test_worldbody_frame_camera_mounts_relative_to_parent_body(self):
+        """Mount cameras in worldbody frames relative to parent_body without applying its pose twice."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <frame pos="0 0 1">
+            <camera name="cam" pos="0.5 0 0"/>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        parent = builder.add_body(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.0, 0.0, 0.7)))
+        builder.add_mjcf(mjcf, parent_body=parent, xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()))
+        self.assertEqual(builder.camera_count, 1)
+        self.assertEqual(builder.camera_body[0], parent)
+        np.testing.assert_allclose(np.asarray(builder.camera_transform[0])[:3], [0.5, 0.0, 1.2], atol=1e-5)
+
+    @requires(*MUJOCO_MODULES)
     def test_compiler_balanceinertia_matches_native_mujoco(self):
         """Balance invalid inertia only when the MJCF compiler requests it."""
         body = """
@@ -6554,13 +6694,10 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
 
-        # Verify condim is 6 (inherited from parent)
-        # If inheritance is broken, this will be the default value (usually 3)
-        if hasattr(model, "mujoco") and hasattr(model.mujoco, "condim"):
-            condim = model.mujoco.condim.numpy()[0]
-            self.assertEqual(condim, 6, "condim should be 6 (inherited from parent class 'collision')")
-        else:
-            self.fail("Model should have mujoco.condim attribute")
+        # condim 6 inherited from the parent class 'collision' selects rolling friction
+        self.assertEqual(
+            model.shape_material_friction_mode.numpy()[0], newton.ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
+        )
 
     def test_explicit_class_replaces_childclass(self):
         """Use an explicit class without retaining sibling childclass defaults."""
@@ -6870,7 +7007,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         </body>
     </worldbody>
     <equality>
-        <connect name="pin" body1="link1" body2="link2" anchor="0.1 0.2 0.3"
+        <connect name="pin" body1="base" body2="link2" anchor="0.1 0.2 0.3"
                  solref="0.04 0.7" solimp="0.8 0.9 0.002 0.6 3"/>
         <weld name="lock_to_world" body1="link2" relpose="0.2 0.3 0.4 0.9238795 0 0 0.3826834"
               torquescale="2.5" active="false"
@@ -6887,13 +7024,11 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         legacy_solver = SolverMuJoCo(legacy_model)
 
         converted_builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
-            converted_builder.add_mjcf(mjcf)
+        converted_builder.add_mjcf(mjcf)
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
         self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
-        self.assertEqual(converted_model.constraint_mimic_count, 1)
         np.testing.assert_array_equal(
             converted_model.mujoco.equality_constraint_type.numpy(),
             np.array(
@@ -6910,7 +7045,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
                 [
                     int(MjcEqualityTargetKind.JOINT),
                     int(MjcEqualityTargetKind.JOINT),
-                    int(MjcEqualityTargetKind.MIMIC),
+                    int(MjcEqualityTargetKind.NONE),
                 ]
             ),
         )
@@ -7146,11 +7281,15 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             <body name="link" pos="0 0 1">
                 <joint name="j1" type="hinge" axis="1 0 0"/>
                 <geom type="sphere" size="0.05"/>
+                <body name="tip" pos="0 0 1">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.05"/>
+                </body>
             </body>
         </body>
     </worldbody>
     <equality>
-        <connect name="pin" body1="base" body2="link" anchor="0.1 0.2 0.3"/>
+        <connect name="pin" body1="base" body2="tip" anchor="0.1 0.2 0.3"/>
         <weld name="lock" body1="link" active="false" torquescale="2.5"/>
         <joint name="couple" joint1="j1" joint2="root" polycoef="0.5 1.5 0.1 0.05 0.02"/>
     </equality>
@@ -7158,12 +7297,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
-            parse_mjcf(builder, mjcf)
+        parse_mjcf(builder, mjcf)
         model = builder.finalize()
 
         self.assertEqual(model.mujoco.equality_constraint_count, 3)
-        self.assertEqual(model.constraint_mimic_count, 1)
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "equality_constraint_target_kind"))
         self.assertTrue(hasattr(model.mujoco, "equality_constraint_target"))
@@ -7173,7 +7310,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
                 [
                     int(MjcEqualityTargetKind.JOINT),
                     int(MjcEqualityTargetKind.JOINT),
-                    int(MjcEqualityTargetKind.MIMIC),
+                    int(MjcEqualityTargetKind.NONE),
                 ]
             ),
         )
@@ -8188,10 +8325,8 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
         """Hold joint1 at the constant term, with its solver parameters, when joint2 is omitted."""
         joint = '<joint name="hip-lock" type="hinge" axis="1 0 0"/>'
         equality = '<joint joint1="hip-lock" polycoef="0.3 0 0 0 0" solref="0.01 1" solimp="0.8 0.9 0.01 0.5 2"/>'
-        with self.assertWarnsRegex(newton.NewtonWarning, "stay MuJoCo equality constraints"):
-            native, converted, model = self._convert(self._mjcf(joint, equality))
+        native, converted, _ = self._convert(self._mjcf(joint, equality))
 
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(list(converted.eq_obj2id), [-1])
         self._assert_matches_native(native, converted)
 
@@ -8214,19 +8349,14 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
                             joint_xml,
                             f'<joint joint1="{joint1}" joint2="{joint2}" polycoef="0.05 0.5 0 0 0"/>',
                         )
-                        with self.assertWarnsRegex(newton.NewtonWarning, f"joint1={joint1}"):
-                            native, converted, model = self._convert(mjcf)
-                        self.assertEqual(model.constraint_mimic_count, 0)
+                        native, converted, _ = self._convert(mjcf)
                         self._assert_matches_native(native, converted)
 
     @requires(*MUJOCO_MODULES)
     def test_partial_polycoef_keeps_mujoco_defaults(self):
         """Fill omitted joint polycoef terms from MuJoCo's ``0 1 0 0 0`` default instead of zero."""
-        native, converted, model = self._convert(
-            self._two_body_mjcf('<joint joint1="h1" joint2="h2" polycoef="0.05"/>')
-        )
+        native, converted, _ = self._convert(self._two_body_mjcf('<joint joint1="h1" joint2="h2" polycoef="0.05"/>'))
         np.testing.assert_allclose(native.eq_data[0, :5], [0.05, 1.0, 0.0, 0.0, 0.0])
-        self.assertEqual(model.constraint_mimic_count, 1)
         self._assert_matches_native(native, converted)
 
     @requires(*MUJOCO_MODULES)
@@ -8254,19 +8384,11 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
 </worldbody><equality>{equality}</equality></mujoco>"""
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
-                # One-ended rows stay MuJoCo-only; the quadratic term is beyond a Newton mimic.
-                warning = "higher-order polycoef" if 'joint2="' in equality else "omit joint2"
-                with self.assertWarnsRegex(newton.NewtonWarning, warning):
-                    builder.add_mjcf(mjcf, scale=scale)
+                builder.add_mjcf(mjcf, scale=scale)
                 model = builder.finalize(device="cpu")
                 solver = SolverMuJoCo(model, use_mujoco_cpu=True, kinematic_switchable_roots=False)
                 np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], expected, rtol=1e-6)
-                if 'joint2="' in equality:
-                    self.assertEqual(model.constraint_mimic_count, 1)
-                    np.testing.assert_allclose(model.constraint_mimic_coef0.numpy(), [expected[0]], rtol=1e-6)
-                    np.testing.assert_allclose(model.constraint_mimic_coef1.numpy(), [expected[1]], rtol=1e-6)
-                else:
-                    self.assertEqual(model.constraint_mimic_count, 0)
+                np.testing.assert_allclose(model.mujoco.equality_constraint_polycoef.numpy()[0], expected, rtol=1e-6)
 
     @requires(*MUJOCO_MODULES)
     def test_dof_selector_without_joint_raises(self):
@@ -8390,8 +8512,7 @@ class TestMjcfJointEqualityEndpoints(unittest.TestCase):
             for world in range(2):
                 joint1, joint2 = world1_pair if world == 1 else ("h1", "h2")
                 builder.begin_world()
-                with self.assertWarnsRegex(newton.NewtonWarning, "multi-DoF joint"):
-                    builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
+                builder.add_mjcf(self._mjcf(joints, f'<joint joint1="{joint1}" joint2="{joint2}"/>'))
                 builder.end_world()
             model = builder.finalize()
             with self.subTest(world1_pair=world1_pair):
@@ -10694,30 +10815,32 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         cls.model = cls.builder.finalize()
 
     def test_shape_defaults(self):
-        """SHAPE: condim, priority, solmix, solimp (custom attrs), gap (shape_gap)."""
+        """SHAPE: condim (friction mode), priority, solmix, solimp (custom attrs), gap (shape_gap)."""
         m = self.model.mujoco
+        friction_mode = self.model.shape_material_friction_mode.numpy()
+        mode = newton.ShapeFrictionMode
         wb = "worldbody/b_default"
         idx = self.builder.shape_label.index
 
         g_def = idx(f"{wb}/g_default")
-        self.assertEqual(m.condim.numpy()[g_def], 4)
+        self.assertEqual(friction_mode[g_def], mode.SLIDING_TORSIONAL)
         self.assertEqual(m.geom_priority.numpy()[g_def], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_def]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
         g_cls = idx(f"{wb}/b_class/g_class")
-        self.assertEqual(m.condim.numpy()[g_cls], 6)
+        self.assertEqual(friction_mode[g_cls], mode.SLIDING_TORSIONAL_ROLLING)
         self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_cls]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
 
         g_ovr = idx(f"{wb}/b_class/b_override/g_override")
-        self.assertEqual(m.condim.numpy()[g_ovr], 1)
+        self.assertEqual(friction_mode[g_ovr], mode.NONE)
 
         g_child = idx(f"{wb}/b_class/b_override/b_child/g_child")
-        self.assertEqual(m.condim.numpy()[g_child], 6)
+        self.assertEqual(friction_mode[g_child], mode.SLIDING_TORSIONAL_ROLLING)
         self.assertEqual(m.geom_priority.numpy()[g_child], 99)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)
