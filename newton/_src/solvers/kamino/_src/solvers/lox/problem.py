@@ -31,6 +31,7 @@ from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.joints import compute_joints_data
 from ...kinematics.limits import LimitsKamino
 from ...linalg import prefix_offsets, segment_local_indices
+from ...utils.graph import connected_component_labels
 from .problem_kernels import (
     _accumulate_aligned_joint_wrenches,
     _accumulate_block_structural_effective_mass,
@@ -92,26 +93,6 @@ wp.set_module_options({"enable_backward": False})
 ###
 # Functions
 ###
-
-
-def _connected_component_labels(
-    count: int,
-    bid_a: np.ndarray,
-    bid_b: np.ndarray,
-) -> np.ndarray:
-    """Compute minimum-vertex component labels with vectorized label propagation."""
-    labels = np.arange(count, dtype=np.int32)
-    if bid_a.size == 0:
-        return labels
-    while True:
-        endpoint_labels = np.minimum(labels[bid_a], labels[bid_b])
-        updated = labels.copy()
-        np.minimum.at(updated, bid_a, endpoint_labels)
-        np.minimum.at(updated, bid_b, endpoint_labels)
-        updated = updated[updated]
-        if np.array_equal(updated, labels):
-            return labels
-        labels = updated
 
 
 def _welded_body_paths(
@@ -1134,7 +1115,7 @@ class LOXProblem:
         fixed_joint = tree_joint & (joint_type == int(JointType.FIXED)) & (joint_child >= 0)
         fixed_to_world = joint_child[fixed_joint & (joint_parent < 0)]
         fixed_pair = fixed_joint & (joint_parent >= 0)
-        labels = _connected_component_labels(body_count, joint_parent[fixed_pair], joint_child[fixed_pair])
+        labels = connected_component_labels(body_count, joint_parent[fixed_pair], joint_child[fixed_pair])
         welded_to_world = np.isin(labels, labels[fixed_to_world])
 
         # Bodies welded to a kinematic body move rigidly with the first kinematic body of their island
@@ -1175,7 +1156,7 @@ class LOXProblem:
         if dynamic_np.size == 0:
             return ()
         edges_np = np.asarray(body_edges, dtype=np.int32).reshape((-1, 2))
-        labels = _connected_component_labels(
+        labels = connected_component_labels(
             self.model.size.sum_of_num_bodies,
             edges_np[:, 0],
             edges_np[:, 1],

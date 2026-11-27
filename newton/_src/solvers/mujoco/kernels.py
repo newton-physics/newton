@@ -573,6 +573,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     tid_to_cid: wp.array[wp.int32],
     recovery: MeshRecoveryData,
     world_timestep: wp.array[float],
+    refsafe: bool,
     compact_stale: bool,
 ):
     # nacon_out is scratch storage, initialized to zero by the solver and
@@ -800,12 +801,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
                 contact_ke = wp.max(contact_ke * factor, FLOAT64_EPS)
                 kd = rigid_contact_damping[tid]
+                critical_timeconst = wp.sqrt(1.0 / contact_ke)
+                timeconst = critical_timeconst
                 if kd > 0.0:
                     timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
-                    dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
-                else:
-                    timeconst = wp.sqrt(1.0 / contact_ke)
-                    dampratio = 1.0
+                    if refsafe and timeconst < critical_timeconst:
+                        # Keep the stiffness; cap overdamped damping at the refsafe floor.
+                        dt = world_timestep[worldid % world_timestep.shape[0]]
+                        timeconst = wp.min(wp.max(timeconst, 2.0 * dt), critical_timeconst)
+                dampratio = critical_timeconst / timeconst
                 solref = wp.vec2(timeconst, dampratio)
 
         if recovery_slot >= 0 and dist < margin:

@@ -469,6 +469,8 @@ def _create_shape_aabb_kernel(tight_tetrahedra: bool = False) -> wp.Kernel:
         broad_phase_pair_count: wp.array[wp.int32],
         num_contact_counters: int,
         recovery: MeshRecoveryData,
+        # Shapes to update, one per thread; null updates every shape.
+        shape_subset: wp.array[wp.int32],
         # outputs
         aabb_lower: wp.array[wp.vec3],
         aabb_upper: wp.array[wp.vec3],
@@ -481,11 +483,14 @@ def _create_shape_aabb_kernel(tight_tetrahedra: bool = False) -> wp.Kernel:
         Fuses AABB computation, narrow-phase data preparation, contact counter
         zeroing, and generation bumping into a single kernel launch.
         """
-        shape_id = wp.tid()
+        tid = wp.tid()
+        shape_id = tid
+        if shape_subset:
+            shape_id = shape_subset[tid]
 
         # Clear collision counters and bump the contact generation before
         # either broad or narrow phase can consume their work queues.
-        if shape_id == 0:
+        if tid == 0:
             for c in range(num_contact_counters):
                 contact_counters[c] = 0
             g = contact_generation[0]
@@ -2118,6 +2123,8 @@ class CollisionPipeline:
         self.shape_count = shape_count
         self.device = device
         self._compute_shape_aabbs = compute_shape_aabbs
+        # Shapes whose AABB and narrow-phase data collide() updates; None updates every shape.
+        self._updated_shapes: wp.array[wp.int32] | None = None
         self.reduce_contacts = reduce_contacts
         self._body_pair_reduction = body_pair_reduction
         self.requires_grad = requires_grad
@@ -2202,6 +2209,14 @@ class CollisionPipeline:
                 self.shape_pairs_excluded_count = 0
                 explicit_pairs_host = shape_pairs_filtered.numpy().reshape(-1, 2)
                 self.broad_phase._warn_large_pair_count(explicit_pairs_host, shape_world, model.world_count)
+                # Rigid collision reads only listed shapes; particle contacts can read any shape.
+                if model.particle_count == 0:
+                    pair_shapes = explicit_pairs_host.ravel()
+                    listed = np.zeros(shape_count, dtype=bool)
+                    listed[pair_shapes[(pair_shapes >= 0) & (pair_shapes < shape_count)]] = True
+                    # The kernel's first thread resets the counters, so an empty list keeps the full launch.
+                    if 0 < np.count_nonzero(listed) < shape_count:
+                        self._updated_shapes = wp.array(np.flatnonzero(listed), dtype=wp.int32, device=device)
             elif self.broad_phase_mode == "nxn":
                 if shape_world is None:
                     raise ValueError("model.shape_world is required for broad_phase=NXN")
@@ -3254,13 +3269,13 @@ class CollisionPipeline:
         if check_unit_scale_sdf and self._unit_scale_sdf_rescaled_host.numpy()[0]:
             raise RuntimeError("Rescaled a unit-scale texture SDF shape; set dynamic_shape_scale=True (slower).")
 
-        # Compute AABBs for all shapes, zero counters, bump generation.
+        # Compute shape AABBs, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
         recovery_contacts = self._prepare_mesh_recovery(contacts)
         recovery = recovery_contacts or self._empty_mesh_recovery
         wp.launch(
             kernel=self._compute_shape_aabbs,
-            dim=model.shape_count,
+            dim=model.shape_count if self._updated_shapes is None else self._updated_shapes.shape[0],
             inputs=[
                 state.body_q,
                 model.shape_transform,
@@ -3280,6 +3295,7 @@ class CollisionPipeline:
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
                 recovery,
+                self._updated_shapes,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,

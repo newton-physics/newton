@@ -89,8 +89,8 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTBRCM"`` for its bilateral joint solve. Select ``"LDL"``
-explicitly to use the block-sparse backend, which factors the reordered matrix
+Python SCC configurations default to ``"LLTBRCM"`` for the bilateral joint
+solve. Select ``"LDL"`` explicitly to use the block-sparse factorization of the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
 blocks and symbolic fill, supports CPU and CUDA execution, and reuses its
@@ -220,6 +220,27 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
+Configuring Kamino from USD
+---------------------------
+
+SCC scene settings require ``newton-usd-schemas`` 0.8.0 or newer.
+
+Call :meth:`~newton.solvers.SolverKamino.register_custom_attributes` on the
+:class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
+the ``NewtonKaminoSceneAPI`` and ``NewtonKaminoSccSceneAPI`` settings from a USD
+``PhysicsScene``. ``SolverKamino(model)`` and ``SolverKamino.Config.from_model()``
+apply them: an authored value takes precedence over the keyword fallbacks passed
+to ``from_model()``, and a config passed to the solver is used unchanged. SCC
+tuning is read only when SCC is selected. SCC ignores the scene's
+preconditioning setting.
+
+Applying ``NewtonKaminoSccSceneAPI`` alone selects SCC and supplies the
+``"lltb"`` bilateral factorization fallback. An authored bilateral solver
+token takes precedence, followed by the factorization in any Python ``scc``
+configuration passed to ``from_model()``. Author
+``newton:kamino:scc:bilateral:numericalSolver = "lltbrcm"`` to select the
+same factorization as the Python default.
+
 Constraint recovery and material compliance
 -------------------------------------------
 
@@ -324,9 +345,6 @@ cap to zero.
 This conversion preserves rigid-row recovery. Enabling finite stiffness can
 introduce elastic deflection or bounce, so material gains must suit the intended
 motion rather than reproduce rigid-contact trajectories exactly.
-
-The new settings are configured through Python. USD schema and importer
-extensions for these settings are deferred to a separate change.
 
 The shared recovery/compliance settings currently support PADMM and SCC.
 LOX rejects non-default values for these new settings and retains its existing

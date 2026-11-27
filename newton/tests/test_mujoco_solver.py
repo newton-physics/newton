@@ -115,15 +115,18 @@ class TestMuJoCoSolver(unittest.TestCase):
         isolated_shape_count = 24
         shape_count = clique_size + isolated_shape_count
         builder = newton.ModelBuilder()
-        for i in range(shape_count):
+        for i in range(shape_count - 1):
             body = builder.add_link(label=f"body_{i}")
             builder.add_shape_sphere(body, radius=0.1, label=f"shape_{i}")
             joint = builder.add_joint_free(body)
             builder.add_articulation([joint])
+        builder.add_shape_sphere(-1, radius=0.1, label=f"shape_{shape_count - 1}")
 
         # The 33-shape clique requires 33 colors. Isolating another 24 shapes
         # creates more than 1,024 sparse exclusions, which also forces the
         # legacy fallback when the bounded mask compiler from #3714 is used.
+        # Body excludes cannot carry the filters of the static shape, which
+        # rules out group-only masks as well.
         colliding_pairs = set(itertools.combinations(range(clique_size), 2))
         for pair in itertools.combinations(range(shape_count), 2):
             if pair not in colliding_pairs:
@@ -3516,6 +3519,44 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             warnings.filterwarnings("error", message=r"The selected Newton collision graph.*")
             solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
         self.assertEqual(solver.mj_model.ngeom, 66)
+
+    @requires(*MUJOCO_MODULES)
+    def test_large_graph_keeps_collision_groups_exact(self):
+        """Keep collision groups and body filters exact above the pair-graph shape limit."""
+        builder = newton.ModelBuilder()
+        static_shape = builder.add_shape_sphere(-1, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(collision_group=-1))
+        shapes = []
+        for group, shape_count in ((1, 1), (1, 1), (1, 128), (2, 128)):
+            body = builder.add_body()
+            cfg = newton.ModelBuilder.ShapeConfig(collision_group=group)
+            shapes.append([builder.add_shape_sphere(body, radius=0.1, cfg=cfg) for _ in range(shape_count)])
+        builder.add_shape_collision_filter_pair(shapes[0][0], shapes[1][0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mjm = solver.mj_model
+        self.assertEqual(mjm.ngeom, 259)
+
+        geom_a, geom_b = np.triu_indices(mjm.ngeom, k=1)
+        body_a, body_b = mjm.geom_bodyid[geom_a], mjm.geom_bodyid[geom_b]
+        different_bodies = body_a != body_b
+        contype, conaffinity = mjm.geom_contype, mjm.geom_conaffinity
+        actual = ((contype[geom_a] & conaffinity[geom_b]) | (contype[geom_b] & conaffinity[geom_a])) != 0
+        actual &= ~np.isin((np.minimum(body_a, body_b) << 16) + np.maximum(body_a, body_b), mjm.exclude_signature)
+
+        shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        group = model.shape_collision_group.numpy()[shape]
+        group_a, group_b = group[geom_a], group[geom_b]
+        expected = ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | ((group_a < 0) & (group_a != group_b))
+        expected &= ~model.shape_collision_filter_mask(np.stack((shape[geom_a], shape[geom_b]), axis=1))
+        np.testing.assert_array_equal(actual[different_bodies], expected[different_bodies])
+
+        # No body exclude can carry a filter against a single static shape.
+        builder.add_shape_collision_filter_pair(static_shape, shapes[2][0])
+        model = builder.finalize(device="cpu")
+        self.assertIsNone(
+            SolverMuJoCo._compile_group_collision_masks(model, np.arange(model.shape_count), body_filters=[(0, 1)])
+        )
 
 
 class TestMuJoCoSolverGeomProperties(unittest.TestCase):
@@ -15112,10 +15153,18 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
 
     def test_per_contact_force_gains_use_body_mass_and_impedance(self):
-        """Convert per-contact force gains and retain critical damping when damping is zero."""
-        mass, stiffness = 5.0, 1.0e4
-        for damping in (100.0, 0.0):
-            with self.subTest(damping=damping):
+        """Convert per-contact gains and cap overdamped damping at the timestep floor."""
+        mass = 5.0
+        dt = 1.0 / 240.0
+        for stiffness, damping, saturated in (
+            (1.0e4, 100.0, False),
+            (1.0e4, 0.0, False),
+            (1.0e4, 2.3e4, False),  # Just below the damping cap.
+            (1.0e4, 2.5e4, True),
+            (1.0e4, 1.0e6, True),
+            (2.5e7, 2.5e4, False),  # Underdamped, even though timeconst is below 2*dt.
+        ):
+            with self.subTest(stiffness=stiffness, damping=damping):
                 model, _ = self._build_box_on_plane(mass=mass, ke=3.0e4, kd=300.0)
                 solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
                 pipeline = newton.CollisionPipeline(model)
@@ -15126,7 +15175,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
                 self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
                 contacts.rigid_contact_stiffness.fill_(stiffness)
                 contacts.rigid_contact_damping.fill_(damping)
-                solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+                solver.step(state_in, state_out, model.control(), contacts, dt)
 
                 count = int(solver.mjw_data.nacon.numpy()[0])
                 self.assertGreater(count, 0)
@@ -15134,7 +15183,10 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
                 solref = solver.mjw_data.contact.solref.numpy()[:count]
                 # The free box's translational inverse weight is 1 / mass; the fixed plane contributes zero.
                 for impedance, (timeconst, dampratio) in zip(solimp[:, 1], solref, strict=True):
-                    if damping > 0.0:
+                    if saturated:
+                        expected_timeconst = 2.0 * dt
+                        expected_dampratio = math.sqrt(mass / (stiffness * (1.0 - impedance))) / expected_timeconst
+                    elif damping > 0.0:
                         expected_timeconst = 2.0 * mass / (damping * (1.0 - impedance))
                         expected_dampratio = damping / 2.0 * math.sqrt((1.0 - impedance) / (mass * stiffness))
                     else:
