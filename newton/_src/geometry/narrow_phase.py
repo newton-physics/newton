@@ -1450,6 +1450,25 @@ def create_narrow_phase_kernel_gjk_mpr(
     return narrow_phase_kernel_gjk_mpr
 
 
+@wp.func
+def _encode_separation_hint(partner: int, normal: wp.vec3) -> wp.uint64:
+    """Pack the partner shape and three signed direction components into one atomic entry."""
+    n = wp.normalize(normal)
+    x = wp.uint64(int(wp.round(511.0 * n[0])) + 512)
+    y = wp.uint64(int(wp.round(511.0 * n[1])) + 512)
+    z = wp.uint64(int(wp.round(511.0 * n[2])) + 512)
+    return (wp.uint64(partner) + wp.uint64(1)) << wp.uint64(32) | z << wp.uint64(20) | y << wp.uint64(10) | x
+
+
+@wp.func
+def _decode_separation_axis(entry: wp.uint64) -> wp.vec3:
+    mask = wp.uint64(1023)
+    x = float(int(entry & mask) - 512)
+    y = float(int((entry >> wp.uint64(10)) & mask) - 512)
+    z = float(int((entry >> wp.uint64(20)) & mask) - 512)
+    return wp.normalize(wp.vec3(x, y, z))
+
+
 @lru_cache
 def create_narrow_phase_kernels_gjk_mpr_split(
     external_aabb: bool,
@@ -1465,6 +1484,7 @@ def create_narrow_phase_kernels_gjk_mpr_split(
         post_process_contact = post_process_axial_on_discrete_contact
 
     support_funcs = create_support_map_function(support_func, use_precomputed_center=True)
+    _, support_pair, _ = support_funcs
     solve_mpr = create_solve_mpr(
         support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
     )
@@ -1499,6 +1519,7 @@ def create_narrow_phase_kernels_gjk_mpr_split(
         shape_collision_aabb_upper: wp.array[wp.vec3],
         total_num_threads: int,
         query_results: wp.array[ConvexQueryResult],
+        separation_hints: wp.array[wp.uint64],
         gjk_work_items: wp.array[int],
         gjk_work_count: wp.array[int],
         manifold_work_items: wp.array[int],
@@ -1543,6 +1564,35 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                 if wp.static(accelerated_support):
                     provider.support_lut = support_lut
                     provider.support_vertex_offsets = support_vertex_offsets
+                if (
+                    query.type_a == GeoType.CONVEX_MESH
+                    and query.type_b == GeoType.CONVEX_MESH
+                    and query.shape_a < separation_hints.shape[0]
+                ):
+                    # One hint per first hull survives queue reordering. A
+                    # different partner can overwrite it without changing contacts.
+                    entry = wp.atomic_add(separation_hints, query.shape_a, wp.uint64(0))
+                    threshold = wp.max(query.contact_threshold, 0.0)
+                    if (entry >> wp.uint64(32)) == wp.uint64(query.shape_b) + wp.uint64(1):
+                        axis = _decode_separation_axis(entry)
+                        witness = wp.static(support_pair)(
+                            query.geom_a,
+                            query.geom_b,
+                            axis,
+                            query.relative_orientation_b,
+                            query.relative_position_b,
+                            0.0,
+                            provider,
+                        )
+                        scale = (
+                            coordinate_scale(query.position_a)
+                            + coordinate_scale(query.position_b)
+                            + coordinate_scale(witness.B)
+                            + coordinate_scale(witness.BtoA)
+                        )
+                        if -wp.dot(axis, witness.BtoA) > threshold + GJK_CUTOFF_TOLERANCE * (scale + threshold):
+                            continue
+                        wp.atomic_cas(separation_hints, query.shape_a, entry, wp.uint64(0))
                 collision, point_a, point_b, normal, penetration, seed, witnesses_valid = wp.static(
                     solve_mpr.portal_core
                 )(
@@ -1638,6 +1688,7 @@ def create_narrow_phase_kernels_gjk_mpr_split(
             shape_collision_aabb_upper: wp.array[wp.vec3],
             total_num_threads: int,
             query_results: wp.array[ConvexQueryResult],
+            separation_hints: wp.array[wp.uint64],
             gjk_work_items: wp.array[int],
             gjk_work_count: wp.array[int],
             manifold_work_items: wp.array[int],
@@ -1781,6 +1832,17 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                             0.0,
                             provider,
                         )
+                    if wp.static(not refine_overlap):
+                        if (
+                            query.type_a == GeoType.CONVEX_MESH
+                            and query.type_b == GeoType.CONVEX_MESH
+                            and signed_distance > wp.max(query.contact_threshold, 0.0)
+                            and query.shape_a < separation_hints.shape[0]
+                            and wp.length_sq(normal) > 0.0
+                        ):
+                            wp.atomic_exch(
+                                separation_hints, query.shape_a, _encode_separation_hint(query.shape_b, normal)
+                            )
                     if resolved and signed_distance <= query.contact_threshold:
                         result = ConvexQueryResult()
                         result.point_a = point_a
@@ -3137,6 +3199,10 @@ class NarrowPhase:
                 if self.split_gjk_mpr
                 else None
             )
+            hint_count = shape_aabb_lower.shape[0] if shape_aabb_lower is not None else max_candidate_pairs
+            self._split_separation_hints = (
+                wp.zeros(hint_count, dtype=wp.uint64, device=device) if self.split_gjk_mpr else None
+            )
             self.split_gjk_work_items = (
                 wp.zeros(candidate_pair_work_estimate, dtype=wp.int32, device=device) if self.split_gjk_mpr else None
             )
@@ -3347,6 +3413,7 @@ class NarrowPhase:
                         *common_inputs,
                         self.split_convex_total_num_threads,
                         self.split_query_results,
+                        self._split_separation_hints,
                         self.split_gjk_work_items,
                         self.split_gjk_work_count,
                         self.split_manifold_work_items,
@@ -3361,6 +3428,7 @@ class NarrowPhase:
                     *common_inputs,
                     self.split_convex_total_num_threads,
                     self.split_query_results,
+                    self._split_separation_hints,
                     self.split_gjk_work_items,
                     self.split_gjk_work_count,
                     self.split_manifold_work_items,

@@ -5005,6 +5005,45 @@ add_function_test(
 )
 
 
+def test_split_convex_rechecks_cached_separating_axis(test, device):
+    """Skip repeated separated queries and detect contact when their separation closes."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    mesh = newton.Mesh.create_box(0.65, 0.03, 0.05, duplicate_vertices=False)
+    orientation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7)
+    separation = wp.quat_rotate(orientation, wp.vec3(0.19, 0.083, 0.0))
+    cfg = newton.ModelBuilder.ShapeConfig(gap=0.005, margin=0.0)
+    for position in (wp.vec3(0.0), separation):
+        body = builder.add_body(xform=wp.transform(position, orientation))
+        builder.add_shape_convex_hull(body, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+    broad_phase, narrow_phase = _expert_collision_components(model, split_gjk_mpr=True, has_meshes=False)
+    pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, narrow_phase=narrow_phase)
+    state = model.state()
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(narrow_phase.split_gjk_work_count.numpy()[0]), 1)
+
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
+    wp.capture_launch(capture.graph)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    test.assertEqual(int(narrow_phase.split_gjk_work_count.numpy()[0]), 0)
+
+    pose = state.body_q.numpy()
+    pose[1, :3] = wp.quat_rotate(orientation, wp.vec3(0.19, 0.049, 0.0))
+    state.body_q.assign(pose)
+    wp.capture_launch(capture.graph)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+add_function_test(
+    TestDeterministicPipeline,
+    "test_split_convex_rechecks_cached_separating_axis",
+    test_split_convex_rechecks_cached_separating_axis,
+    devices=get_cuda_test_devices(),
+)
+
+
 def test_split_gjk_mpr_uses_natural_pair_bound(test, device):
     """Keep the fused path when only an oversized pair buffer crosses the split threshold."""
     builder = newton.ModelBuilder()
