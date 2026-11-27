@@ -16759,7 +16759,7 @@ class TestMuJoCoBodyGravityScale(unittest.TestCase):
         body = self._add_free_body(builder, 0.0, 0.0)
         site = builder.add_site(body)
         model = builder.finalize()
-        imu = newton.sensors.SensorIMU(model, sites=[site], request_state_attributes=False)
+        imu = newton.sensors.SensorIMU(model, sites=[site])
         solver = SolverMuJoCo(model)
         observables = solver.observables(kinds=imu.solver_observable_kinds)
         state_0, state_1 = model.state(), model.state()
