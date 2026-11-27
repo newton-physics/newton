@@ -2983,7 +2983,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                         continue
                     if deterministic != 0:
                         # Slots race for a contact and their inlined writers may round differently.
-                        exported_flags[contact_id] = 1
+                        wp.atomic_max(exported_flags, contact_id, 1)
                         continue
                     # The global flag also suppresses repeated winners within
                     # this entry, so no per-entry ID list is needed.
