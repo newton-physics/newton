@@ -313,6 +313,7 @@ def _add_actuator(
     ctrlspec: int | None = None,
     damping: Sequence[float] | None = None,
     armature: float | None = None,
+    label: str | None = None,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -379,9 +380,18 @@ def _add_actuator(
         values["mujoco:actuator_dampingpoly"] = wp.vec2(coefficients[1], coefficients[2])
     if armature is not None:
         values["mujoco:actuator_armature"] = float(armature)
+    if label is not None:
+        values["mujoco:actuator_label"] = label
     # Keep mixed shortcut/general rows dense, while allowing low-level callers
     # to author fields that this shortcut does not manage.
-    for name in ("actuator_ctrlspec", "actuator_damping", "actuator_dampingpoly", "actuator_armature"):
+    for name in (
+        "actuator_ctrlspec",
+        "actuator_damping",
+        "actuator_dampingpoly",
+        "actuator_armature",
+        "actuator_label",
+        "actuator_lengthrange",
+    ):
         key = f"mujoco:{name}"
         if key not in values and key not in (custom_attributes or {}):
             values[key] = builder.custom_attributes[key].default
@@ -415,6 +425,7 @@ def add_actuator_general(
     actdim: int | None = None,
     actearly: bool = False,
     cranklength: float | None = None,
+    label: str | None = None,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -441,6 +452,7 @@ def add_actuator_general(
         actdim: Activation-state dimension, or ``None`` for automatic selection.
         actearly: Whether force uses the next activation state.
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
+        label: Optional actuator label.
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -469,6 +481,7 @@ def add_actuator_general(
         actdim=actdim,
         actearly=actearly,
         cranklength=cranklength,
+        label=label,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
@@ -484,6 +497,7 @@ def add_actuator_motor(
     forcerange: Sequence[float] | None = None,
     forcelimited: bool | int | str = "auto",
     cranklength: float | None = None,
+    label: str | None = None,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -500,6 +514,7 @@ def add_actuator_motor(
         forcerange: Optional actuator force range [N or N·m].
         forcelimited: Force-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
+        label: Optional actuator label.
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -517,6 +532,7 @@ def add_actuator_motor(
         forcerange=forcerange,
         forcelimited=forcelimited,
         cranklength=cranklength,
+        label=label,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
@@ -535,6 +551,7 @@ def add_actuator_position(
     forcerange: Sequence[float] | None = None,
     forcelimited: bool | int | str = "auto",
     cranklength: float | None = None,
+    label: str | None = None,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -554,6 +571,7 @@ def add_actuator_position(
         forcerange: Optional actuator force range [N or N·m].
         forcelimited: Force-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
+        label: Optional actuator label.
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -583,6 +601,7 @@ def add_actuator_position(
         forcerange=forcerange,
         forcelimited=forcelimited,
         cranklength=cranklength,
+        label=label,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
@@ -599,6 +618,7 @@ def add_actuator_velocity(
     forcerange: Sequence[float] | None = None,
     forcelimited: bool | int | str = "auto",
     cranklength: float | None = None,
+    label: str | None = None,
     ctrl: float = 0.0,
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
@@ -616,6 +636,7 @@ def add_actuator_velocity(
         forcerange: Optional actuator force range [N or N·m].
         forcelimited: Force-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
+        label: Optional actuator label.
         ctrl: Initial MuJoCo control value.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
@@ -640,6 +661,7 @@ def add_actuator_velocity(
         forcerange=forcerange,
         forcelimited=forcelimited,
         cranklength=cranklength,
+        label=label,
         ctrl=ctrl,
         custom_attributes=custom_attributes,
     )
