@@ -141,6 +141,10 @@ from .implicit_mpm_solver_kernels import (
 # Newton requires Warp 1.19.
 _WARP_AT_LEAST_1_19 = tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 19)
 
+# Warp 1.17 cannot record the elasticity assembly in a conditional graph node; remove this
+# gate once Newton requires Warp 1.18.
+_WARP_AT_LEAST_1_18 = tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18)
+
 
 def _as_2d_array(array, shape, dtype):
     return wp.array(
@@ -4106,7 +4110,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._assemble_elasticity_system(state_in.mpm.particle_elastic_strain, dt, pic, scratch, inv_cell_volume)
 
         with self._timer("Elasticity"):
-            if self.model.device.is_capturing:
+            if self.model.device.is_capturing and not _WARP_AT_LEAST_1_18:
+                # The graph assembles the system for every step, rigid or compliant.
+                assemble()
+                self._has_compliance = True
+            elif self.model.device.is_capturing:
                 # The rheology solve reuses the device flag to select its kernel variant.
                 wp.capture_if(
                     mpm_model.has_compliant_particles,
