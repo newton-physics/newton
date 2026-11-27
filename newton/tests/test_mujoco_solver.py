@@ -5353,11 +5353,64 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         model = builder.finalize()
         newton.CollisionPipeline(model)
 
-        baseline_solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         solver = SolverMuJoCo(model, use_mujoco_contacts=False)
 
+        from mujoco_warp._src.io import _default_njmax
+
+        # One sphere per world needs fewer rows than MuJoCo Warp's default, so the
+        # global contact capacity of all 64 worlds must not leak into njmax.
         self.assertGreaterEqual(solver.mjw_data.naconmax, model.rigid_contact_max)
-        self.assertEqual(solver.mjw_data.njmax, baseline_solver.mjw_data.njmax)
+        self.assertEqual(solver.mjw_data.njmax, _default_njmax(solver.mj_model, solver.mj_data))
+
+    def test_mujoco_contact_constraints_follow_nconmax(self):
+        """Size default constraint rows from nconmax when MuJoCo finds the contacts."""
+        builder = newton.ModelBuilder()
+        for box_index in range(5):
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.4 * box_index, 0.0, 0.04), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.03, hy=0.03, hz=0.03)
+        builder.add_ground_plane()
+        model = builder.finalize()
+
+        # Condim 3 with a pyramidal cone gives 4 rows per contact.
+        for nconmax in (None, 96):
+            with self.subTest(nconmax=nconmax):
+                solver = SolverMuJoCo(model, use_mujoco_contacts=True, nconmax=nconmax)
+                self.assertGreaterEqual(solver.mjw_data.njmax, solver.mjw_data.naconmax * 4)
+
+        # Boxes that start in contact must not count their initial contact rows
+        # twice: nefc already holds them, so only the non-contact rows are added.
+        resting = newton.ModelBuilder()
+        for box_index in range(5):
+            body = resting.add_body(xform=wp.transform(wp.vec3(0.4 * box_index, 0.0, 0.0295), wp.quat_identity()))
+            resting.add_shape_box(body, hx=0.03, hy=0.03, hz=0.03)
+        resting.add_ground_plane()
+        resting_model = resting.finalize()
+        solver = SolverMuJoCo(resting_model, use_mujoco_contacts=True, nconmax=96)
+        self.assertGreater(solver.mj_data.ncon, 0)
+        from mujoco_warp._src.io import _default_njmax
+
+        non_contact_rows = solver.mj_data.ne + solver.mj_data.nf + solver.mj_data.nl
+        self.assertEqual(
+            solver.mjw_data.njmax,
+            max(_default_njmax(solver.mj_model, solver.mj_data), non_contact_rows + 96 * 4),
+        )
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True, nconmax=96, njmax=300)
+        self.assertEqual(solver.mjw_data.njmax, 300)
+
+        # Five resting boxes make 20 contacts and 80 rows, more than MuJoCo Warp's
+        # default of 64 rows for this scene.
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        # Each step clears the overflow flag, so collect it after every step.
+        overflow = 0
+        for _ in range(60):
+            solver.step(state_0, state_1, control, None, 0.002)
+            state_0, state_1 = state_1, state_0
+            overflow |= int(solver.mjw_data.overflow.numpy()[0])
+
+        self.assertEqual(overflow, 0)
+        self.assertGreater(int(np.max(solver.mjw_data.nefc.numpy())), 64)
 
     def test_sphere_rolls_without_slip_with_newton_contacts(self):
         radius = 0.1
