@@ -580,7 +580,6 @@ class TestMujocoFixedTendon(unittest.TestCase):
         )
         self.assertEqual(int(solver.mj_model.wrap_objid[0]), 0)
 
-
     def test_add_tendon_fixed_preserves_omitted_custom_references_and_enum_world(self):
         ca = newton.ModelBuilder.CustomAttribute
 
