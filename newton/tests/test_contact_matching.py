@@ -1417,7 +1417,8 @@ def test_sticky_opening_within_threshold_replayed(test, device):
                 field: getattr(reference_contacts, f"rigid_contact_{field}").numpy()[:1].copy() for field in fields
             }
             test.assertFalse(
-                np.array_equal(fresh["point0"], previous["point0"]) and np.array_equal(fresh["point1"], previous["point1"]),
+                np.array_equal(fresh["point0"], previous["point0"])
+                and np.array_equal(fresh["point1"], previous["point1"]),
                 "Precondition: the shift must change the fresh witnesses",
             )
 
