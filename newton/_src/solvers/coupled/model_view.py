@@ -348,17 +348,6 @@ class ModelView:
 
         return Model.get_requested_state_attributes(self)
 
-    def _add_requested_state_attributes(
-        self,
-        state: State,
-        requested: list[str],
-        requires_grad: bool = False,
-    ) -> None:
-        """Delegate requested state allocation with this view's counts."""
-        from ...sim import Model  # noqa: PLC0415
-
-        Model._add_requested_state_attributes(self, state, requested, requires_grad=requires_grad)
-
     def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
         """Return an attribute frequency count using this view's overrides."""
         from ...sim import Model  # noqa: PLC0415
@@ -679,10 +668,17 @@ class ModelView:
 
         Args:
             particle_indices: 1-D int array of particle indices to mark.
+
+        Raises:
+            ValueError: If any selected particle sets :attr:`~newton.ParticleFlags.KINEMATIC`.
         """
         parent = object.__getattribute__(self, "_parent")
         if particle_indices.shape[0] == 0:
             return
+
+        flags = self.particle_flags.numpy()[particle_indices.numpy()]
+        if (flags & int(ParticleFlags.KINEMATIC)).any():
+            raise ValueError("ParticleFlags.KINEMATIC particles cannot be marked as coupling proxies.")
 
         particle_flags = self._cow_array("particle_flags")
         wp.launch(

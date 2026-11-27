@@ -207,7 +207,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             ("joint_target_q", flags.NONE),
             # Read only at construction: no flag refreshes them.
             ("shape_type", None),
-            ("mujoco:condim", None),
+            ("shape_material_friction_mode", None),
             ("user:label_id", None),
         ):
             with self.subTest(attribute=name):
@@ -2690,6 +2690,35 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_invalid_friction_mode(self):
+        """Reject friction modes outside ShapeFrictionMode."""
+        for friction_mode in (-1, 2, 4):
+            with self.subTest(friction_mode=friction_mode):
+                cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
+
+                with self.assertRaisesRegex(ValueError, "friction_mode must be a ShapeFrictionMode value"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_friction_mode_propagates_to_model(self):
+        """Carry shape friction modes through add_builder() and replicate() into the model."""
+        mode = newton.ShapeFrictionMode
+        self.assertEqual(newton.ModelBuilder.ShapeConfig().friction_mode, mode.SLIDING)
+
+        source = newton.ModelBuilder()
+        body = source.add_body()
+        source.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE))
+        source.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        source.add_shape_capsule(
+            body, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.SLIDING_TORSIONAL_ROLLING)
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_builder(source)
+        builder.replicate(source, 2)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 7] * 3)
+
     def test_shape_config_rejects_invalid_density(self):
         """Reject negative and non-finite density values."""
         for density in (-1.0, float("nan"), float("inf"), float("-inf")):
@@ -4083,76 +4112,6 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertIn("DFS topological order", str(cm.warning))
 
-    def test_mimic_constraint_programmatic(self):
-        """Test programmatic creation of mimic constraints."""
-        builder = newton.ModelBuilder()
-
-        # Create three links without implicit FREE joints.
-        b0 = builder.add_link()
-        b1 = builder.add_link()
-        b2 = builder.add_link()
-
-        j1 = builder.add_joint_revolute(
-            parent=-1,
-            child=b0,
-            axis=(0, 0, 1),
-            label="j1",
-        )
-        j2 = builder.add_joint_revolute(
-            parent=-1,
-            child=b1,
-            axis=(0, 0, 1),
-            label="j2",
-        )
-        j3 = builder.add_joint_revolute(
-            parent=-1,
-            child=b2,
-            axis=(0, 0, 1),
-            label="j3",
-        )
-        builder.add_articulation([j1])
-        builder.add_articulation([j2])
-        builder.add_articulation([j3])
-
-        # Add mimic constraints
-        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
-            _c1 = builder.add_constraint_mimic(
-                joint0=j2,
-                joint1=j1,
-                coef0=-0.25,
-                coef1=1.5,
-                label="mimic1",
-            )
-        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
-            _c2 = builder.add_constraint_mimic(
-                joint0=j3,
-                joint1=j1,
-                coef0=0.0,
-                coef1=-1.0,
-                enabled=False,
-                label="mimic2",
-            )
-
-        model = builder.finalize()
-
-        self.assertEqual(model.constraint_mimic_count, 2)
-
-        # Check first constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
-        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
-        self.assertEqual(model.constraint_mimic_label[0], "mimic1")
-
-        # Check second constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
-        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
-        self.assertEqual(model.constraint_mimic_label[1], "mimic2")
-
     def test_joint_mimic_metadata_and_evaluation(self):
         """Verify joint-owned mimic metadata evaluates scalar coordinates."""
         builder = newton.ModelBuilder()
@@ -4175,7 +4134,6 @@ class TestModelJoints(unittest.TestCase):
             model.joint_mimic_coeffs.numpy(),
             [(0.0, 1.0), (0.5, 2.0)],
         )
-        self.assertEqual(model.constraint_mimic_count, 0)
 
         state_in = model.state()
         state_out = model.state()

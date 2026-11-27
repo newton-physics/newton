@@ -19,6 +19,7 @@ Newton Physics
    guide/compatibility
    guide/visualization
    guide/diagnostics
+   guide/performance
    guide/tutorials
    Development <guide/development>
    Source Code Guidelines <guide/source_code_guidelines>
@@ -42,6 +43,7 @@ Newton Physics
    Custom Attributes <concepts/custom_attributes>
    Solver Observables <concepts/solver_observables>
    Collisions and Contacts <concepts/collisions>
+   Hydroelastic Contacts Tuning <concepts/hydroelastic_tuning>
    Deterministic Simulation <concepts/determinism>
    Coupled Solvers <concepts/coupling>
    Actuators <concepts/actuators>

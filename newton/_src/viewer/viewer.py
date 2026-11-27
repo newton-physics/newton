@@ -951,7 +951,14 @@ class ViewerBase(ABC):
         else:
             self._visible_worlds = None
         self._build_visible_worlds_mask()
+        prev_gaussian_instances = list(self._gaussian_instances)
         self._rebuild_shapes()
+
+        # Hide Gaussian handles for worlds that are no longer visible.
+        new_gaussian_names = {name for name, *_ in self._gaussian_instances}
+        for name, gaussian, *_ in prev_gaussian_instances:
+            if name not in new_gaussian_names:
+                self.log_gaussian(name, gaussian, hidden=True)
         if self._user_spacing is not None:
             self.set_world_offsets(self._user_spacing)
         else:
@@ -1549,7 +1556,7 @@ class ViewerBase(ABC):
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
             observables: Optional solver observables containing ``contact_f``. If
-                omitted, the deprecated ``contacts.force`` array is used.
+                omitted, contact forces are not drawn.
                 ``contacts`` must be the buffer that produced ``contact_f``
                 (``observables.contacts``); newly allocated forces are zero until the
                 solver updates them. See :ref:`solver_observables`.
@@ -1567,7 +1574,7 @@ class ViewerBase(ABC):
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
 
-        contact_f = observables.contact_f if observables is not None else contacts.force
+        contact_f = observables.contact_f if observables is not None else None
         if observables is not None:
             if observables.model is not self.model:
                 raise ValueError("Solver observables must belong to the viewer's model.")
@@ -3021,7 +3028,7 @@ class ViewerBase(ABC):
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
                     xform = transform_from_array(shape_transform[s])
-                    gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
+                    gname = self._qualify(f"/model/gaussians/gaussian_{s}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
                     )

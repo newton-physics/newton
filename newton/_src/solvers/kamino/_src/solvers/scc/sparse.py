@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
 import warp as wp
 
 from ...core.data import DataKamino
@@ -127,6 +128,7 @@ class SparseSCCPath:
         limits: LimitsKamino | None,
         contacts: ContactsKamino | None,
         jacobians: SparseSystemJacobians | None,
+        body_color_nodes: wp.array[wp.int32],
         bilateral_solver,
         use_schur_complement: bool,
         max_alternating_iterations: int,
@@ -160,6 +162,13 @@ class SparseSCCPath:
         self.all_worlds_mask = all_worlds_mask
         self.should_solve_bilateral_after_block = should_solve_bilateral_after_block
         self.set_bilateral_active_dim = set_bilateral_active_dim
+        # Since the cooperative kernel sweeps groups serially, coloring only
+        # sets the sweep order there. Body coloring is kept for this case, since
+        # coloring taking into account the articulation seems to lead to slower
+        # convergence.
+        if _can_use_cooperative_articulation(self):
+            body_color_nodes = wp.array(np.arange(body_color_nodes.shape[0], dtype=np.int32), device=device)
+        self.body_color_nodes = body_color_nodes
         self.bilateral_nzb_pairs: (
             tuple[
                 wp.array[wp.int32],
@@ -436,6 +445,7 @@ def _prepare_sparse_inequality_pgs(path: SparseSCCPath, problem: DualProblem) ->
                 problem.data.nc,
                 problem.data.iio,
                 state.inequality_bodies,
+                path.body_color_nodes,
                 state.inequality_body_color_masks,
                 state.inequality_colors,
                 state.inequality_num_colors,
@@ -506,6 +516,7 @@ def _prepare_sparse_inequality_pgs(path: SparseSCCPath, problem: DualProblem) ->
             sorter.sorted_to_unsorted_map,
             contacts.cid,
             state.inequality_bodies,
+            path.body_color_nodes,
             state.inequality_body_color_masks,
             path.contact_group_starts,
             state.inequality_colors,

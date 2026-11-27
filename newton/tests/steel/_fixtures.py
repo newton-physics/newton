@@ -330,10 +330,15 @@ def select_colored_variant(test, solver, variant):
 def set_torsion_radius(model, radius, shapes=None):
     """Set ``steel:min_torsional_patch_radius`` [m] of ``shapes`` (every shape for ``None``), zero elsewhere.
 
-    ``radius`` may also be one value per selected shape.
+    ``radius`` may also be one value per selected shape. Shapes with a positive radius get the
+    torsional friction mode it needs, the others sliding friction.
     """
     radii = np.zeros(model.shape_count, dtype=np.float32)
     radii[slice(None) if shapes is None else list(shapes)] = radius
+    mode = newton.ShapeFrictionMode
+    model.shape_material_friction_mode.assign(
+        np.where(radii > 0.0, mode.SLIDING_TORSIONAL, mode.SLIDING).astype(np.int32)
+    )
     namespace = getattr(model, "steel", None)
     if namespace is not None and getattr(namespace, "min_torsional_patch_radius", None) is not None:
         namespace.min_torsional_patch_radius.assign(radii)
@@ -574,6 +579,9 @@ def _patch_fixture(
         shape_gap=wp.zeros(len(shape_bodies), dtype=float, device=device),
         shape_is_solid=wp.ones(len(shape_bodies), dtype=bool, device=device),
         shape_material_mu=wp.array(materials, dtype=float, device=device),
+        shape_material_friction_mode=wp.full(
+            len(shape_bodies), int(newton.ShapeFrictionMode.SLIDING), dtype=wp.int32, device=device
+        ),
     )
     state = SimpleNamespace(body_q=wp.array([wp.transform_identity()] * body_count, dtype=wp.transform, device=device))
     contacts = SimpleNamespace(
@@ -1041,11 +1049,12 @@ def _build_mixed_response_model(
     return replicated.finalize(device=device)
 
 
-def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
+def _build_two_revolute_chain(coef0: float, coef1: float, equality: bool = False, enabled: bool = True):
     """Build a fixed-base chain of two revolute Z-joints with a mimic between them.
 
     The leader joint is position-driven; the follower joint has no drive and no spring,
-    so any tracking it does comes from the mimic row alone.
+    so any tracking it does comes from the mimic row alone. With ``equality``, the coupling
+    is a MuJoCo joint equality row (``enabled`` or not) instead of a joint-owned mimic.
     """
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
     # add_link (not add_body): add_body wraps each body in its own free-joint articulation.
@@ -1072,10 +1081,8 @@ def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
     b.joint_target_kd[0] = 5.0
     b.joint_target_mode[0] = int(newton.JointTargetMode.POSITION)
     # follower: q_follower = coef0 + coef1 * q_leader
-    if legacy:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            b.add_constraint_mimic(joint0=j_follower, joint1=j_leader, coef0=coef0, coef1=coef1)
+    if equality:
+        newton.solvers.mujoco.add_equality_joint(b, j_follower, j_leader, polycoef=(coef0, coef1), enabled=enabled)
     else:
         b.set_joint_mimic(j_follower, j_leader, coeffs=(coef0, coef1))
     return b, j_leader, j_follower

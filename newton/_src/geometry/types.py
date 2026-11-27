@@ -7,7 +7,7 @@ import math
 import os
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import warp as wp
@@ -131,6 +131,13 @@ class GeoType(enum.IntEnum):
         return self in {GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD}
 
 
+class _ConvexSupportData(NamedTuple):
+    flags: int
+    lut: np.ndarray
+    vertex_offsets: np.ndarray
+    neighbors: np.ndarray
+
+
 class Mesh:
     """
     Represents a triangle mesh for collision and simulation.
@@ -173,6 +180,9 @@ class Mesh:
 
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
+
+    # Older serialized meshes have no instance attribute for this lazy cache.
+    _convex_support_data: _ConvexSupportData | None = None
 
     def __init__(
         self,
@@ -1177,7 +1187,7 @@ class Mesh:
     def invalidate_cache(self) -> None:
         """Invalidate all cached data derived from the mesh geometry.
 
-        Drops the cached mesh hash, edge data, watertightness flag, and the
+        Drops the cached mesh hash, edge data, convex support tables, watertightness flag, and the
         finalized Warp meshes returned by :meth:`finalize`, so they are
         recomputed from the current :attr:`vertices` and :attr:`indices` on
         next access.
@@ -1195,6 +1205,7 @@ class Mesh:
         self._edges = None
         self._canonical_ids = None
         self._collision_edges = None
+        self._convex_support_data = None
         self._is_watertight = None
         self._finalized_meshes = {}
 
@@ -2210,9 +2221,9 @@ class TetMesh:
                 **kwargs,
             )
 
-        import meshio
+        from .utils import _read_meshio  # noqa: PLC0415
 
-        m = meshio.read(filename)
+        m = _read_meshio(filename)
 
         # Find tetrahedral cells
         tet_indices = None

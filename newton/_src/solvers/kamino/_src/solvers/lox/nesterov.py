@@ -1,12 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nesterov (APGD) extrapolation of the LOX Jacobi projection sweeps.
+"""Nesterov extrapolation of the LOX projection sweeps.
 
 After every sweep but the last, the reactions are extrapolated along their
 last change, ``lambda <- lambda + beta (lambda - lambda_previous)``, with the
 usual ``theta`` recursion. The momentum restarts per world whenever the last
-sweep moved away from the previous extrapolation.
+sweep moved away from the previous extrapolation. When recycled across
+splitting iterations, the extrapolation of the last sweep is applied at the
+start of the next projection, after its warm start.
+
+The body twists are affine in the reactions, with weights fixed over a LOX
+solve, so each body twist is extrapolated by the same momentum,
+``v <- v + beta (v - v_previous)``, with no impulse scatter. Across splitting
+iterations, the change ``v - v_previous`` of the last sweep carries over to
+the warm start of the next projection, whose candidate twist differs.
 
 The kernels run over the stacked reaction vector ``[box rows | contacts]``.
 """
@@ -17,7 +25,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...core.types import mat36f, vec6f
+from ...core.types import vec6f
 from ..padmm.math import project_to_coulomb_cone
 from .contact import (
     angular_contact_reaction,
@@ -25,29 +33,27 @@ from .contact import (
     linear_contact_reaction,
     pack_contact_reaction,
     pack_spatial_friction,
-    scatter_spatial_impulse,
     spatial_friction_scaling,
 )
-from .projection_kernels import is_active_row, scatter_box_impulse, scatter_contact_impulse
-from .system_kernels import ProjectionWeights
+from .projection_kernels import is_active_row
 
 if TYPE_CHECKING:
-    from .types import APGDData, LOXProblemData
+    from .types import LOXProblemData, NesterovData
 
 ###
 # Module interface
 ###
 
 __all__ = [
-    "APGDAcceleration",
-    "APGDRowState",
-    "apgd_momentum",
+    "NesterovAcceleration",
+    "NesterovRowState",
     "box_restart_dot",
     "contact_restart_dot",
-    "extrapolate_box_apgd_row",
-    "extrapolate_contact_apgd_row",
-    "initialize_box_apgd_row",
-    "initialize_contact_apgd_row",
+    "extrapolate_box_nesterov_row",
+    "extrapolate_contact_nesterov_row",
+    "initialize_box_nesterov_row",
+    "initialize_contact_nesterov_row",
+    "nesterov_momentum",
 ]
 
 
@@ -64,8 +70,8 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.struct
-class APGDRowState:
-    """Trial and previous reactions of the APGD extrapolation, for the per-world projection."""
+class NesterovRowState:
+    """Trial and previous reactions of the Nesterov extrapolation, for the per-world projection."""
 
     box_trial: wp.array[wp.float32]
     box_previous: wp.array[wp.float32]
@@ -73,6 +79,9 @@ class APGDRowState:
     contact_previous: wp.array[wp.vec3f]
     angular_trial: wp.array[wp.vec3f]
     angular_previous: wp.array[wp.vec3f]
+    theta: wp.array[wp.float32]
+    history: wp.array[wp.int32]
+    twist_previous: wp.array[vec6f]
 
 
 ###
@@ -81,7 +90,7 @@ class APGDRowState:
 
 
 @wp.func
-def apgd_momentum(theta: wp.float32, restart_dot: wp.float32):
+def nesterov_momentum(theta: wp.float32, restart_dot: wp.float32):
     """Return the next ``theta`` and the extrapolation ``beta``, restarting when the last sweep moved away.
 
     ``theta`` starts at one and the recursion keeps it in ``(0, 1]``.
@@ -94,7 +103,7 @@ def apgd_momentum(theta: wp.float32, restart_dot: wp.float32):
 
 
 @wp.func
-def initialize_box_apgd_row(
+def initialize_box_nesterov_row(
     row: wp.int32,
     box_lower: wp.array[wp.float32],
     box_upper: wp.array[wp.float32],
@@ -110,7 +119,7 @@ def initialize_box_apgd_row(
 
 
 @wp.func
-def initialize_contact_apgd_row(
+def initialize_contact_nesterov_row(
     cid: wp.int32,
     contact_body_a: wp.array[wp.int32],
     contact_body_b: wp.array[wp.int32],
@@ -183,56 +192,33 @@ def contact_restart_dot(
 
 
 @wp.func
-def extrapolate_box_apgd_row(
+def extrapolate_box_nesterov_row(
     row: wp.int32,
     beta: wp.float32,
-    box_body_a: wp.array[wp.int32],
-    box_body_b: wp.array[wp.int32],
-    box_jacobian_a: wp.array[vec6f],
-    box_jacobian_b: wp.array[vec6f],
-    weights: ProjectionWeights,
     box_reaction: wp.array[wp.float32],
     box_trial: wp.array[wp.float32],
     box_previous: wp.array[wp.float32],
-    twist_delta: wp.array[vec6f],
 ):
-    """Extrapolate the reaction of one box row and accumulate its weighted body correction."""
+    """Extrapolate the reaction of one box row."""
     current = box_reaction[row]
     extrapolated = current + beta * (current - box_previous[row])
     box_previous[row] = current
     box_trial[row] = extrapolated
     box_reaction[row] = extrapolated
-    scatter_box_impulse(
-        row,
-        box_body_a,
-        box_body_b,
-        box_jacobian_a,
-        box_jacobian_b,
-        extrapolated - current,
-        weights,
-        twist_delta,
-    )
 
 
 @wp.func
-def extrapolate_contact_apgd_row(
+def extrapolate_contact_nesterov_row(
     cid: wp.int32,
     beta: wp.float32,
-    contact_body_a: wp.array[wp.int32],
-    contact_body_b: wp.array[wp.int32],
-    contact_jacobian_a: wp.array[mat36f],
-    contact_jacobian_b: wp.array[mat36f],
-    contact_frame: wp.array[wp.mat33f],
-    weights: ProjectionWeights,
     contact_reaction: wp.array[wp.vec3f],
     contact_trial: wp.array[wp.vec3f],
     contact_previous: wp.array[wp.vec3f],
     angular_reaction: wp.array[wp.vec3f],
     angular_trial: wp.array[wp.vec3f],
     angular_previous: wp.array[wp.vec3f],
-    twist_delta: wp.array[vec6f],
 ):
-    """Extrapolate the reaction of one contact and accumulate its weighted body correction."""
+    """Extrapolate the linear and, with spatial friction, angular reaction of one contact."""
     current = contact_reaction[cid]
     extrapolated = current + beta * (current - contact_previous[cid])
     contact_previous[cid] = current
@@ -244,29 +230,19 @@ def extrapolate_contact_apgd_row(
         angular_previous[cid] = angular
         angular_trial[cid] = angular_extrapolated
         angular_reaction[cid] = angular_extrapolated
-        # One spatial scatter applies the linear and angular extrapolations together
-        scatter_spatial_impulse(
-            cid,
-            contact_body_a,
-            contact_body_b,
-            contact_jacobian_a,
-            contact_jacobian_b,
-            contact_frame,
-            pack_contact_reaction(extrapolated - current, angular_extrapolated - angular),
-            weights,
-            twist_delta,
-        )
-        return
-    scatter_contact_impulse(
-        cid,
-        contact_body_a,
-        contact_body_b,
-        contact_jacobian_a,
-        contact_jacobian_b,
-        extrapolated - current,
-        weights,
-        twist_delta,
-    )
+
+
+@wp.func
+def extrapolate_body_twist(
+    bid: wp.int32,
+    beta: wp.float32,
+    twist: wp.array[vec6f],
+    twist_previous: wp.array[vec6f],
+):
+    """Extrapolate the twist of one body, which follows the extrapolation of the reactions of its world."""
+    current = twist[bid]
+    twist[bid] = current + beta * (current - twist_previous[bid])
+    twist_previous[bid] = current
 
 
 ###
@@ -278,16 +254,26 @@ def extrapolate_contact_apgd_row(
 def _initialize_worlds(
     # Inputs:
     world_active: wp.array[wp.bool],
+    recycle: wp.bool,
+    first_buffer: wp.int32,
     # Outputs:
-    theta: wp.array[wp.float32],
-    beta: wp.array[wp.float32],
-    restart_dot: wp.array[wp.float32],
+    theta: wp.array2d[wp.float32],
+    restart_dot: wp.array2d[wp.float32],
+    history: wp.array[wp.int32],
 ):
+    """Load the momentum of each world into the buffer of the first extrapolation and clear the restart dots.
+
+    The first buffer holds the momentum between projections, where the last extrapolation writes it.
+    """
     wid = wp.tid()
     if world_active[wid]:
-        theta[wid] = 1.0
-        beta[wid] = 0.0
-        restart_dot[wid] = 0.0
+        value = wp.float32(1.0)
+        if recycle:
+            value = theta[0, wid]
+        theta[first_buffer, wid] = value
+        restart_dot[0, wid] = 0.0
+        restart_dot[1, wid] = 0.0
+        history[wid] = wp.int32(recycle)
 
 
 @wp.kernel
@@ -307,6 +293,8 @@ def _initialize_reactions(
     contact_friction: wp.array[wp.float32],
     angular_friction: wp.array[wp.vec2f],
     world_active: wp.array[wp.bool],
+    recycle: wp.bool,
+    history: wp.array[wp.int32],
     # Outputs:
     box_reaction: wp.array[wp.float32],
     box_trial: wp.array[wp.float32],
@@ -318,18 +306,21 @@ def _initialize_reactions(
     angular_trial: wp.array[wp.vec3f],
     angular_previous: wp.array[wp.vec3f],
 ):
-    """Clamp the warm-start reactions into their feasible sets and reset the momentum."""
+    """Clamp the warm-start reactions into their feasible sets and reset the momentum.
+
+    With ``recycle``, the worlds that hold the row history of the previous splitting iteration keep it.
+    """
     tid = wp.tid()
     if tid < box_capacity:
         row = tid
         wid = box_world[row]
-        if box_local[row] < world_box_count[wid] and world_active[wid]:
-            initialize_box_apgd_row(row, box_lower, box_upper, box_reaction, box_trial, box_previous)
+        if box_local[row] < world_box_count[wid] and world_active[wid] and not (recycle and history[wid] == 1):
+            initialize_box_nesterov_row(row, box_lower, box_upper, box_reaction, box_trial, box_previous)
         return
     cid = tid - box_capacity
     wid = contact_world[cid]
-    if contact_local[cid] < world_contact_count[wid] and world_active[wid]:
-        initialize_contact_apgd_row(
+    if contact_local[cid] < world_contact_count[wid] and world_active[wid] and not (recycle and history[wid] == 1):
+        initialize_contact_nesterov_row(
             cid,
             contact_body_a,
             contact_body_b,
@@ -368,21 +359,23 @@ def _accumulate_restart_dot(
     world_active: wp.array[wp.bool],
     world_failed: wp.array[wp.bool],
     # Outputs:
-    restart_dot: wp.array[wp.float32],
+    read: wp.int32,
+    restart_dot: wp.array2d[wp.float32],
 ):
-    """Accumulate ``(lambda - trial) . (lambda - previous)`` per world."""
+    """Accumulate ``(lambda - trial) . (lambda - previous)`` per world, into the ``read`` buffer."""
     tid = wp.tid()
     if tid < box_capacity:
         row = tid
         wid = box_world[row]
         if is_active_row(box_local[row], wid, world_box_count, world_active, world_failed):
-            wp.atomic_add(restart_dot, wid, box_restart_dot(row, box_reaction, box_trial, box_previous))
+            wp.atomic_add(restart_dot, read, wid, box_restart_dot(row, box_reaction, box_trial, box_previous))
         return
     cid = tid - box_capacity
     wid = contact_world[cid]
     if is_active_row(contact_local[cid], wid, world_contact_count, world_active, world_failed):
         wp.atomic_add(
             restart_dot,
+            read,
             wid,
             contact_restart_dot(
                 cid,
@@ -399,51 +392,24 @@ def _accumulate_restart_dot(
 
 
 @wp.kernel
-def _update_momentum(
-    # Inputs:
-    world_active: wp.array[wp.bool],
-    world_failed: wp.array[wp.bool],
-    # Outputs:
-    restart_dot: wp.array[wp.float32],
-    theta: wp.array[wp.float32],
-    beta: wp.array[wp.float32],
-):
-    wid = wp.tid()
-    if not world_active[wid]:
-        return
-    value = restart_dot[wid]
-    restart_dot[wid] = 0.0
-    if world_failed[wid]:
-        value = 0.0
-    next_theta, next_beta = apgd_momentum(theta[wid], value)
-    theta[wid] = next_theta
-    beta[wid] = next_beta
-
-
-@wp.kernel
-def _extrapolate_reactions(
+def _extrapolate_reactions_and_twists(
     # Inputs:
     box_capacity: wp.int32,
     box_world: wp.array[wp.int32],
     box_local: wp.array[wp.int32],
     world_box_count: wp.array[wp.int32],
-    box_body_a: wp.array[wp.int32],
-    box_body_b: wp.array[wp.int32],
-    box_jacobian_a: wp.array[vec6f],
-    box_jacobian_b: wp.array[vec6f],
+    contact_capacity: wp.int32,
     contact_world: wp.array[wp.int32],
     contact_local: wp.array[wp.int32],
     world_contact_count: wp.array[wp.int32],
-    contact_body_a: wp.array[wp.int32],
-    contact_body_b: wp.array[wp.int32],
-    contact_jacobian_a: wp.array[mat36f],
-    contact_jacobian_b: wp.array[mat36f],
-    contact_frame: wp.array[wp.mat33f],
+    body_world: wp.array[wp.int32],
+    world_body_offset: wp.array[wp.int32],
     world_active: wp.array[wp.bool],
     world_failed: wp.array[wp.bool],
-    beta: wp.array[wp.float32],
-    weights: ProjectionWeights,
+    read: wp.int32,
     # Outputs:
+    theta: wp.array2d[wp.float32],
+    restart_dot: wp.array2d[wp.float32],
     box_reaction: wp.array[wp.float32],
     box_trial: wp.array[wp.float32],
     box_previous: wp.array[wp.float32],
@@ -453,48 +419,64 @@ def _extrapolate_reactions(
     angular_reaction: wp.array[wp.vec3f],
     angular_trial: wp.array[wp.vec3f],
     angular_previous: wp.array[wp.vec3f],
-    twist_delta: wp.array[vec6f],
+    projected_twist: wp.array[vec6f],
+    twist_previous: wp.array[vec6f],
 ):
-    """Extrapolate each reaction and accumulate the weighted body correction."""
+    """Extrapolate each reaction and each body twist by the momentum of its world.
+
+    Every thread derives the momentum of its world from the ``read`` buffers of ``theta`` and ``restart_dot``;
+    the first body of each world writes the next ``theta`` and clears the restart dot of the next sweep, in the
+    other buffers.
+    """
     tid = wp.tid()
     if tid < box_capacity:
         row = tid
         wid = box_world[row]
         if is_active_row(box_local[row], wid, world_box_count, world_active, world_failed):
-            extrapolate_box_apgd_row(
-                row,
-                beta[wid],
-                box_body_a,
-                box_body_b,
-                box_jacobian_a,
-                box_jacobian_b,
-                weights,
-                box_reaction,
-                box_trial,
-                box_previous,
-                twist_delta,
-            )
+            _next_theta, beta = nesterov_momentum(theta[read, wid], restart_dot[read, wid])
+            extrapolate_box_nesterov_row(row, beta, box_reaction, box_trial, box_previous)
         return
     cid = tid - box_capacity
-    wid = contact_world[cid]
-    if is_active_row(contact_local[cid], wid, world_contact_count, world_active, world_failed):
-        extrapolate_contact_apgd_row(
-            cid,
-            beta[wid],
-            contact_body_a,
-            contact_body_b,
-            contact_jacobian_a,
-            contact_jacobian_b,
-            contact_frame,
-            weights,
-            contact_reaction,
-            contact_trial,
-            contact_previous,
-            angular_reaction,
-            angular_trial,
-            angular_previous,
-            twist_delta,
-        )
+    if cid < contact_capacity:
+        wid = contact_world[cid]
+        if is_active_row(contact_local[cid], wid, world_contact_count, world_active, world_failed):
+            _next_theta, beta = nesterov_momentum(theta[read, wid], restart_dot[read, wid])
+            extrapolate_contact_nesterov_row(
+                cid,
+                beta,
+                contact_reaction,
+                contact_trial,
+                contact_previous,
+                angular_reaction,
+                angular_trial,
+                angular_previous,
+            )
+        return
+    bid = cid - contact_capacity
+    wid = body_world[bid]
+    if world_active[wid] and not world_failed[wid]:
+        next_theta, beta = nesterov_momentum(theta[read, wid], restart_dot[read, wid])
+        extrapolate_body_twist(bid, beta, projected_twist, twist_previous)
+        if bid == world_body_offset[wid]:
+            theta[1 - read, wid] = next_theta
+            restart_dot[1 - read, wid] = 0.0
+
+
+@wp.kernel
+def _difference_twists(
+    # Inputs:
+    body_world: wp.array[wp.int32],
+    world_active: wp.array[wp.bool],
+    world_failed: wp.array[wp.bool],
+    projected_twist: wp.array[vec6f],
+    # Outputs:
+    twist_previous: wp.array[vec6f],
+):
+    """Replace each previous twist by its difference with the projected twist."""
+    bid = wp.tid()
+    wid = body_world[bid]
+    if world_active[wid] and not world_failed[wid]:
+        twist_previous[bid] = projected_twist[bid] - twist_previous[bid]
 
 
 ###
@@ -502,17 +484,26 @@ def _extrapolate_reactions(
 ###
 
 
-class APGDAcceleration:
-    """Own the momentum state of APGD-accelerated Jacobi projection."""
+class NesterovAcceleration:
+    """Own the momentum state of Nesterov-accelerated projection."""
 
-    def __init__(self, problem_data: LOXProblemData, data: APGDData):
+    def __init__(self, problem_data: LOXProblemData, data: NesterovData):
         self.problem_data = problem_data
         self._data = data
         self._capacity = problem_data.box_rows.capacity + problem_data.contact_rows.capacity
-        self.row_state = APGDRowState()
+        self.row_state = NesterovRowState()
         """Trial and previous reactions, for the per-world projection."""
-        for name in ("box_trial", "box_previous", "contact_trial", "contact_previous"):
+        for name in (
+            "box_trial",
+            "box_previous",
+            "contact_trial",
+            "contact_previous",
+            "history",
+            "twist_previous",
+        ):
             setattr(self.row_state, name, getattr(data, name))
+        # The per-world projection keeps theta in registers and stores it in the first buffer
+        self.row_state.theta = data.theta[0]
         if data.angular_trial is not None:
             self.row_state.angular_trial = data.angular_trial
             self.row_state.angular_previous = data.angular_previous
@@ -521,19 +512,42 @@ class APGDAcceleration:
     # Public API
     ###
 
-    def begin(self, world_active: wp.array[wp.bool]) -> None:
-        """Clamp the warm-start reactions and restart the momentum of active worlds."""
+    def reset(self) -> None:
+        """Restart the momentum and the row history of every world, once per LOX solve."""
+        self._data.theta.fill_(1.0)
+        self._data.history.zero_()
+        self._data.twist_previous.zero_()
+
+    def begin(self, world_active: wp.array[wp.bool], extrapolations: int, recycle: bool = False) -> None:
+        """Clamp the warm-start reactions and restart the row history.
+
+        With ``recycle``, the worlds keep ``theta`` and the row history of the previous splitting iteration,
+        whose deferred extrapolation :meth:`extrapolate` then applies after the warm start and
+        :meth:`begin_twists`.
+
+        Args:
+            world_active: Worlds to project.
+            extrapolations: Number of :meth:`extrapolate` calls of the projection.
+            recycle: Whether the worlds keep the momentum and row history of the previous splitting iteration.
+        """
+        # The buffers alternate at each extrapolation, starting so that the last one writes the first buffer
+        self._extrapolations = extrapolations
+        self._extrapolation = 0
         p = self.problem_data
         angular_reaction, angular_friction, _frame = self._spatial_arrays()
+        if self._capacity > 0:
+            self._initialize_reactions(world_active, recycle, angular_reaction, angular_friction)
+        # After the rows, which read the history flags of the previous splitting iteration
         wp.launch(
             _initialize_worlds,
             dim=p.num_worlds,
-            inputs=[world_active],
-            outputs=[self._data.theta, self._data.beta, self._data.restart_dot],
+            inputs=[world_active, recycle, extrapolations % 2],
+            outputs=[self._data.theta, self._data.restart_dot, self._data.history],
             device=p.device,
         )
-        if self._capacity == 0:
-            return
+
+    def _initialize_reactions(self, world_active, recycle, angular_reaction, angular_friction) -> None:
+        p = self.problem_data
         wp.launch(
             _initialize_reactions,
             dim=self._capacity,
@@ -552,6 +566,8 @@ class APGDAcceleration:
                 p.contact_rows.friction,
                 angular_friction,
                 world_active,
+                recycle,
+                self._data.history,
             ],
             outputs=[
                 p.box_rows.reaction,
@@ -567,97 +583,128 @@ class APGDAcceleration:
             device=p.device,
         )
 
-    def extrapolate(
+    def begin_twists(
         self,
+        body_world: wp.array[wp.int32],
         world_active: wp.array[wp.bool],
         world_failed: wp.array[wp.bool],
-        weights: ProjectionWeights,
-        twist_delta: wp.array[vec6f],
+        recycle: bool,
+        projected_twist: wp.array[vec6f],
     ) -> None:
-        """Update the momentum and accumulate the extrapolation into ``twist_delta``."""
+        """Set the previous twists of the warm-started reactions, after the warm start.
+
+        With ``recycle``, the previous twists hold the change of the last sweep of the previous splitting
+        iteration (:meth:`end_twists`), and become the warm-started twists minus that change.
+        """
+        if not recycle:
+            wp.copy(self._data.twist_previous, projected_twist)
+            return
+        self._difference_twists(body_world, world_active, world_failed, projected_twist)
+
+    def end_twists(
+        self,
+        body_world: wp.array[wp.int32],
+        world_active: wp.array[wp.bool],
+        world_failed: wp.array[wp.bool],
+        projected_twist: wp.array[vec6f],
+    ) -> None:
+        """Keep the twist change of the last sweep, for the deferred extrapolation of a recycled projection."""
+        self._difference_twists(body_world, world_active, world_failed, projected_twist)
+
+    def extrapolate(
+        self,
+        body_world: wp.array[wp.int32],
+        world_active: wp.array[wp.bool],
+        world_failed: wp.array[wp.bool],
+        projected_twist: wp.array[vec6f],
+    ) -> None:
+        """Update the momentum and extrapolate the reactions and the body twists of the last sweep."""
         p = self.problem_data
-        angular_reaction, angular_friction, frame = self._spatial_arrays()
+        read = (self._extrapolations + self._extrapolation) % 2
+        self._extrapolation += 1
+        angular_reaction, angular_friction, _frame = self._spatial_arrays()
         if self._capacity > 0:
-            wp.launch(
-                _accumulate_restart_dot,
-                dim=self._capacity,
-                inputs=[
-                    p.box_rows.capacity,
-                    p.box_rows.world,
-                    p.box_rows.local,
-                    p.box_rows.world_count,
-                    p.box_rows.reaction,
-                    self._data.box_trial,
-                    self._data.box_previous,
-                    p.contact_rows.world,
-                    p.contact_rows.local,
-                    p.contact_rows.world_count,
-                    p.contact_rows.reaction,
-                    self._data.contact_trial,
-                    self._data.contact_previous,
-                    angular_reaction,
-                    self._data.angular_trial,
-                    self._data.angular_previous,
-                    p.contact_rows.friction,
-                    angular_friction,
-                    world_active,
-                    world_failed,
-                ],
-                outputs=[self._data.restart_dot],
-                device=p.device,
-            )
+            self._accumulate_restart_dot(world_active, world_failed, read, angular_reaction, angular_friction)
         wp.launch(
-            _update_momentum,
-            dim=p.num_worlds,
-            inputs=[world_active, world_failed],
-            outputs=[self._data.restart_dot, self._data.theta, self._data.beta],
+            _extrapolate_reactions_and_twists,
+            dim=self._capacity + projected_twist.shape[0],
+            inputs=[
+                p.box_rows.capacity,
+                p.box_rows.world,
+                p.box_rows.local,
+                p.box_rows.world_count,
+                p.contact_rows.capacity,
+                p.contact_rows.world,
+                p.contact_rows.local,
+                p.contact_rows.world_count,
+                body_world,
+                p.world_body_offset,
+                world_active,
+                world_failed,
+                read,
+            ],
+            outputs=[
+                self._data.theta,
+                self._data.restart_dot,
+                p.box_rows.reaction,
+                self._data.box_trial,
+                self._data.box_previous,
+                p.contact_rows.reaction,
+                self._data.contact_trial,
+                self._data.contact_previous,
+                angular_reaction,
+                self._data.angular_trial,
+                self._data.angular_previous,
+                projected_twist,
+                self._data.twist_previous,
+            ],
             device=p.device,
         )
-        if self._capacity == 0:
-            return
+
+    def _accumulate_restart_dot(self, world_active, world_failed, read, angular_reaction, angular_friction) -> None:
+        p = self.problem_data
         wp.launch(
-            _extrapolate_reactions,
+            _accumulate_restart_dot,
             dim=self._capacity,
             inputs=[
                 p.box_rows.capacity,
                 p.box_rows.world,
                 p.box_rows.local,
                 p.box_rows.world_count,
-                p.box_rows.body_a,
-                p.box_rows.body_b,
-                p.box_rows.jacobian_a,
-                p.box_rows.jacobian_b,
-                p.contact_rows.world,
-                p.contact_rows.local,
-                p.contact_rows.world_count,
-                p.contact_rows.body_a,
-                p.contact_rows.body_b,
-                p.contact_rows.jacobian_a,
-                p.contact_rows.jacobian_b,
-                frame,
-                world_active,
-                world_failed,
-                self._data.beta,
-                weights,
-            ],
-            outputs=[
                 p.box_rows.reaction,
                 self._data.box_trial,
                 self._data.box_previous,
+                p.contact_rows.world,
+                p.contact_rows.local,
+                p.contact_rows.world_count,
                 p.contact_rows.reaction,
                 self._data.contact_trial,
                 self._data.contact_previous,
                 angular_reaction,
                 self._data.angular_trial,
                 self._data.angular_previous,
-                twist_delta,
+                p.contact_rows.friction,
+                angular_friction,
+                world_active,
+                world_failed,
+                read,
             ],
+            outputs=[self._data.restart_dot],
             device=p.device,
         )
 
     ###
     # Internals
     ###
+
+    def _difference_twists(self, body_world, world_active, world_failed, projected_twist) -> None:
+        wp.launch(
+            _difference_twists,
+            dim=projected_twist.shape[0],
+            inputs=[body_world, world_active, world_failed, projected_twist],
+            outputs=[self._data.twist_previous],
+            device=self.problem_data.device,
+        )
 
     def _spatial_arrays(self):
         """Return the angular reaction, angular friction, and frame of spatial contacts, or ``None``."""
