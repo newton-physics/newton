@@ -3220,14 +3220,14 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
 class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
     def test_body_excludes_ignore_bodies_without_collision_shapes(self):
-        class ModelStub:
-            def __init__(self):
-                self.body_shapes = {0: [0, 1], 1: [], 2: [2], 3: [3], 4: [4]}
-
-            def shape_collision_filter_mask(self, pairs):
-                return np.array([tuple(pair) in {(0, 2), (1, 2), (0, 3)} for pair in pairs], dtype=bool)
-
-        model = ModelStub()
+        # Body 0 owns shapes 0 and 1, body 1 has none, bodies 2-4 own shapes 2-4; shape 4 does not collide.
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_body() for _ in range(5)]
+        for body in (0, 0, 2, 3, 4):
+            builder.add_shape_sphere(bodies[body], radius=0.1)
+        for shape_a, shape_b in ((0, 2), (1, 2), (0, 3)):
+            builder.add_shape_collision_filter_pair(shape_a, shape_b)
+        model = builder.finalize(device="cpu")
         colliding_shapes = np.array([0, 1, 2, 3])
         expected = [(0, 2)]
         for bodies in ([0, 2, 3], [0, 1, 2, 3, 4]):
@@ -3502,9 +3502,9 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 )
                 self.assertEqual(actual, expected, f"MuJoCo pair {(shape_a, shape_b)}")
 
-    @requires(*MUJOCO_MODULES)
-    def test_falls_back_when_exact_masks_exceed_32_bits(self):
-        """Fall back for a graph that provably needs 33 mask bits."""
+    @staticmethod
+    def _build_33_group_fallback_scene(world_shape_group: int | None = None) -> newton.ModelBuilder:
+        """Build 66 free spheres in groups 1..33, a graph that needs 33 mask bits."""
         builder = newton.ModelBuilder()
         for index, group in enumerate(np.repeat(np.arange(1, 34), 2)):
             body = builder.add_link(label=f"body_{index}")
@@ -3512,11 +3512,49 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             builder.add_articulation([joint])
             cfg = newton.ModelBuilder.ShapeConfig(collision_group=int(group))
             builder.add_shape_sphere(body, radius=0.1, cfg=cfg, label=f"shape_{index}")
+        if world_shape_group is not None:
+            cfg = newton.ModelBuilder.ShapeConfig(collision_group=world_shape_group)
+            builder.add_shape_sphere(-1, radius=0.1, cfg=cfg, label="world_shape")
+        return builder
 
+    def _assert_mujoco_pairs_follow_collision_groups(self, model: newton.Model, solver: SolverMuJoCo):
+        """Check every shape pair against MuJoCo masks and body excludes."""
+        mj_model = solver.mj_model
+        geom_of_shape = {
+            int(shape): geom for geom, shape in enumerate(solver.mjc_geom_to_newton_shape.numpy()[0]) if shape >= 0
+        }
+        groups = model.shape_collision_group.numpy()
+        shape_body = model.shape_body.numpy()
+        contype = mj_model.geom_contype.astype(np.int64) & 0xFFFFFFFF
+        conaffinity = mj_model.geom_conaffinity.astype(np.int64) & 0xFFFFFFFF
+        excluded = {int(signature) for signature in mj_model.exclude_signature}
+        for shape_a, shape_b in itertools.combinations(range(model.shape_count), 2):
+            if shape_body[shape_a] == shape_body[shape_b]:
+                continue
+            geom_a, geom_b = geom_of_shape[shape_a], geom_of_shape[shape_b]
+            body_a, body_b = sorted((int(mj_model.geom_bodyid[geom_a]), int(mj_model.geom_bodyid[geom_b])))
+            actual = bool(
+                ((contype[geom_a] & conaffinity[geom_b]) or (contype[geom_b] & conaffinity[geom_a]))
+                and ((body_a << 16) + body_b) not in excluded
+            )
+            self.assertEqual(actual, bool(groups[shape_a] == groups[shape_b]), f"MuJoCo pair {(shape_a, shape_b)}")
+
+    @requires(*MUJOCO_MODULES)
+    def test_falls_back_when_exact_masks_exceed_32_bits(self):
+        """Fall back for a graph that provably needs 33 mask bits and keep its groups apart."""
+        model = self._build_33_group_fallback_scene().finalize(device="cpu")
         with warnings.catch_warnings():
             warnings.filterwarnings("error", message=r"The selected Newton collision graph.*")
-            solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         self.assertEqual(solver.mj_model.ngeom, 66)
+        self._assert_mujoco_pairs_follow_collision_groups(model, solver)
+
+    @requires(*MUJOCO_MODULES)
+    def test_fallback_masks_keep_world_shapes_in_their_group(self):
+        """Exclude world-owned shapes from bodies in other positive groups on the color fallback."""
+        model = self._build_33_group_fallback_scene(world_shape_group=1).finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        self._assert_mujoco_pairs_follow_collision_groups(model, solver)
 
     @requires(*MUJOCO_MODULES)
     def test_large_graph_keeps_collision_groups_exact(self):

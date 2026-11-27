@@ -6944,38 +6944,98 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         model: Model,
         selected_bodies: np.ndarray,
         colliding_shapes: np.ndarray,
+        honor_collision_groups: bool = False,
     ):
-        """For shape collision filter pairs, find body collision filter pairs that are contained within."""
+        """Find body pairs whose colliding shape pairs are all excluded.
 
-        shape_set = set(colliding_shapes)
+        A shape pair is excluded when it is filtered or, with
+        ``honor_collision_groups``, when its collision groups reject it. Graph-color
+        masks do not encode group exclusions, so the color fallback needs them as
+        body excludes; exact and preserved masks already enforce the groups. With
+        ``honor_collision_groups``, world-owned shapes take part as body ``-1``,
+        which maps to MuJoCo's world body.
+        """
+        # A body pair is excluded when it has colliding shape pairs and none of
+        # them can collide. Owners without colliding shapes need no exclude, so
+        # only owners of colliding shapes get a row.
+        if not honor_collision_groups and len(model.shape_collision_filter_pairs) == 0:
+            return []
+        owners = np.append(selected_bodies, -1) if honor_collision_groups else np.asarray(selected_bodies)
+        owner_row = np.full(model.body_count + 1, -1, dtype=np.int64)  # index -1 is the world
+        owner_row[owners] = np.arange(len(owners))
+        shapes = np.asarray(colliding_shapes, dtype=np.int64)
+        shape_row = owner_row[model.shape_body.numpy()[shapes]]
+        keep = shape_row >= 0
+        if honor_collision_groups:
+            # Group-0 shapes get zero color masks and never collide; they need no exclude.
+            keep &= model.shape_collision_group.numpy()[shapes] != 0
+        shapes, shape_row = shapes[keep], shape_row[keep]
+        rows, shape_row = np.unique(shape_row, return_inverse=True)
+        row_count = len(rows)
+        if row_count < 2:
+            return []
+        groups = model.shape_collision_group.numpy()[shapes]
 
-        body_shapes = {}
-        for body in selected_bodies:
-            shapes = model.body_shapes[body]
-            shapes = [s for s in shapes if s in shape_set]
-            if shapes:
-                body_shapes[body] = shapes
+        # Filtered pairs between different rows. The sparse filter set spans every
+        # replicated world; read it only when it is smaller than the candidate
+        # pairs of these shapes.
+        local_shape = np.full(model.shape_count, -1, dtype=np.int64)
+        local_shape[shapes] = np.arange(len(shapes))
+        if len(shapes) * (len(shapes) - 1) // 2 < len(model.shape_collision_filter_pairs):
+            first, second = np.triu_indices(len(shapes), k=1)
+            cross = shape_row[first] != shape_row[second]
+            first, second = first[cross], second[cross]
+            filtered = model.shape_collision_filter_mask(np.stack((shapes[first], shapes[second]), axis=1))
+            first, second = first[filtered], second[filtered]
+        else:
+            pairs = local_shape[model.shape_collision_filter_pairs_array()]
+            pairs = pairs[(pairs[:, 0] >= 0) & (pairs[:, 1] >= 0)]
+            pairs = pairs[shape_row[pairs[:, 0]] != shape_row[pairs[:, 1]]]
+            first, second = pairs[:, 0], pairs[:, 1]
+        row_a, row_b = shape_row[first], shape_row[second]
+        low, high = np.minimum(row_a, row_b), np.maximum(row_a, row_b)
+        if honor_collision_groups:
+            # Group rejections can exclude row pairs without any filter, so count
+            # allowed and filtered-but-allowed pairs for every row pair.
+            positive, negative = groups > 0, groups < 0
+            positive_count = np.bincount(shape_row[positive], minlength=row_count)
+            negative_count = np.bincount(shape_row[negative], minlength=row_count)
+            # Positive groups meet their own group and every negative group;
+            # negative groups meet every nonzero group except their own.
+            allowed = (
+                np.outer(positive_count, negative_count)
+                + np.outer(negative_count, positive_count)
+                + np.outer(negative_count, negative_count)
+                + SolverMuJoCo._same_group_pair_counts(shape_row[positive], groups[positive], row_count)
+                - SolverMuJoCo._same_group_pair_counts(shape_row[negative], groups[negative], row_count)
+            )
+            weights = SolverMuJoCo._groups_collide(groups[first], groups[second])
+            filtered_allowed = np.bincount(low * row_count + high, weights=weights, minlength=row_count * row_count)
+            rows_a, rows_b = np.triu_indices(row_count, k=1)
+            excluded = allowed[rows_a, rows_b] == filtered_allowed[rows_a * row_count + rows_b]
+            rows_a, rows_b = rows_a[excluded], rows_b[excluded]
+        else:
+            # Only row pairs with filters can be fully filtered: compare their filter
+            # counts with their shape-pair counts, without dense row matrices.
+            shape_count = np.bincount(shape_row, minlength=row_count)
+            keys, filtered_count = np.unique(low * row_count + high, return_counts=True)
+            rows_a, rows_b = np.divmod(keys, row_count)
+            excluded = filtered_count == shape_count[rows_a] * shape_count[rows_b]
+            rows_a, rows_b = rows_a[excluded], rows_b[excluded]
+        return [(int(owners[rows[a]]), int(owners[rows[b]])) for a, b in zip(rows_a, rows_b, strict=True)]
 
-        # Bodies without collision geoms cannot collide and need no excludes.
-        selected_bodies = [body for body in selected_bodies if body in body_shapes]
-
-        # Batch all candidate shape pairs into one bulk filter query; per-pair
-        # membership calls dominate this loop for large body selections.
-        bodies_a, bodies_b = np.triu_indices(len(selected_bodies), k=1)
-        candidate_pairs = []
-        pair_counts = np.empty(len(bodies_a), dtype=np.int64)
-        for k, (body_a, body_b) in enumerate(zip(bodies_a, bodies_b, strict=True)):
-            shapes_1 = body_shapes[selected_bodies[body_a]]
-            shapes_2 = body_shapes[selected_bodies[body_b]]
-            pair_counts[k] = len(shapes_1) * len(shapes_2)
-            candidate_pairs.extend((shape_1, shape_2) for shape_1 in shapes_1 for shape_2 in shapes_2)
-
-        filtered = model.shape_collision_filter_mask(np.asarray(candidate_pairs, dtype=np.int64).reshape((-1, 2)))
-        # A body pair is excluded when every one of its shape pairs is filtered.
-        unfiltered_cumulative = np.concatenate(([0], np.cumsum(~filtered)))
-        segment_ends = np.cumsum(pair_counts)
-        excluded = unfiltered_cumulative[segment_ends] == unfiltered_cumulative[segment_ends - pair_counts]
-        return [(selected_bodies[bodies_a[k]], selected_bodies[bodies_b[k]]) for k in np.flatnonzero(excluded)]
+    @staticmethod
+    def _same_group_pair_counts(shape_row: np.ndarray, groups: np.ndarray, row_count: int) -> np.ndarray:
+        """Count shape pairs that share a collision group, per pair of rows."""
+        counts = np.zeros((row_count, row_count), dtype=np.int64)
+        if len(groups) == 0:
+            return counts
+        (group, row), size = np.unique(np.stack((groups, shape_row)), axis=1, return_counts=True)
+        starts = np.flatnonzero(np.diff(group, prepend=group[0] - 1))
+        for begin, end in zip(starts, [*starts[1:], len(group)], strict=True):
+            members = row[begin:end]
+            counts[np.ix_(members, members)] += np.outer(size[begin:end], size[begin:end])
+        return counts
 
     @staticmethod
     def _compile_newton_collision_masks(model: Model, selected_shapes: np.ndarray):
@@ -7094,12 +7154,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # edges representing colliding shape pairs
         candidate_pairs = np.stack((selected_shapes[shape_a], selected_shapes[shape_b]), axis=1)
         filtered = model.shape_collision_filter_mask(candidate_pairs)
-        group_a, group_b = cgroup[shape_a], cgroup[shape_b]
-        group_allowed = (group_a != 0) & (group_b != 0)
-        group_allowed &= ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | (
-            (group_a < 0) & (group_a != group_b)
-        )
-        edge_mask = ~filtered & group_allowed
+        edge_mask = ~filtered & SolverMuJoCo._groups_collide(cgroup[shape_a], cgroup[shape_b])
         graph_edges = np.stack((shape_a[edge_mask], shape_b[edge_mask]), axis=1).astype(np.int32)
         shape_color = np.zeros(model.shape_count, dtype=np.int32)
         if len(graph_edges) > 0:
@@ -7119,6 +7174,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
 
         return shape_color
+
+    @staticmethod
+    def _groups_collide(group_a: np.ndarray, group_b: np.ndarray) -> np.ndarray:
+        """Apply Newton's collision-group rule elementwise.
+
+        Group 0 collides with nothing, a positive group collides with itself and
+        with negative groups, and a negative group collides with every group
+        except itself.
+        """
+        allowed = (group_a != 0) & (group_b != 0)
+        return allowed & (
+            ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | ((group_a < 0) & (group_a != group_b))
+        )
 
     @staticmethod
     def _collision_color_masks(color: int) -> tuple[int, int]:
@@ -8234,6 +8302,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     colliding_shapes,
                     visualize_graph=False,
                     shape_labels=model.shape_label,
+                )
+                body_filters = self._find_body_collision_filter_pairs(
+                    model,
+                    selected_bodies,
+                    colliding_shapes,
+                    honor_collision_groups=True,
                 )
 
         mesh_export_cache = {}
@@ -9386,6 +9460,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # exported as excludes, which also hold when one body is static. A per-world mesh layout
         # exports no excludes; its per-slot masks carry the same pairs.
         spec.option.disableflags = spec.option.disableflags | int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
+        # ``spec.bodies`` rebuilds the body list on each access; read the names once.
         for b1, b2 in body_filters:
             mb1, mb2 = body_mapping[b1], body_mapping[b2]
             spec.add_exclude(bodyname1=mj_bodies[mb1].name, bodyname2=mj_bodies[mb2].name)
