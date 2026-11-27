@@ -2934,6 +2934,8 @@ def evaluate_joint_force_hessian(
     joint_penalty_kd: wp.array[float],
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
+    joint_visco_bias: wp.array[wp.vec3],
+    joint_visco_tangent: wp.array[wp.vec3],
     # Drive parameters (DOF-indexed via joint_qd_start)
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
@@ -3043,6 +3045,8 @@ def evaluate_joint_force_hessian(
         kd_shear = joint_penalty_kd[shear_idx]
         kd_bend = joint_penalty_kd[bend_idx]
         kd_twist = joint_penalty_kd[twist_idx]
+        visco_bias = joint_visco_bias[joint_index]
+        visco_tangent = joint_visco_tangent[joint_index]
 
         total_force = wp.vec3(0.0)
         total_torque = wp.vec3(0.0)
@@ -3052,8 +3056,10 @@ def evaluate_joint_force_hessian(
 
         bend_stiff = material_bend > 0.0
         twist_stiff = material_twist > 0.0
-        bend_active = bend_stiff or kd_bend > 0.0
-        twist_active = twist_stiff or kd_twist > 0.0
+        visco_bend_active = visco_tangent[0] > 0.0 or visco_bias[0] != 0.0 or visco_bias[1] != 0.0
+        visco_twist_active = visco_tangent[2] > 0.0 or visco_bias[2] != 0.0
+        bend_active = bend_stiff or kd_bend > 0.0 or visco_bend_active
+        twist_active = twist_stiff or kd_twist > 0.0 or visco_twist_active
         if bend_active or twist_active:
             lambda_ang = joint_lambda_ang[joint_index]
             C0_ang = joint_C0_ang[joint_index]
@@ -3064,11 +3070,15 @@ def evaluate_joint_force_hessian(
             bend_primal_k, bend_dual_eff = _material_force_terms(solve_weight_bend, material_bend, bend_dual)
             twist_primal_k, twist_dual_eff = _material_force_terms(solve_weight_twist, material_twist, twist_dual)
 
-            K_elastic_diag = wp.vec3(bend_primal_k, bend_primal_k, twist_primal_k)
+            K_elastic_diag = wp.vec3(
+                bend_primal_k + visco_tangent[0],
+                bend_primal_k + visco_tangent[1],
+                twist_primal_k + visco_tangent[2],
+            )
             K_damp_diag = wp.vec3(kd_bend, kd_bend, kd_twist)
             damping_active = kd_bend > 0.0 or kd_twist > 0.0
 
-            sigma = wp.vec3(0.0)
+            sigma = visco_bias
             H_fric_diag = wp.vec3(0.0)
             lambda_projected = bend_dual_eff + twist_dual_eff
             C0_force = bend_primal_k * stab_alpha * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
@@ -5141,6 +5151,94 @@ def compute_rod_dahl_parameters(
     joint_C_fric[j] = C_fric_out
 
 
+VISCO_BRANCH_COUNT = wp.constant(4)
+"""Maximum Maxwell branches per rod joint; one ``wp.vec4`` component per branch."""
+
+
+@wp.func
+def _visco_branch_stiffness(bend_ke: wp.vec4, twist_ke: wp.vec4, tau: wp.vec4, b: int) -> wp.vec3:
+    """Return branch ``b`` stiffness ``(bend, bend, twist)``, or zero when the branch is not active."""
+    if tau[b] <= 0.0 or (bend_ke[b] <= 0.0 and twist_ke[b] <= 0.0):
+        return wp.vec3(0.0)
+    return wp.vec3(bend_ke[b], bend_ke[b], twist_ke[b])
+
+
+@wp.kernel
+def compute_rod_viscoelastic_parameters(
+    dt: float,
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_rod_rest_kb_local: wp.array[wp.vec3],
+    joint_rod_rest_twist: wp.array[float],
+    body_q: wp.array[wp.transform],
+    joint_moment_prev: wp.array2d[wp.vec3],
+    joint_kappa_prev: wp.array[wp.vec3],
+    joint_bend_ke: wp.array[wp.vec4],
+    joint_twist_ke: wp.array[wp.vec4],
+    joint_tau: wp.array[wp.vec4],
+    joint_bias: wp.array[wp.vec3],
+    joint_tangent: wp.array[wp.vec3],
+):
+    """Freeze the backward-Euler response of a rod joint's Maxwell branches for one timestep.
+
+    Branch ``b`` carries a moment ``M_b`` with ``dM_b/dt = K_b dkappa/dt - M_b / tau_b`` per
+    component, ``K_b = (bend_ke_b, bend_ke_b, twist_ke_b)``. Backward Euler gives
+    ``M_b' = d_b (M_b + K_b (kappa' - kappa))`` with ``d_b = tau_b / (tau_b + dt)``, so the summed
+    branch moment is ``bias + tangent * kappa'`` with ``bias = sum_b d_b (M_b - K_b kappa)`` and
+    ``tangent = sum_b d_b K_b``, both frozen over the VBD iterations of the step.
+    """
+    j = wp.tid()
+    zero = wp.vec3(0.0)
+    joint_bias[j] = zero
+    joint_tangent[j] = zero
+
+    if joint_type[j] != JointType.ROD or not joint_enabled[j]:
+        return
+
+    child = joint_child[j]
+    if child < 0:
+        return
+
+    parent = joint_parent[j]
+    if parent >= 0:
+        X_wp = body_q[parent] * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+    X_wc = body_q[child] * joint_X_c[j]
+    kappa_now = compute_geometric_rod_kappa_cached_z(
+        wp.transform_get_rotation(X_wp),
+        wp.transform_get_rotation(X_wc),
+        joint_rod_rest_kb_local[j],
+        joint_rod_rest_twist[j],
+    )
+
+    if _world_selected(joint_world[j], pose_rebaseline_mask):
+        joint_kappa_prev[j] = kappa_now
+        for b in range(VISCO_BRANCH_COUNT):
+            joint_moment_prev[j, b] = zero
+
+    bend_ke = joint_bend_ke[j]
+    twist_ke = joint_twist_ke[j]
+    tau = joint_tau[j]
+    kappa_prev = joint_kappa_prev[j]
+    bias = wp.vec3(0.0)
+    tangent = wp.vec3(0.0)
+    for b in range(VISCO_BRANCH_COUNT):
+        k = _visco_branch_stiffness(bend_ke, twist_ke, tau, b)
+        if k[0] > 0.0 or k[2] > 0.0:
+            decay = tau[b] / (tau[b] + dt)
+            bias = bias + decay * (joint_moment_prev[j, b] - wp.cw_mul(k, kappa_prev))
+            tangent = tangent + decay * k
+    joint_bias[j] = bias
+    joint_tangent[j] = tangent
+
+
 # -----------------------------
 # Iteration kernels (per color per iteration)
 # -----------------------------
@@ -6227,6 +6325,9 @@ def create_solve_rigid_body(has_tendons: bool, has_joint_constraints: bool):
         # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
         joint_sigma_start: wp.array[wp.vec3],
         joint_C_fric: wp.array[wp.vec3],
+        # SLS bending response, frozen for this timestep.
+        joint_visco_bias: wp.array[wp.vec3],
+        joint_visco_tangent: wp.array[wp.vec3],
         # Drive parameters (DOF-indexed via joint_qd_start)
         joint_target_ke: wp.array[float],
         joint_target_kd: wp.array[float],
@@ -6477,6 +6578,8 @@ def create_solve_rigid_body(has_tendons: bool, has_joint_constraints: bool):
                 joint_penalty_kd,
                 joint_sigma_start,
                 joint_C_fric,
+                joint_visco_bias,
+                joint_visco_tangent,
                 joint_target_ke,
                 joint_target_kd,
                 joint_target_q,
@@ -7433,6 +7536,60 @@ def update_rod_dahl_state(
     joint_sigma_prev[j] = sigma_final_out
     joint_kappa_prev[j] = kappa_final
     joint_dkappa_prev[j] = d_kappa_out
+
+
+@wp.kernel
+def update_rod_viscoelastic_state(
+    dt: float,
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_rod_rest_kb_local: wp.array[wp.vec3],
+    joint_rod_rest_twist: wp.array[float],
+    body_q: wp.array[wp.transform],
+    joint_bend_ke: wp.array[wp.vec4],
+    joint_twist_ke: wp.array[wp.vec4],
+    joint_tau: wp.array[wp.vec4],
+    joint_moment_prev: wp.array2d[wp.vec3],
+    joint_kappa_prev: wp.array[wp.vec3],
+):
+    """Commit the converged branch moments of a rod joint (see ``compute_rod_viscoelastic_parameters``)."""
+    j = wp.tid()
+    if joint_type[j] != JointType.ROD:
+        return
+
+    child = joint_child[j]
+    if child < 0:
+        return
+
+    parent = joint_parent[j]
+    if parent >= 0:
+        X_wp = body_q[parent] * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+    X_wc = body_q[child] * joint_X_c[j]
+    kappa_final = compute_geometric_rod_kappa_cached_z(
+        wp.transform_get_rotation(X_wp),
+        wp.transform_get_rotation(X_wc),
+        joint_rod_rest_kb_local[j],
+        joint_rod_rest_twist[j],
+    )
+
+    d_kappa = kappa_final - joint_kappa_prev[j]
+    bend_ke = joint_bend_ke[j]
+    twist_ke = joint_twist_ke[j]
+    tau = joint_tau[j]
+    for b in range(VISCO_BRANCH_COUNT):
+        k = _visco_branch_stiffness(bend_ke, twist_ke, tau, b)
+        if joint_enabled[j] and (k[0] > 0.0 or k[2] > 0.0):
+            decay = tau[b] / (tau[b] + dt)
+            joint_moment_prev[j, b] = decay * (joint_moment_prev[j, b] + wp.cw_mul(k, d_kappa))
+        else:
+            joint_moment_prev[j, b] = wp.vec3(0.0)
+    joint_kappa_prev[j] = kappa_final
 
 
 # =====================================================================================

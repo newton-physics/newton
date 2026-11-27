@@ -5076,8 +5076,13 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     test.assertNotIn("vbd:joint_is_hard", builder.custom_attributes)
     test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
     test.assertIn("vbd:dahl_tau", builder.custom_attributes)
+    for name in ("visco_bend_ke", "visco_twist_ke", "visco_tau"):
+        test.assertIn(f"vbd:{name}", builder.custom_attributes)
+        test.assertEqual(builder.custom_attributes[f"vbd:{name}"].dtype, wp.vec4)
     test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.0)
     test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
+    for name in ("visco_bend_ke", "visco_twist_ke", "visco_tau"):
+        np.testing.assert_array_equal(np.asarray(builder.custom_attributes[f"vbd:{name}"].default), 0.0)
 
     with test.assertRaisesRegex(TypeError, "dahl_defaults_enabled"):
         newton.solvers.SolverVBD.register_custom_attributes(newton.ModelBuilder(), dahl_defaults_enabled=True)
@@ -5224,7 +5229,15 @@ class TestVBDUsdParsing(unittest.TestCase):
             newton.solvers.SolverVBD(model, collision_pipeline=newton.CollisionPipeline(model))
 
 
-def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
+def _make_vbd_dahl_detection_model(
+    device,
+    *,
+    dahl_eps_max=None,
+    dahl_tau=None,
+    visco_bend_ke=None,
+    visco_twist_ke=None,
+    visco_tau=None,
+):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder)
 
@@ -5246,10 +5259,22 @@ def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
         model.vbd.dahl_eps_max.fill_(float(dahl_eps_max))
     if dahl_tau is not None:
         model.vbd.dahl_tau.fill_(float(dahl_tau))
+    for name, value in (("visco_bend_ke", visco_bend_ke), ("visco_twist_ke", visco_twist_ke), ("visco_tau", visco_tau)):
+        if value is not None:
+            _set_visco_branches(getattr(model.vbd, name), value)
     return model
 
 
+def _set_visco_branches(array, branches):
+    """Author per-joint Maxwell branch values; a scalar fills branch 0, a sequence fills branches in order."""
+    values = np.zeros((array.shape[0], 4), dtype=np.float32)
+    branches = np.atleast_1d(np.asarray(branches, dtype=np.float32))
+    values[:, : len(branches)] = branches
+    array.assign(values)
+
+
 def _vbd_dahl_detection_requires_positive_values(test, device):
+    """Enable Dahl cable friction only when both parameters are positive."""
     model = _make_vbd_dahl_detection_model(device)
 
     with warnings.catch_warnings():
@@ -5277,6 +5302,250 @@ def _vbd_dahl_detection_requires_positive_values(test, device):
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertTrue(solver.enable_dahl_friction)
+
+
+def _vbd_viscoelastic_detection_requires_positive_values(test, device):
+    """Enable cable viscoelasticity only for a branch with a positive time and stiffness."""
+
+    def enabled(**kwargs):
+        return newton.solvers.SolverVBD(_make_vbd_dahl_detection_model(device, **kwargs)).enable_viscoelasticity
+
+    test.assertFalse(enabled())
+    test.assertFalse(enabled(visco_bend_ke=2.0))
+    test.assertFalse(enabled(visco_tau=0.5))
+    test.assertTrue(enabled(visco_bend_ke=2.0, visco_tau=0.5))
+    test.assertTrue(enabled(visco_twist_ke=2.0, visco_tau=0.5))
+    test.assertTrue(enabled(visco_bend_ke=[0.0, 0.0, 0.0, 2.0], visco_tau=[0.0, 0.0, 0.0, 0.5]))
+    # stiffness and relaxation time in different branches do not form an active branch
+    test.assertFalse(enabled(visco_bend_ke=[2.0, 0.0], visco_tau=[0.0, 0.5]))
+
+    for name, bad in (("visco_bend_ke", -1.0), ("visco_twist_ke", np.inf), ("visco_tau", np.nan), ("visco_tau", -0.5)):
+        values = {"visco_bend_ke": 1.0, "visco_twist_ke": 1.0, "visco_tau": 0.5}
+        values[name] = [0.5, bad]
+        with test.subTest(name=name, value=bad), test.assertRaisesRegex(ValueError, name):
+            newton.solvers.SolverVBD(_make_vbd_dahl_detection_model(device, **values))
+
+
+def _cable_viscoelastic_moment_relaxes_analytically(test, device):
+    """Match the backward-Euler update of each Maxwell branch, for bending and twisting, and reset."""
+    bend_ke = np.array([4.0, 1.0, 0.0, 0.0])
+    twist_ke = np.array([3.0, 0.0, 0.0, 0.0])
+    tau = np.array([0.5, 5.0, 0.0, 0.0])
+    dt = 0.1
+    decay = np.divide(tau, tau + dt, out=np.zeros(4), where=tau > 0.0)
+
+    def posed(theta, axis):
+        """Child rotation by theta about a local axis: x bends, z twists (the rod axis)."""
+        rotation = [0.0, 0.0, 0.0]
+        rotation[axis] = math.sin(0.5 * theta)
+        return [*rotation, math.cos(0.5 * theta)]
+
+    for axis, theta in ((0, 0.3), (2, 0.25)):
+        with test.subTest(axis=axis):
+            model = _make_vbd_dahl_detection_model(
+                device, visco_bend_ke=bend_ke, visco_twist_ke=twist_ke, visco_tau=tau
+            )
+            solver = newton.solvers.SolverVBD(model, iterations=0)
+            state_in = model.state()
+            state_out = model.state()
+
+            # Establish the straight pose as a relaxed material baseline.
+            solver.step(state_in, state_out, None, None, dt)
+            state_in, state_out = state_out, state_in
+
+            posed_q = state_in.body_q.numpy()
+            posed_q[1, 3:] = posed(theta, axis)
+            kappa = np.zeros(3)
+            kappa[axis] = 2.0 * math.tan(0.5 * theta) if axis == 0 else theta
+            branch_ke = np.stack([bend_ke, bend_ke, twist_ke], axis=1)  # (branch, component)
+
+            for step in range(5):
+                state_in.body_q.assign(posed_q)
+                state_in.body_qd.zero_()
+                solver.step(state_in, state_out, None, None, dt)
+                state_in, state_out = state_out, state_in
+                # loaded at step 0, then held: each branch decays with its own relaxation time
+                expected = (decay ** (step + 1))[:, None] * branch_ke * kappa[None, :]
+                np.testing.assert_allclose(solver.joint_visco_kappa_prev.numpy()[0], kappa, atol=1.0e-5)
+                np.testing.assert_allclose(
+                    solver.joint_visco_moment_prev.numpy()[0], expected, rtol=2.0e-5, atol=1.0e-6
+                )
+                if step == 0:
+                    np.testing.assert_allclose(
+                        solver.joint_visco_tangent.numpy()[0],
+                        [decay @ bend_ke, decay @ bend_ke, decay @ twist_ke],
+                        rtol=1.0e-6,
+                    )
+
+            # Reset defers history mutation until the next pose establishes a relaxed baseline.
+            solver.reset(state_in, flags=0)
+            reset_theta = -0.2
+            posed_q = state_in.body_q.numpy()
+            posed_q[1, 3:] = posed(reset_theta, 0)
+            state_in.body_q.assign(posed_q)
+            state_in.body_qd.zero_()
+            solver.step(state_in, state_out, None, None, dt)
+
+            np.testing.assert_allclose(
+                solver.joint_visco_kappa_prev.numpy()[0],
+                [2.0 * math.tan(0.5 * reset_theta), 0.0, 0.0],
+                atol=1.0e-5,
+            )
+            np.testing.assert_allclose(solver.joint_visco_moment_prev.numpy()[0], 0.0, atol=1.0e-6)
+
+
+def _cable_viscoelastic_bend_and_twist_branches_act_separately(test, device):
+    """A bending branch resists only bending and a twisting branch only twisting."""
+
+    def simulate(bend_ke, twist_ke, angular_axis):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
+        parent = builder.add_link()
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_rod(
+            parent,
+            child,
+            stretch_stiffness=0.0,
+            bend_stiffness=0.0,
+            twist_stiffness=0.0,
+        )
+        builder.add_articulation([joint])
+        builder.color()
+        model = builder.finalize(device=device)
+        _set_visco_branches(model.vbd.visco_bend_ke, bend_ke)
+        _set_visco_branches(model.vbd.visco_twist_ke, twist_ke)
+        _set_visco_branches(model.vbd.visco_tau, 0.5 if bend_ke > 0.0 or twist_ke > 0.0 else 0.0)
+
+        solver = newton.solvers.SolverVBD(model, iterations=5)
+        state_in = model.state()
+        state_out = model.state()
+        dt = 0.1
+
+        solver.step(state_in, state_out, None, None, dt)
+        state_in, state_out = state_out, state_in
+        body_qd = state_in.body_qd.numpy()
+        body_qd[child, 3 + angular_axis] = 1.0
+        state_in.body_qd.assign(body_qd)
+        solver.step(state_in, state_out, None, None, dt)
+
+        child_q = state_out.body_q.numpy()[child, 3:]
+        angle = 2.0 * math.atan2(child_q[angular_axis], child_q[3])
+        moment = solver.joint_visco_moment_prev.numpy()[joint, 0]
+        return angle, moment
+
+    free_bend_angle, free_bend_moment = simulate(0.0, 0.0, 0)
+    free_twist_angle, free_twist_moment = simulate(0.0, 0.0, 2)
+    test.assertGreater(free_bend_angle, 0.08)
+    test.assertGreater(free_twist_angle, 0.08)
+    np.testing.assert_allclose(free_bend_moment, 0.0, atol=1.0e-8)
+    np.testing.assert_allclose(free_twist_moment, 0.0, atol=1.0e-8)
+
+    # bending branch: bending is resisted, twisting is not
+    angle, moment = simulate(100.0, 0.0, 0)
+    test.assertGreater(abs(float(moment[0])), 1.0e-3)
+    test.assertLess(abs(angle), 0.8 * abs(free_bend_angle))
+    np.testing.assert_allclose(moment[2], 0.0, atol=1.0e-8)
+    angle, moment = simulate(100.0, 0.0, 2)
+    np.testing.assert_allclose(angle, free_twist_angle, rtol=1.0e-5, atol=1.0e-6)
+    np.testing.assert_allclose(moment, 0.0, atol=1.0e-8)
+
+    # twisting branch: twisting is resisted, bending is not
+    angle, moment = simulate(0.0, 100.0, 2)
+    test.assertGreater(abs(float(moment[2])), 1.0e-3)
+    test.assertLess(abs(angle), 0.8 * abs(free_twist_angle))
+    np.testing.assert_allclose(moment[:2], 0.0, atol=1.0e-8)
+    angle, moment = simulate(0.0, 100.0, 0)
+    np.testing.assert_allclose(angle, free_bend_angle, rtol=1.0e-5, atol=1.0e-6)
+    np.testing.assert_allclose(moment, 0.0, atol=1.0e-8)
+
+
+def _cable_viscoelastic_iteration_restart_replays_history(test, device):
+    """A coupler's restarted interval must start from the same branch history as the first attempt.
+
+    The coupler notifies the solver once per interval and then steps it once per substep, so the history
+    to replay is the one at the start of the interval, after any first-step rebaseline.
+    """
+    interval_dt = 0.1
+    theta = 0.3
+    flags = int(newton.StateFlags.BODY_Q)
+
+    def run(restart, substeps):
+        model = _make_vbd_dahl_detection_model(
+            device, visco_bend_ke=[4.0, 1.0], visco_twist_ke=[2.0, 0.0], visco_tau=[0.5, 5.0]
+        )
+        solver = newton.solvers.SolverVBD(model, iterations=0)
+        solver.coupling_notify_iteration_restarts(restart)
+        work = [model.state(), model.state()]
+        # copies: on CPU, numpy() views the array the step updates in place
+        saved_q, saved_qd = work[0].body_q.numpy().copy(), work[0].body_qd.numpy().copy()
+        moments = []
+        for interval in range(4):
+            if interval > 0:
+                saved_q[1, 3:] = [math.sin(0.5 * theta * interval), 0.0, 0.0, math.cos(0.5 * theta * interval)]
+                saved_qd[:] = 0.0
+            # interval 0 also applies the first-step rebaseline, which a restart must replay
+            for attempt in range(2 if restart else 1):
+                state_in, state_out = work
+                state_in.body_q.assign(saved_q)
+                state_in.body_qd.assign(saved_qd)
+                solver.coupling_notify_input_state_update(
+                    state_in, flags, iteration_restart=attempt > 0, dt=interval_dt
+                )
+                for _ in range(substeps):
+                    solver.step(state_in, state_out, None, None, interval_dt / substeps)
+                    state_in, state_out = state_out, state_in
+            moments.append(solver.joint_visco_moment_prev.numpy()[0].copy())
+            saved_q, saved_qd = state_in.body_q.numpy().copy(), state_in.body_qd.numpy().copy()
+        return np.array(moments)
+
+    for substeps in (1, 3):
+        with test.subTest(substeps=substeps):
+            single = run(False, substeps)
+            test.assertGreater(np.abs(single).max(), 1.0e-3)
+            np.testing.assert_allclose(run(True, substeps), single, rtol=1.0e-6, atol=1.0e-9)
+
+
+def _cable_viscoelastic_masked_reset_rebaselines_selected_world(test, device):
+    """Rebaseline SLS history only for the world selected by reset()."""
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    newton.solvers.SolverVBD.register_custom_attributes(template)
+    parent = template.add_link()
+    child = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    joint = template.add_joint_rod(parent, child, stretch_stiffness=0.0, bend_stiffness=0.0)
+    template.add_articulation([joint])
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+    _set_visco_branches(model.vbd.visco_bend_ke, [4.0, 2.0])
+    _set_visco_branches(model.vbd.visco_twist_ke, [1.0, 0.0])
+    _set_visco_branches(model.vbd.visco_tau, [0.5, 5.0])
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state_in = model.state()
+    state_out = model.state()
+    dt = 0.1
+    solver.step(state_in, state_out, None, None, dt)
+
+    seeded_moment = np.zeros((model.joint_count, 4, 3), dtype=np.float32)
+    seeded_moment[:, 0] = [1.0, 0.0, 0.5]
+    seeded_moment[:, 1] = [0.25, 0.0, 0.0]
+    solver.joint_visco_moment_prev.assign(seeded_moment)
+    solver.joint_visco_kappa_prev.zero_()
+
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+    solver.reset(state_out, world_mask=world_mask, flags=0)
+    np.testing.assert_allclose(solver.joint_visco_moment_prev.numpy(), seeded_moment)
+
+    solver.step(state_out, state_in, None, None, dt)
+    moment = solver.joint_visco_moment_prev.numpy()
+    joint_world = model.joint_world.numpy()
+    np.testing.assert_allclose(moment[joint_world == 0], 0.0, atol=1.0e-6)
+    # world 1 keeps its history: held still, each branch decays with its own relaxation time
+    decay = np.array([0.5 / (0.5 + dt), 5.0 / (5.0 + dt), 0.0, 0.0])
+    np.testing.assert_allclose(moment[joint_world == 1], (decay[:, None] * seeded_moment[0])[None], rtol=1.0e-6)
 
 
 def _rigid_reset_cable_history(test, device):
@@ -8013,6 +8282,36 @@ add_function_test(
     TestSolverVBD,
     "test_vbd_dahl_detection_requires_positive_values",
     _vbd_dahl_detection_requires_positive_values,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_vbd_viscoelastic_detection_requires_positive_values",
+    _vbd_viscoelastic_detection_requires_positive_values,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_viscoelastic_moment_relaxes_analytically",
+    _cable_viscoelastic_moment_relaxes_analytically,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_viscoelastic_bend_and_twist_branches_act_separately",
+    _cable_viscoelastic_bend_and_twist_branches_act_separately,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_viscoelastic_masked_reset_rebaselines_selected_world",
+    _cable_viscoelastic_masked_reset_rebaselines_selected_world,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_viscoelastic_iteration_restart_replays_history",
+    _cable_viscoelastic_iteration_restart_replays_history,
     devices=devices,
 )
 add_function_test(

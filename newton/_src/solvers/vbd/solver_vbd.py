@@ -77,6 +77,7 @@ from .particle_vbd_kernels import (
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     CONTACT_HISTORY_NO_BUFFER,
+    VISCO_BRANCH_COUNT,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_body_particle_attachments_per_body,
@@ -93,6 +94,7 @@ from .rigid_vbd_kernels import (
     compute_body_particle_contact_forces,
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
+    compute_rod_viscoelastic_parameters,
     create_solve_rigid_body,
     create_update_duals_body_body_contacts,
     forward_step_rigid_bodies,
@@ -113,6 +115,7 @@ from .rigid_vbd_kernels import (
     update_duals_joint,
     update_duals_particle_body_attachments,
     update_rod_dahl_state,
+    update_rod_viscoelastic_state,
 )
 from .tendon_kernels import (
     TendonForceElementAdjacencyInfo,
@@ -735,6 +738,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
               ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
               enabled only when positive Dahl parameters are authored.
+            - Cable viscoelasticity (a generalized Maxwell model with up to four branches per rod
+              joint) is controlled by ``model.vbd.visco_bend_ke`` and ``model.vbd.visco_twist_ke``
+              [N·m/rad] and ``model.vbd.visco_tau`` [s], one ``wp.vec4`` component per branch. The
+              cable's bend and twist stiffnesses are the relaxed stiffnesses; each branch adds a
+              transient stiffness that relaxes with its time constant. Register the attributes
+              before building the model and author them before constructing the solver.
 
         """
         integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
@@ -1470,6 +1479,43 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.enable_dahl_friction = False
 
+            # Generalized-Maxwell rod state: per-branch moments and the strain at the last step,
+            # plus the response frozen for the iterations of one step.
+            self.joint_visco_moment_prev = wp.zeros(
+                (model.joint_count, VISCO_BRANCH_COUNT), dtype=wp.vec3, device=self.device
+            )
+            self.joint_visco_kappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_visco_bias = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_visco_tangent = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            # Start-of-step branch history for a coupler's restarted solve; allocated only when
+            # coupling_notify_iteration_restarts(True) declares that restarts can follow.
+            self._coupling_iteration_restarts = False
+            self._coupling_visco_moment_snapshot = None
+            self._coupling_visco_kappa_snapshot = None
+            # Set by a coupler's new interval; the interval's first step then saves the history.
+            self._coupling_visco_snapshot_pending = False
+
+            visco_names = ("visco_bend_ke", "visco_twist_ke", "visco_tau")
+            if model.joint_count > 0 and vbd_attrs is not None and all(hasattr(vbd_attrs, n) for n in visco_names):
+                self.joint_visco_bend_ke = vbd_attrs.visco_bend_ke
+                self.joint_visco_twist_ke = vbd_attrs.visco_twist_ke
+                self.joint_visco_tau = vbd_attrs.visco_tau
+                values = {}
+                for name in visco_names:
+                    value = self._to_numpy(getattr(vbd_attrs, name), dtype=float).reshape(model.joint_count, -1)
+                    if not np.all(np.isfinite(value)) or np.any(value < 0.0):
+                        raise ValueError(f"model.vbd.{name} values must be finite and >= 0.")
+                    values[name] = value
+                active = (values["visco_tau"] > 0.0) & (
+                    (values["visco_bend_ke"] > 0.0) | (values["visco_twist_ke"] > 0.0)
+                )
+                self.enable_viscoelasticity = bool(np.any(active))
+            else:
+                self.joint_visco_bend_ke = wp.zeros(model.joint_count, dtype=wp.vec4, device=self.device)
+                self.joint_visco_twist_ke = wp.zeros(model.joint_count, dtype=wp.vec4, device=self.device)
+                self.joint_visco_tau = wp.zeros(model.joint_count, dtype=wp.vec4, device=self.device)
+                self.enable_viscoelasticity = False
+
             # Per-joint DER rest invariants, refreshed at init and on model change
             # (see _refresh_rod_rest_bend_twist_cache): the parent-local rest
             # curvature binormal (bend) and the rest transported-material twist.
@@ -1621,6 +1667,24 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def coupling_supports_full_surface_soft_contacts(self) -> bool:
         return True
 
+    def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
+        """Save the cable viscoelastic history for restarted intervals only when a restart can follow.
+
+        The history is saved once per coupled interval, at its first step after any rebaseline, so a
+        restarted interval replays it even when the coupler steps the solver over several substeps.
+
+        Args:
+            enabled: Whether the coupler may restart a step's solve.
+        """
+        self._coupling_iteration_restarts = bool(enabled)
+        # Rod material state exists only when the solver integrates rigid bodies.
+        if self._coupling_iteration_restarts and getattr(self, "enable_viscoelasticity", False):
+            self._coupling_visco_moment_snapshot = wp.clone(self.joint_visco_moment_prev)
+            self._coupling_visco_kappa_snapshot = wp.clone(self.joint_visco_kappa_prev)
+        else:
+            self._coupling_visco_moment_snapshot = None
+            self._coupling_visco_kappa_snapshot = None
+
     def coupling_notify_input_state_update(
         self,
         state: State,
@@ -1636,6 +1700,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """
         self._apply_module_options()
         flags = int(flags)
+
+        if dt > 0.0 and getattr(self, "_coupling_visco_moment_snapshot", None) is not None:
+            if iteration_restart:
+                # Replay the cable branch history the interval's first attempt started from.
+                wp.copy(dest=self.joint_visco_moment_prev, src=self._coupling_visco_moment_snapshot)
+                wp.copy(dest=self.joint_visco_kappa_prev, src=self._coupling_visco_kappa_snapshot)
+            else:
+                # A new interval: its first step saves the history after applying any rebaseline.
+                self._coupling_visco_snapshot_pending = True
 
         if (
             flags & StateFlags.PARTICLE_Q
@@ -2395,10 +2468,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             defaults: explicit constructor argument > ``model.vbd.*`` > built-in default. Scene-authored
             stiffness and damping must be finite and non-negative.
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
+          - ``vbd:visco_bend_ke``, ``vbd:visco_twist_ke`` and ``vbd:visco_tau`` for optional rod
+            viscoelasticity (generalized Maxwell branches)
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes. The Dahl attributes are authored in USD as
         ``newton:vbd:<attr>``; the solver settings above use the names listed there.
+
+        The experimental ``visco_bend_ke`` and ``visco_twist_ke`` [N·m/rad] and
+        ``visco_tau`` [s] attributes are ``wp.vec4`` per joint: component ``b`` is
+        the bend stiffness, twist stiffness and relaxation time of Maxwell branch
+        ``b``. A branch is active when its ``visco_tau`` and at least one of its
+        stiffnesses are positive. They are currently supported through Python
+        authoring only; the USD cable importer does not yet map them onto
+        generated rod joints. Set them before constructing the solver.
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
@@ -2451,6 +2534,36 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
+                namespace="vbd",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="visco_bend_ke",
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.vec4,
+                default=wp.vec4(0.0),
+                namespace="vbd",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="visco_twist_ke",
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.vec4,
+                default=wp.vec4(0.0),
+                namespace="vbd",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="visco_tau",
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.vec4,
+                default=wp.vec4(0.0),
                 namespace="vbd",
             )
         )
@@ -2673,7 +2786,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         The solver follows a 3-phase structure:
         1. Initialize: Forward integrate particles and rigid bodies, detect collisions, initialize contact state
         2. Iterate: Interleave particle and rigid-body VBD iterations
-        3. Finalize: Update velocities and persistent state (Dahl friction)
+        3. Finalize: Update velocities and persistent cable material state
 
         To control rigid body substepping behavior, call set_rigid_history_update().
         When True (default), the step rebuilds rigid contact lists, re-initializes
@@ -2856,9 +2969,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         Body fields selected by *flags* are copied from the model defaults.
         Joint C0 and ALM dual history are zeroed immediately.
-        Pose and enabled-rod friction history (curvature,
-        stress, and increment) are rebaselined together from the next :meth:`step`
-        input pose, after any intervening state edits or forward kinematics.
+        Pose and enabled-rod material history (curvature, friction stress and
+        increment, and viscoelastic moment) are rebaselined together from the next
+        :meth:`step` input pose, after any intervening state edits or forward
+        kinematics. The authored pose is treated as relaxed.
         Mutable tendon material and routing state is restored to its initialized
         values regardless of *flags*.
         REVOLUTE and one-axis-D6 winding re-anchors to the pose-equivalent angle
@@ -4106,6 +4220,43 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
+            # Freeze the SLS history moment and consistent tangent for all VBD iterations.
+            if self.enable_viscoelasticity and model.joint_count > 0:
+                wp.launch(
+                    kernel=compute_rod_viscoelastic_parameters,
+                    inputs=[
+                        dt,
+                        model.joint_type,
+                        model.joint_enabled,
+                        model.joint_world,
+                        self._rigid_pose_rebaseline_mask,
+                        model.joint_parent,
+                        model.joint_child,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                        self.joint_rod_rest_kb_local,
+                        self.joint_rod_rest_twist,
+                        self.body_q_prev,
+                        self.joint_visco_moment_prev,
+                        self.joint_visco_kappa_prev,
+                        self.joint_visco_bend_ke,
+                        self.joint_visco_twist_ke,
+                        self.joint_visco_tau,
+                    ],
+                    outputs=[
+                        self.joint_visco_bias,
+                        self.joint_visco_tangent,
+                    ],
+                    dim=model.joint_count,
+                    device=self.device,
+                )
+                if self._coupling_visco_snapshot_pending:
+                    # First step of a coupled interval: the launch above applied any rebaseline, so a
+                    # restarted interval resumes from here. Later substeps keep this snapshot.
+                    wp.copy(dest=self._coupling_visco_moment_snapshot, src=self.joint_visco_moment_prev)
+                    wp.copy(dest=self._coupling_visco_kappa_snapshot, src=self.joint_visco_kappa_prev)
+                    self._coupling_visco_snapshot_pending = False
+
             # The forward step and any enabled rod update have consumed the mask.
             self._rigid_pose_rebaseline_mask.zero_()
 
@@ -4748,6 +4899,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_penalty_kd,
                     self.joint_sigma_start,
                     self.joint_C_fric,
+                    self.joint_visco_bias,
+                    self.joint_visco_tangent,
                     model.joint_target_ke,
                     model.joint_target_kd,
                     control.joint_target_q,
@@ -5184,10 +5337,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
 
     def _finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float):
-        """Finalize rigid body velocities and Dahl friction state after VBD iterations (post-iteration phase).
+        """Finalize rigid velocities and persistent rod material state after AVBD iterations.
 
-        Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for rod bend/twist.
-        Also transfers the final body poses from state_in to state_out.
+        Updates rigid body velocities using BDF1, updates rod Dahl and viscoelastic
+        state, and transfers final body poses from state_in to state_out.
         """
         model = self.model
 
@@ -5231,6 +5384,32 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ],
                 dim=model.joint_count,
                 block_dim=self._rigid_joint_block_dim,
+                device=self.device,
+            )
+
+        if self.enable_viscoelasticity and model.joint_count > 0:
+            wp.launch(
+                kernel=update_rod_viscoelastic_state,
+                inputs=[
+                    dt,
+                    model.joint_type,
+                    model.joint_enabled,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    self.joint_rod_rest_kb_local,
+                    self.joint_rod_rest_twist,
+                    state_out.body_q,
+                    self.joint_visco_bend_ke,
+                    self.joint_visco_twist_ke,
+                    self.joint_visco_tau,
+                ],
+                outputs=[
+                    self.joint_visco_moment_prev,
+                    self.joint_visco_kappa_prev,
+                ],
+                dim=model.joint_count,
                 device=self.device,
             )
 

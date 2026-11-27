@@ -1,0 +1,319 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Example Cable Viscoelastic Release
+
+Demonstrates generalized-Maxwell cable viscoelasticity in SolverVBD: a fast and
+a slow relaxing branch on bending and twisting, on top of the relaxed cable
+stiffness. The left end of a 0.4 m cable is clamped while a temporary world
+joint holds its raised tip; at the release time the joint is disabled without
+resetting the cable's material history, and the cable swings down under
+gravity.
+
+Success criteria:
+- The cable is held nearly straight and raised toward its tip until the release.
+- After the release the tip falls and swings below the clamp without exploding.
+- With the default viscoelastic branches the swing dies out within about two
+  seconds of the release.
+
+Runs:
+- `python -m newton.examples cable_viscoelastic_release`
+  - The cable swings down and comes nearly to rest about two seconds after the release.
+- `python -m newton.examples cable_viscoelastic_release --no-visco`
+  - Without the branches the cable keeps swinging visibly for several seconds.
+- `python -m newton.examples cable_viscoelastic_release --release-time 0.1`
+  - The cable is released almost at once and behaves like the default run.
+"""
+
+import math
+
+import numpy as np
+import warp as wp
+
+import newton
+import newton.examples
+
+
+@wp.kernel
+def update_release_state(
+    joint_index: int,
+    release_time: float,
+    dt: float,
+    joint_enabled: wp.array[bool],
+    sim_time: wp.array[float],
+):
+    """Disable the temporary tip joint at the release time and advance time."""
+    if wp.tid() == 0:
+        if sim_time[0] >= release_time:
+            joint_enabled[joint_index] = False
+        sim_time[0] = sim_time[0] + dt
+
+
+class Example:
+    def __init__(self, viewer, args):
+        self.viewer = viewer
+        self.args = args
+
+        self.fps = 200
+        self.frame_dt = 1.0 / self.fps
+        self.sim_time = 0.0
+        self.sim_substeps = 8
+        self.sim_iterations = 8
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.release_time = float(args.release_time)
+
+        # Illustrative cable geometry and mass distribution.
+        self.cable_length = 0.4
+        self.cable_radius = 0.0032
+        self.linear_density = 0.01714
+        self.num_segments = 20
+        segment_length = self.cable_length / self.num_segments
+
+        # Illustrative material parameters; applications should identify these
+        # values from their own material data.
+        relaxed_bend_stiffness = float(args.relaxed_bend_stiffness)
+        twist_ratio = float(args.twist_ratio)
+        bend_damping = float(args.bend_damping)
+        stretch_stiffness = 2.5e5
+        # Maxwell branches (one vec4 component each): bend stiffness [N*m/rad] and relaxation time [s];
+        # twist stiffness follows the same spectrum scaled by the twist ratio.
+        branch_bend = np.zeros(4)
+        branch_tau = np.zeros(4)
+        if not args.no_visco:
+            if len(args.visco_bend_stiffness) != len(args.visco_tau) or len(args.visco_tau) > 4:
+                raise ValueError("--visco-bend-stiffness and --visco-tau need the same number of values (at most 4)")
+            branch_bend[: len(args.visco_tau)] = args.visco_bend_stiffness
+            branch_tau[: len(args.visco_tau)] = args.visco_tau
+        self.with_visco = bool(np.any((branch_bend > 0.0) & (branch_tau > 0.0)))
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
+
+        cable_cfg = builder.default_shape_cfg.copy()
+        cable_cfg.has_shape_collision = False
+
+        # The held cable is nearly horizontal and raised slightly at the free end.
+        held_angle = math.radians(8.0)
+        start = wp.vec3(-0.2, 0.0, 0.65)
+        direction = wp.vec3(math.cos(held_angle), 0.0, math.sin(held_angle))
+        rod = newton.Rod.create_straight(
+            start=start,
+            direction=direction,
+            length=self.cable_length,
+            segment_count=self.num_segments,
+            radius=self.cable_radius,
+            twist_total=0.0,
+        )
+
+        points, quaternions = rod.points, rod.quaternions
+        rod_bodies, rod_joints = builder.add_rod(
+            rod=rod,
+            cfg=cable_cfg,
+            total_mass=self.linear_density * self.cable_length,
+            stretch_stiffness=stretch_stiffness,
+            bend_stiffness=relaxed_bend_stiffness,
+            twist_stiffness=twist_ratio * relaxed_bend_stiffness,
+            bend_damping=bend_damping,
+            wrap_in_articulation=False,
+            color=wp.vec3(0.22, 0.68, 0.95),
+            label="viscoelastic_cable",
+        )
+        self.rod_bodies = rod_bodies
+        self.rod_joints = rod_joints
+
+        # A visible kinematic clamp fixes the cable's first endpoint and frame.
+        clamp = builder.add_link(xform=wp.transform(start, quaternions[0]))
+        clamp_cfg = builder.default_shape_cfg.copy()
+        clamp_cfg.density = 0.0
+        clamp_cfg.has_shape_collision = False
+        builder.add_shape_box(
+            clamp,
+            xform=wp.transform(wp.vec3(0.0, 0.0, -0.012), wp.quat_identity()),
+            hx=0.012,
+            hy=0.012,
+            hz=0.018,
+            cfg=clamp_cfg,
+        )
+        builder.body_mass[clamp] = 0.0
+        builder.body_inv_mass[clamp] = 0.0
+        builder.body_inertia[clamp] = wp.mat33(0.0)
+        builder.body_inv_inertia[clamp] = wp.mat33(0.0)
+
+        endpoint_local_start = wp.vec3(0.0, 0.0, -0.5 * segment_length)
+        clamp_joint = builder.add_joint_fixed(
+            parent=clamp,
+            child=rod_bodies[0],
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(endpoint_local_start, wp.quat_identity()),
+            label="cable_clamp",
+        )
+        builder.add_articulation([*rod_joints, clamp_joint])
+
+        # This standalone world joint represents the robot gripper. Disabling it
+        # releases the tip while preserving the internal cable material state.
+        endpoint_local_end = wp.vec3(0.0, 0.0, 0.5 * segment_length)
+        self.tip_hold_joint = builder.add_joint_ball(
+            parent=-1,
+            child=rod_bodies[-1],
+            parent_xform=wp.transform(points[-1], quaternions[-1]),
+            child_xform=wp.transform(endpoint_local_end, wp.quat_identity()),
+            label="temporary_tip_hold",
+        )
+
+        builder.color(balance_colors=False)
+        sim_device = wp.get_device(args.device) if args.device else None
+        self.model = builder.finalize(device=sim_device)
+        self.model.set_gravity((0.0, 0.0, -9.81))
+
+        joints = np.asarray(self.rod_joints)
+        for name, branches in (
+            ("visco_bend_ke", branch_bend),
+            ("visco_twist_ke", twist_ratio * branch_bend),
+            ("visco_tau", branch_tau),
+        ):
+            values = np.zeros((self.model.joint_count, 4), dtype=np.float32)
+            values[joints] = branches
+            getattr(self.model.vbd, name).assign(values)
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=self.sim_iterations,
+        )
+
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+        self.control = self.model.control()
+        self.sim_time_array = wp.zeros(1, dtype=float, device=self.solver.device)
+
+        self.initial_tip_body_z = 0.5 * (float(points[-2][2]) + float(points[-1][2]))
+        self.expected_cable_mass = self.linear_density * self.cable_length
+
+        self.viewer.set_model(self.model)
+        self.viewer.set_camera(
+            pos=wp.vec3(0.0, -0.65, 0.65),
+            pitch=-10.0,
+            yaw=90.0,
+        )
+        self.capture()
+
+    def capture(self):
+        if self.solver.device.is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
+
+    def simulate(self):
+        for _ in range(self.sim_substeps):
+            self.state_0.clear_forces()
+            self.viewer.apply_forces(self.state_0)
+            wp.launch(
+                update_release_state,
+                dim=1,
+                inputs=[
+                    self.tip_hold_joint,
+                    self.release_time,
+                    self.sim_dt,
+                ],
+                outputs=[
+                    self.model.joint_enabled,
+                    self.sim_time_array,
+                ],
+                device=self.solver.device,
+            )
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.state_0, self.state_1 = self.state_1, self.state_0
+
+    def step(self):
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
+        self.sim_time += self.frame_dt
+
+    def render(self):
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
+
+    def test_final(self):
+        """Verify release, cable mass, and a nonzero moment in every enabled Maxwell branch."""
+        if self.state_0.body_q is None or self.state_0.body_qd is None:
+            raise RuntimeError("Body state is not available.")
+
+        body_q = self.state_0.body_q.numpy()
+        body_qd = self.state_0.body_qd.numpy()
+        if not np.all(np.isfinite(body_q)) or not np.all(np.isfinite(body_qd)):
+            raise ValueError("Non-finite cable state after release.")
+
+        joint_enabled = self.model.joint_enabled.numpy()
+        if joint_enabled[self.tip_hold_joint]:
+            raise ValueError("Temporary tip joint did not release.")
+
+        tip_body_z = float(body_q[self.rod_bodies[-1], 2])
+        if tip_body_z >= self.initial_tip_body_z - 0.01:
+            raise ValueError("Released cable tip did not move downward.")
+
+        cable_mass = float(np.sum(self.model.body_mass.numpy()[self.rod_bodies]))
+        if not np.isclose(cable_mass, self.expected_cable_mass, rtol=0.02):
+            raise ValueError(f"Cable mass {cable_mass:.6f} kg does not match the configured linear density.")
+
+        if self.with_visco:
+            moments = self.solver.joint_visco_moment_prev.numpy()[self.rod_joints]  # (joint, branch, 3)
+            joint = self.rod_joints[0]
+            active = np.flatnonzero(
+                (self.solver.joint_visco_tau.numpy()[joint] > 0.0)
+                & (
+                    (self.solver.joint_visco_bend_ke.numpy()[joint] > 0.0)
+                    | (self.solver.joint_visco_twist_ke.numpy()[joint] > 0.0)
+                )
+            )
+            branch_moment = np.linalg.norm(moments[:, active], axis=-1).max(axis=0)
+            if np.any(branch_moment <= 1.0e-6):
+                raise ValueError(f"A viscoelastic cable branch produced no moment: {branch_moment}.")
+
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument("--release-time", type=float, default=0.5, help="Tip release time [s]")
+        parser.add_argument("--no-visco", action="store_true", help="Disable the viscoelastic branches")
+        parser.add_argument(
+            "--relaxed-bend-stiffness",
+            type=float,
+            default=0.6423,
+            help="Relaxed per-joint bending stiffness [N*m/rad]",
+        )
+        parser.add_argument(
+            "--twist-ratio",
+            type=float,
+            default=0.64,
+            help="Twist-to-bend stiffness ratio, for the relaxed stiffness and every branch",
+        )
+        parser.add_argument(
+            "--visco-bend-stiffness",
+            type=float,
+            nargs="+",
+            default=[1.48, 0.45],
+            help="Per-joint bending stiffness of each Maxwell branch [N*m/rad] (at most 4)",
+        )
+        parser.add_argument(
+            "--bend-damping",
+            type=float,
+            default=0.025,
+            help="Effective per-joint bending damping [N*m*s/rad]",
+        )
+        parser.add_argument(
+            "--visco-tau",
+            type=float,
+            nargs="+",
+            default=[0.12, 5.6],
+            help="Relaxation time of each Maxwell branch [s] (at most 4)",
+        )
+        parser.set_defaults(num_frames=360)
+        return parser
+
+
+if __name__ == "__main__":
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
+    newton.examples.run(Example(viewer, args), args)
