@@ -132,9 +132,9 @@ Both tendon-capable solvers expose these controls:
 - `tendon_max_sweeps`: maximum capstan material-relaxation sweeps per solver
   iteration (default `256`). It accepts positive 32-bit integers; long routes
   may require a larger budget.
-- `tendon_settle_tol`: relative final capstan-force residual tolerance for
+- `tendon_settle_tol`: relative projected capstan-force residual tolerance for
   stopping sweeps early. Zero disables early-out, including the absolute tolerance.
-- `tendon_settle_atol`: absolute final capstan-force residual tolerance in
+- `tendon_settle_atol`: absolute projected capstan-force residual tolerance in
   newtons (default `1.0e-6`). Each guide must satisfy
   `error <= atol + tol * max(T_left, T_right)`. Slipping guides must reach
   the appropriate friction boundary; sticking guides must stay inside it.
@@ -142,6 +142,12 @@ Both tendon-capable solvers expose these controls:
   a depleted span cannot supply more material, but it can receive material again.
 - `tendon_activation_tol`: radius-relative activation gap for dynamic
   rollers. The default is `2.0e-3`.
+
+The sweep tolerances apply before segment rest lengths are stored as float32.
+Rounding the stored rest length by half a floating-point increment changes the
+reconstructed tension by that length error divided by compliance. In a stiff
+segment this can exceed the sweep tolerance; increasing the sweep budget
+cannot recover precision lost on writeback.
 
 XPBD solves tendon stretch and rolling slip as constraint rows. VBD evaluates
 the same routed material state as body force and positive-semidefinite local
@@ -157,6 +163,12 @@ Driven rollers therefore need cable loading or pre-tension to transmit
 torque. For pre-tension, set incoming-span `rest_length` values shorter than
 their initial free-span lengths; automatic rest lengths (`-1`) do not add
 pre-tension.
+
+VBD keeps each roller's local tangent points and capstan ratio fixed during a
+body-color sweep and evaluates segment forces at the current trial poses.
+It updates the route at the next iteration and at the accepted pose. The final
+material update does not move the bodies again, so converged material tensions
+alone do not establish that the body reactions have converged.
 
 XPBD applies `joint_linear_relaxation` to tendon stretch corrections.
 Rolling slip bounds the accumulated spin reaction and applies its change,
