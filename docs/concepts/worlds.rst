@@ -396,7 +396,7 @@ places all its entities in one world, so the source's explicit values must agree
 different values raise :class:`ValueError`. The destination entry takes the agreed
 value, or else the attribute default. Consumers without global entities may ignore the final
 entry; a single :class:`~newton.solvers.SolverMuJoCo` world reads world ``0``
-options when that world owns bodies and global options otherwise.
+options when that world owns bodies or flex particles and global options otherwise.
 
 .. _Per-world gravity:
 

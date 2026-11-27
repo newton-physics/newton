@@ -194,6 +194,24 @@ class TestMuJoCoFlex(unittest.TestCase):
             state_1.particle_qd.numpy(), [[0.0, 0.0, 0.0]] * 2 + [[0.0, 0.0, dt / 0.01]], atol=1.0e-6
         )
 
+    def test_global_flex_follows_global_gravity(self):
+        """A flex of global particles without bodies follows the gravity of global world ``-1``."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                _add_rope(builder, 0.0)
+                model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+                model.set_gravity((0.0, 0.0, -2.0), world=-1)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+
+                state_0, state_1 = model.state(), model.state()
+                dt = 1.0e-3
+                solver.step(state_0, state_1, model.control(), None, dt)
+                # The springs are at rest and the first particle is pinned.
+                np.testing.assert_allclose(
+                    state_1.particle_qd.numpy(), [[0.0, 0.0, 0.0]] + [[0.0, 0.0, -2.0 * dt]] * 2, atol=1.0e-6
+                )
+
     def test_authored_flexes_keep_settings_in_each_world(self):
         """Authored flexes keep their settings per world, and the remaining elements are grouped automatically."""
         world = _builder()

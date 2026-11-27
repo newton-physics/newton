@@ -7380,7 +7380,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"separate_worlds=False is only supported for single-world models; got world_count={model.world_count}."
             )
 
-        self._option_world = self._resolve_option_world(model, separate_worlds)
+        flex_particle_world = particle_world[self._flex_particles] if len(particle_world) else particle_world
+        self._option_world = self._resolve_option_world(model, separate_worlds, flex_particle_world)
 
         if not separate_worlds and self._option_world == 0:
             # The single MuJoCo world uses world 0's gravity, which kinematic bodies ignore.
@@ -11986,17 +11987,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
 
     @staticmethod
-    def _resolve_option_world(model: Model, separate_worlds: bool) -> int:
+    def _resolve_option_world(model: Model, separate_worlds: bool, flex_particle_world: np.ndarray) -> int:
         """Return the Newton world whose ``WORLD``-frequency options configure MuJoCo world 0.
 
         Separate MuJoCo worlds map to Newton worlds by index. A single MuJoCo world
         simulates world ``0`` and global entities, so it uses world ``0`` when that
-        world owns bodies and global world ``-1`` otherwise, such as in models built
-        without :meth:`~newton.ModelBuilder.begin_world`.
+        world owns bodies or flex particles and global world ``-1`` otherwise, such as
+        in models built without :meth:`~newton.ModelBuilder.begin_world`.
         """
-        if separate_worlds or model.body_count == 0:
+        if separate_worlds:
             return 0
-        return 0 if bool(np.any(model.body_world.numpy() == 0)) else -1
+        if model.body_count and np.any(model.body_world.numpy() == 0):
+            return 0
+        return 0 if np.any(flex_particle_world == 0) else -1
 
     def _option_worlds(self, model: Model, separate_worlds: bool) -> np.ndarray:
         """Return the ``WORLD``-frequency entries MuJoCo reads, one per MuJoCo world."""

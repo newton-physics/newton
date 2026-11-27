@@ -1277,7 +1277,7 @@ MuJoCo solver parameters follow a three-level resolution priority:
 Per-world options use the ``WORLD`` layout, shape ``(world_count + 1,)``,
 whose final entry belongs to global world ``-1`` (see :ref:`Per-world attributes`).
 Separate MuJoCo worlds read the entry of their Newton world. A single MuJoCo world
-reads world ``0`` when that world owns bodies and the global entry otherwise, as in
+reads world ``0`` when that world owns bodies or flex particles and the global entry otherwise, as in
 models built without :meth:`~newton.ModelBuilder.begin_world`, where importers store
 options in the global entry. :attr:`~newton.Model.gravity` follows the same rule;
 a MuJoCo world has one gravity, so dynamic global bodies that share it with world ``0``
