@@ -255,7 +255,7 @@ Compound joints follow Newton's convention: slides precede hinges, preserving
 order within each group. As in legacy import, hinges share a point on their
 axis lines when possible; otherwise they use the first hinge's position and
 log a warning. Slides after nonparallel hinges emit a deprecation warning
-because reordering changes their motion. See :ref:`mjcf-merged-joints`.
+because reordering changes their motion. See :ref:`merged MJCF joints <mjcf-merged-joints>`.
 Properties and actuator targets follow the corresponding DOFs.
 One-ended joint equalities remain MuJoCo rows. Nonlinear joint equalities warn
 when approximated as generic linear mimics, retaining their full polynomial for

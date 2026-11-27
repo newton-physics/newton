@@ -901,6 +901,8 @@ class TestImportMjcfNative(unittest.TestCase):
 
     def test_contact_pairs_masks_and_excludes(self):
         """Preserve asymmetric masks, explicit pair parameters and exclusions."""
+        import mujoco
+
         xml = """<mujoco><worldbody><body name="a"><freejoint/><geom name="a" size=".1" contype="1" conaffinity="2"/></body>
             <body name="b" pos="1 0 0"><freejoint/><geom name="b" size=".1" contype="2" conaffinity="1"/></body>
             <body name="c" pos="2 0 0"><freejoint/><geom name="c" size=".1"/></body>
@@ -930,6 +932,26 @@ class TestImportMjcfNative(unittest.TestCase):
         solver.model.mujoco.pair_friction.assign(2 * solver.model.mujoco.pair_friction.numpy())
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy(), [2 * reference.pair_friction] * 2)
+
+        duplicate_xml = xml.replace(
+            '<exclude body1="a" body2="b"/>',
+            '<pair geom1="b" geom2="a" friction=".7 .8 .04 .05 .06" adhesion=".9"/><exclude body1="a" body2="b"/>',
+        )
+        reference = mujoco.MjModel.from_xml_string(duplicate_xml)
+        asset = newton.ModelBuilder()
+        asset.add_mjcf_native(duplicate_xml)
+        builder = newton.ModelBuilder()
+        builder.replicate(asset, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        for field in ("pair_friction", "pair_solref", "pair_adhesion"):
+            np.testing.assert_allclose(getattr(solver.mjw_model, field).numpy(), [getattr(reference, field)] * 2)
+        model.mujoco.pair_friction.assign(2 * model.mujoco.pair_friction.numpy())
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy(), [2 * reference.pair_friction] * 2)
+        builder.custom_attributes["mujoco:pair_geom2"].values[4] = builder.shape_count - 1
+        with self.assertRaisesRegex(ValueError, "matching explicit contact pairs"):
+            SolverMuJoCo(builder.finalize(), disable_contacts=True)
 
         attached = newton.ModelBuilder()
         ground = attached.add_ground_plane()
@@ -984,6 +1006,24 @@ class TestImportMjcfNative(unittest.TestCase):
         builder.custom_attributes["mujoco:tendon_limited"].values[0] = 1
         solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.tendon_range.numpy()[:, 0], [[0, 1], [0, 2]])
+
+        for flags in (("false", "true"), ("true", "false"), ("auto", "false")):
+            with self.subTest(force_flags=flags):
+                builder = newton.ModelBuilder()
+                for flag in flags:
+                    builder.begin_world()
+                    builder.add_mjcf_native(f'''<mujoco><worldbody><body><joint name="j" type="slide"/>
+                        <geom size=".1"/></body></worldbody><tendon>
+                        <fixed actuatorfrclimited="{flag}" actuatorfrcrange="-1 1">
+                        <joint joint="j" coef="1"/></fixed></tendon></mujoco>''')
+                    builder.end_world()
+                with self.assertRaisesRegex(ValueError, "tendon actuator force limit flags"):
+                    SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        builder.custom_attributes["mujoco:tendon_actuator_force_limited"].values[1] = 1
+        builder.custom_attributes["mujoco:tendon_actuator_force_range"].values[1] = wp.vec2(-2, 3)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+        self.assertTrue(solver.mj_model.tendon_actfrclimited[0])
+        np.testing.assert_allclose(solver.mjw_model.tendon_actfrcrange.numpy()[:, 0], [[-1, 1], [-2, 3]])
 
     def test_actuator_order_across_worlds(self):
         """Reject mismatched servo rows instead of swapping their delayed commands."""

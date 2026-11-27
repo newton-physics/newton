@@ -52,21 +52,23 @@ def _native_pair_rows(model, native, geom_shapes):
             strict=True,
         )
     ):
-        groups.setdefault(world, {})[first, second] = row
-    expected = {tuple(sorted(pair)) for pair in zip(native.pair_geom1, native.pair_geom2, strict=True)}
+        groups.setdefault(world, []).append((row, first, second))
+    expected = {}
+    for pair, endpoints in enumerate(zip(native.pair_geom1, native.pair_geom2, strict=True)):
+        expected.setdefault(tuple(sorted(endpoints)), []).append(pair)
     for world, shapes in enumerate(geom_shapes):
         slots = {shape: geom for geom, shape in enumerate(shapes) if shape >= 0}
-        pairs = {
-            tuple(sorted((slots[first], slots[second]))): row
-            for (first, second), row in (groups.get(-1, {}) | groups.get(world, {})).items()
-            if first in slots and second in slots
-        }
-        if pairs.keys() != expected:
+        pairs = {}
+        # Equal endpoints keep declaration order, including global and world-local rows.
+        for row, first, second in sorted(groups.get(-1, []) + groups.get(world, [])):
+            if first in slots and second in slots:
+                pairs.setdefault(tuple(sorted((slots[first], slots[second]))), []).append(row)
+        if pairs.keys() != expected.keys() or any(len(pairs[key]) != len(indices) for key, indices in expected.items()):
             raise ValueError(
                 f"SolverMuJoCo requires matching explicit contact pairs across worlds; world {world} differs."
             )
-        for pair, endpoints in enumerate(zip(native.pair_geom1, native.pair_geom2, strict=True)):
-            rows[world, pair] = pairs[tuple(sorted(endpoints))]
+        for endpoints, indices in expected.items():
+            rows[world, indices] = pairs[endpoints]
     return rows
 
 
@@ -174,6 +176,11 @@ def _publish_native_world_parameters(
         limited = np.where(flags == mujoco.mjtLimited.mjLIMITED_AUTO, np.any(ranges != 0, axis=-1), flags != 0)
         if np.any((tendon_rows >= 0) & (limited != native.tendon_limited)):
             raise ValueError("SolverMuJoCo requires matching tendon limit flags across worlds.")
+        flags = model.mujoco.tendon_actuator_force_limited.numpy()[rows]
+        ranges = model.mujoco.tendon_actuator_force_range.numpy()[rows]
+        limited = np.where(flags == mujoco.mjtLimited.mjLIMITED_AUTO, np.any(ranges != 0, axis=-1), flags != 0)
+        if np.any((tendon_rows >= 0) & (limited != native.tendon_actfrclimited)):
+            raise ValueError("SolverMuJoCo requires matching tendon actuator force limit flags across worlds.")
         spatial = (tendon_rows >= 0) & ~model.mujoco.native_tendon_fixed.numpy()[rows]
         lengths = model.mujoco.tendon_springlength.numpy()[rows]
         if np.any(spatial[..., None] & (lengths != lengths[0])):
