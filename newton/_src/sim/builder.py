@@ -1183,7 +1183,8 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m].
 
-        Hydroelastic contacts use ``kd / ke`` as a shape relaxation time;
+        With ``HydroelasticSDF.Config(generate_damping=True)``, hydroelastic
+        contacts use ``kd / ke`` as a shape relaxation time;
         see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
         """
         kf: float = 1000.0

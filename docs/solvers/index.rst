@@ -208,8 +208,9 @@ formulation.
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverMuJoCo`, and
   :class:`~newton.solvers.SolverVBD`. :class:`~newton.solvers.SolverSteel`
-  and :class:`~newton.solvers.SolverKamino` also use ``kd / ke`` through
-  :ref:`hydroelastic damping <hydroelastic-contact-damping>`; ``kh``
+  and :class:`~newton.solvers.SolverKamino` also use ``kd / ke`` when
+  :ref:`hydroelastic damping <hydroelastic-contact-damping>` is enabled with
+  ``HydroelasticSDF.Config(generate_damping=True)``; ``kh``
   still sets hydroelastic stiffness. Enable ``contact_compliance=True``
   for Steel, ``config.constraints.contact_compliance=True`` for Kamino
   PADMM/SCC, or ``config.lox.contact_compliance=True`` for Kamino LOX.

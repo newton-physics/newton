@@ -2286,12 +2286,28 @@ For a pair, the material slope is the series combination
 
 **Hydroelastic damping:**
 
-The collision pipeline writes damping to :attr:`Contacts.rigid_contact_damping`
+Hydroelastic contacts generate zero damping by default, preserving each
+solver's fallback. MuJoCo selects damping automatically; SemiImplicit and
+Featherstone use the shape damping. Opt in when constructing the pipeline:
+
+.. code-block:: python
+
+    from newton.geometry import HydroelasticSDF
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(generate_damping=True),
+    )
+
+This experimental option applies to all hydroelastic pairs in the pipeline.
+It is a runtime pipeline setting; shape gains can still be authored in USD.
+Rebuild the pipeline to change the option.
+
+When enabled, the pipeline writes damping to :attr:`Contacts.rigid_contact_damping`
 for penetrating hydroelastic contacts. Each shape contributes
 ``tau = max(kd, 0) / ke`` when ``ke > 0``, or zero otherwise. The two times add,
 and each contact receives its stiffness times that sum. Separated speculative
-contacts receive zero damping. This applies to all hydroelastic pairs,
-independent of the solver or MuJoCo's ``solref_mode``.
+contacts receive zero damping. Ordinary contacts are unaffected.
 
 The default ``ke=2500`` and ``kd=100`` give a pair time of 0.08 s. Tune ``kh``
 for stiffness and ``kd / ke`` for damping. Custom pressure laws and reduced
@@ -2303,13 +2319,10 @@ enabled, the adapter caps excessive damping to preserve stiffness when the
 timestep can resolve it. Contacts that are too stiff for the timestep can
 still soften. See :ref:`mujoco-contact-solref-conversion` for details.
 
-Previously, hydroelastic contacts used automatically selected damping in
-Newton's MuJoCo adapter, regardless of shape ``kd``. Positive ``kd`` now controls
-the generated damping through ``kd / ke``. Set ``kd=0`` on both shapes to retain
-the previous automatic damping.
-
-This restores zero generated contact damping. It also disables shape damping
-in solvers that already used it. Solver-specific overrides still apply.
+SemiImplicit and Featherstone apply the generated damping explicitly. Large
+coefficients can cause excessive rebound unless the timestep is reduced.
+Leaving ``generate_damping=False`` preserves their previous shape-damping
+fallback without changing ``kd``. Solver-specific overrides still apply.
 
 **Custom pressure laws:**
 

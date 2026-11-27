@@ -44,13 +44,14 @@ MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     margin=0.0,
     mu=0.01,
-    # Hydroelastic supplies per-contact stiffness from ``kh`` and damping
-    # from ``kd / ke``; ``ke``/``kd`` also affect non-hydroelastic contacts.
-    # Zero ``kd`` keeps MuJoCo's automatic hydroelastic damping.
-    # XPBD projects positions and is insensitive to this.
+    # Hydroelastic supplies the per-contact stiffness for the nut/bolt pair, so
+    # ``ke``/``kd`` reach only the non-hydroelastic contacts. At the 1e10 ``kh``
+    # default the thread contacts resolve over a ~95 ms solref time constant --
+    # roughly 45 substeps -- and the nut sits visibly cocked under MuJoCo. XPBD
+    # projects positions and is insensitive to this either way.
     kh=1e11,  # Hydroelastic contact stiffness
     ke=1e7,
-    kd=0.0,
+    kd=1e4,
     gap=0.0,
     density=8000.0,
     mu_torsional=0.0,
@@ -201,9 +202,6 @@ class Example:
         main_scene = newton.ModelBuilder()
         if self.solver_type == "kamino":
             newton.solvers.SolverKamino.register_custom_attributes(main_scene)
-        elif self.solver_type == "mujoco":
-            main_scene.default_shape_cfg.ke = 1e7
-            main_scene.default_shape_cfg.kd = 1e4
         main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
         # Add ground plane at z = ground_plane_offset.
         # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
