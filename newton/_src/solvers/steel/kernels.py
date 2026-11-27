@@ -53,6 +53,9 @@ PGS_CONSTRAINT_TYPE_TORSION = 7
 # impulse is boxed to ``[-f dt, f dt]`` (the bound is stored in the row's ``mu``), so
 # the DOF sticks until the required impulse saturates the box.
 PGS_CONSTRAINT_TYPE_JOINT_FRICTION = 8
+# The free-body sweep's packed row metadata keeps the row type in the low bits of ``.w`` and the signed parent row above.
+MF_META_ROW_TYPE_BITS = 8
+MF_META_ROW_TYPE_MASK = (1 << MF_META_ROW_TYPE_BITS) - 1
 
 # Positive gaps below this slop [m] count as touching: it absorbs float32 residuals of
 # rows that land exactly at contact.

@@ -15,6 +15,7 @@ from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.friction import friction_pair_candidate
 from newton._src.solvers.steel.friction_patches import FrictionPatches
 from newton._src.solvers.steel.kernels import (
+    MF_META_ROW_TYPE_BITS,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -1705,7 +1706,7 @@ class TestSteelSparsePGS(unittest.TestCase):
         meta = np.zeros((2, 4), dtype=np.int32)
         meta[:, 0] = 0xFFFF  # Active endpoint at offset zero; static endpoint -1.
         meta[:, 1] = np.float32(0.5).view(np.int32)
-        meta[:, 3] = PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT | (-1 << 16)
+        meta[:, 3] = PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT | (-1 << MF_META_ROW_TYPE_BITS)
         rows = np.zeros((2, 1, 6), dtype=np.float32)
         rows[:, 0, 0] = 1.0
         velocity = np.zeros((2, 6), dtype=np.float32)
@@ -1765,9 +1766,9 @@ class TestSteelSparsePGS(unittest.TestCase):
         meta[:, 0] = 0xFFFF  # Active endpoint at offset zero; static endpoint -1.
         # The normal rows keep their impulses (no inverse diagonal); the friction rows get one.
         meta[1, 1] = meta[2, 1] = np.float32(1.0).view(np.int32)
-        meta[0, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (3 << 16)
-        meta[3, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (0 << 16)
-        meta[1, 3] = meta[2, 3] = PGS_CONSTRAINT_TYPE_FRICTION | (0 << 16)
+        meta[0, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (3 << MF_META_ROW_TYPE_BITS)
+        meta[3, 3] = PGS_CONSTRAINT_TYPE_CONTACT | (0 << MF_META_ROW_TYPE_BITS)
+        meta[1, 3] = meta[2, 3] = PGS_CONSTRAINT_TYPE_FRICTION | (0 << MF_META_ROW_TYPE_BITS)
         rows = np.zeros((2, rows_per_world, 6), dtype=np.float32)
         rows[0, 0, 2] = rows[0, 3, 2] = 1.0  # normals along z
         rows[0, 1, 0] = 1.0  # friction along x
@@ -1904,7 +1905,7 @@ class TestSteelSparsePGS(unittest.TestCase):
             meta[:, 4 * row + 1] = np.float32(1.0 / diagonal[8 + row]).view(np.int32)
             meta[:, 4 * row + 2] = np.float32(bias[8 + row]).view(np.int32)
             parent = -1 if row % 3 == 0 else row - row % 3
-            meta[:, 4 * row + 3] = int(types[8 + row]) | (parent << 16)
+            meta[:, 4 * row + 3] = int(types[8 + row]) | (parent << MF_META_ROW_TYPE_BITS)
         dense_impulses = padded(np.zeros(8))
         mf_impulses = padded(np.zeros(6), mf_capacity)
         delta = wp.full((worlds, 21), float("nan"), device=device)
@@ -3206,7 +3207,7 @@ class TestSteelLocalInternalSolve(unittest.TestCase):
                 packed_dofs,
                 float_bits(1.0),
                 float_bits(mf_rhs[row]),
-                int(mf_types[row]) | (0 << 16),
+                int(mf_types[row]) | (0 << MF_META_ROW_TYPE_BITS),
             ]
 
         dense_impulses = wp.zeros((1, max_constraints), dtype=wp.float32, device=device)

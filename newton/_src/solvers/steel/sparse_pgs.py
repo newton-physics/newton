@@ -9,6 +9,8 @@ import warp as wp
 
 from .friction import FRICTION_PAIR_CUDA
 from .kernels import (
+    MF_META_ROW_TYPE_BITS,
+    MF_META_ROW_TYPE_MASK,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -89,9 +91,9 @@ def _get_pgs_solve_sparse_kernel(
         for (int row = 0; row < mf_count; ++row) {{
             const int global_row = mf_offset + row;
             const int4 meta = *reinterpret_cast<const int4*>(&mf_meta.data[global_row * 4]);
-            const int kind = meta.w & 0xffff;
+            const int kind = meta.w & {MF_META_ROW_TYPE_MASK};
             const bool friction = kind == {friction_type};
-            const int parent = meta.w >> 16;
+            const int parent = meta.w >> {MF_META_ROW_TYPE_BITS};
             if (friction && row != parent + 1) continue;
             const int sibling = friction ? parent + 2 : -1;
             const float inverse_diagonal = __int_as_float(meta.y);
@@ -148,8 +150,8 @@ def _get_pgs_solve_sparse_kernel(
             if (friction) {{
                 // Patch normal rows link the region's next normal (circular list, -1 ends a point contact).
                 float normal_load = mf_impulse[parent];
-                for (int next = mf_meta.data[(mf_offset + parent) * 4 + 3] >> 16;
-                     next >= 0 && next != parent; next = mf_meta.data[(mf_offset + next) * 4 + 3] >> 16)
+                for (int next = mf_meta.data[(mf_offset + parent) * 4 + 3] >> {MF_META_ROW_TYPE_BITS};
+                     next >= 0 && next != parent; next = mf_meta.data[(mf_offset + next) * 4 + 3] >> {MF_META_ROW_TYPE_BITS})
                     normal_load += mf_impulse[next];
                 const float radius = fmaxf(mf_row_mu.data[global_row] * normal_load, 0.0f);
                 const float old_sibling = mf_impulse[sibling];

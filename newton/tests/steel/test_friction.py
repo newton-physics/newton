@@ -20,6 +20,7 @@ from newton._src.solvers.steel.friction_patches import (
     seed_patch_impulses,
 )
 from newton._src.solvers.steel.kernels import (
+    MF_META_ROW_TYPE_BITS,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     compute_mf_effective_mass_and_rhs,
@@ -990,7 +991,9 @@ def _coulomb_newton_mf_block(device, block):
     meta[0, :3, 0] = 0xFFFF  # dof_a 0, no body b
     meta[0, :3, 1] = np.array([0.0, 1.0, 1.0], dtype=np.float32).view(np.int32)
     row_types = [PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION, PGS_CONSTRAINT_TYPE_FRICTION]
-    meta[0, :3, 3] = np.array(row_types, dtype=np.int64) | (np.array([-1, 0, 0], dtype=np.int64) << 16)
+    meta[0, :3, 3] = np.array(row_types, dtype=np.int64) | (
+        np.array([-1, 0, 0], dtype=np.int64) << MF_META_ROW_TYPE_BITS
+    )
     impulses = wp.zeros((1, 4), dtype=float, device=device)
     velocity = np.zeros(6, dtype=np.float32)
     velocity[:3] = u
