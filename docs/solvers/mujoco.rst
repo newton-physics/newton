@@ -1048,58 +1048,47 @@ surface velocity, so these meshes act as still surfaces with
 Hydroelastic material response
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Both shapes must have ``ShapeConfig.is_hydroelastic=True`` and force-space
-``mujoco.solref_mode=0`` to use this mapping. Missing modes, ``RAW``,
-``MJCF_DEFAULT``, and mixed pairs keep the existing parameter mapping.
-``ShapeConfig.kh`` controls stiffness; damping comes from
-``Contacts.rigid_contact_damping``. Enable
-``HydroelasticSDF.Config(generate_damping=True)`` to compute damping from each
-shape's ``kd / ke``. Otherwise these pressure contacts have zero damping unless
-the buffer is set explicitly. See
-:ref:`hydroelastic damping <hydroelastic-contact-damping>` for tuning.
-
-Register the MuJoCo attributes before adding or importing shapes:
-
-.. code-block:: python
-
-    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-
-After adding or importing the two hydroelastic shapes, select their modes:
-
-.. code-block:: python
-
-    solref_mode = builder.custom_attributes["mujoco:solref_mode"]
-    if solref_mode.values is None:
-        solref_mode.values = {}
-    for shape in (shape_a, shape_b):
-        solref_mode.values[shape] = 0  # Force-space mode.
-    model = builder.finalize()
-
-Use Newton contacts (``use_mujoco_contacts=False``), ``cone="elliptic"``, and
-Euler, implicit, or implicitfast integration on MuJoCo-Warp. Other cones,
-integrators, and contact backends keep their existing response. Set
-``HydroelasticSDF.Config(reduce_contacts=False)`` in the collision pipeline;
-the solver does not check contact reduction. Existing hydroelastic pairs
-already using force-space ``solref_mode`` now use this mapping and
-may need retuning. Set the modes before constructing the solver. To change
-hydroelastic modes later, recreate the solver and any CUDA graphs.
-
-For sticking or frictionless contacts, normal stiffness is consistent across
-body masses and contact subdivision. Sliding couples normal and friction
-forces. Slow creep is possible below the friction limit and depends on
-contact subdivision.
-
-Backend contact frames have scaled tangent rows and compensating friction
-coefficients. Newton still reports forces in world coordinates. Raw MuJoCo
-sensors and viewers that assume unit tangent rows need special care.
-USD and MJCF imports keep their existing mode rules: authored ``solref``
-selects ``RAW``; otherwise shapes use ``MJCF_DEFAULT``. The asset alone cannot
-select this hydroelastic response. After importing, use the builder workflow
-above to opt in before finalizing the model and constructing the solver.
-
 .. experimental::
 
    Hydroelastic force-space response may change without prior notice.
+
+Both shapes must be hydroelastic and select ``mujoco:solref_mode=0`` before
+constructing the solver. Missing modes, ``RAW``, ``MJCF_DEFAULT``, and mixed
+pairs keep the existing mapping. Set the mode on each shape when adding it::
+
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, sdf_max_resolution=64, kh=1.0e11)
+    builder.add_shape_box(
+        body, hx=0.002, hy=0.002, hz=0.002, cfg=cfg,
+        custom_attributes={"mujoco:solref_mode": 0},
+    )
+
+With the default pressure law, ``kh`` controls stiffness. Damping comes from
+``Contacts.rigid_contact_damping``, including explicit zero. Enable
+``HydroelasticSDF.Config(generate_damping=True)`` to generate it from shape
+gains; see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
+Otherwise these pressure contacts have zero damping unless the buffer is set.
+
+Use Newton contacts (``use_mujoco_contacts=False``), ``cone="elliptic"``, and
+Euler, implicit, or implicitfast integration on MuJoCo-Warp. Other cones,
+integrators, and contact backends keep their existing response.
+Set ``HydroelasticSDF.Config(reduce_contacts=False)``;
+the solver does not check contact reduction. Existing force-space hydroelastic
+pairs may need retuning. Recreate the solver and CUDA graphs after changing
+which shapes select this mode.
+
+For sticking or frictionless contacts, normal stiffness is consistent across
+body masses and contact subdivision. Sliding couples normal and friction
+forces; slow creep remains possible below the friction limit and can depend
+on contact subdivision.
+
+Backend contact frames have scaled tangent rows and compensating friction
+coefficients. Newton reports forces in world coordinates. Raw MuJoCo sensors
+and viewers that assume unit tangent rows need special care.
+
+USD and MJCF assets cannot select this response directly. Register the MuJoCo
+attributes before importing. Then set ``builder.custom_attributes["mujoco:solref_mode"].values[shape] = 0`` for
+both shapes before finalization; initialize ``values`` to ``{}`` if it is ``None``.
 
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~

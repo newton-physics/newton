@@ -5312,57 +5312,60 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     @event_scope
     def _mujoco_warp_step(self, contacts: Contacts | None):
         hydroelastic = self._supports_hydroelastic_compliance()
-        if not self._use_speculative_contacts and not hydroelastic:
-            self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+        if not self._use_speculative_contacts:
+            if hydroelastic:
+                self._mujoco_warp.step1(self.mjw_model, self.mjw_data)
+                self._apply_hydroelastic_compliance(self.mjw_model, self.mjw_data, contacts)
+                self._mujoco_warp.step2(self.mjw_model, self.mjw_data)
+            else:
+                self._mujoco_warp.step(self.mjw_model, self.mjw_data)
             return
         model, data = self.mjw_model, self.mjw_data
+        if model.opt.integrator not in (
+            self._mujoco.mjtIntegrator.mjINT_EULER,
+            self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+        ):
+            raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
         contact = data.contact
-        if self._use_speculative_contacts:
-            if model.opt.integrator not in (
-                self._mujoco.mjtIntegrator.mjINT_EULER,
-                self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-            ):
-                raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
-            wp.launch(
-                speculative.prepare_contacts,
-                dim=data.naconmax,
-                inputs=[
-                    data.nacon,
-                    model.opt.timestep,
-                    contact.worldid,
-                    contact.dist,
-                    contact.includemargin,
-                    contact.dim,
-                    contact.solref,
-                    contact.solimp,
-                    self._speculative_clearance,
-                    self._speculative_dim,
-                    self._speculative_solref,
-                    self._speculative_solimp,
-                ],
-                device=self.device,
-            )
+        wp.launch(
+            speculative.prepare_contacts,
+            dim=data.naconmax,
+            inputs=[
+                data.nacon,
+                model.opt.timestep,
+                contact.worldid,
+                contact.dist,
+                contact.includemargin,
+                contact.dim,
+                contact.solref,
+                contact.solimp,
+                self._speculative_clearance,
+                self._speculative_dim,
+                self._speculative_solref,
+                self._speculative_solimp,
+            ],
+            device=self.device,
+        )
         self._mujoco_warp.step1(model, data)
         if hydroelastic:
             self._apply_hydroelastic_compliance(model, data, contacts)
-        if self._use_speculative_contacts:
-            wp.launch(
-                speculative.set_contact_targets,
-                dim=data.naconmax,
-                inputs=[
-                    data.nacon,
-                    model.opt.timestep,
-                    contact.worldid,
-                    self._speculative_clearance,
-                    contact.efc_address,
-                    contact.dist,
-                    contact.includemargin,
-                    data.efc.vel,
-                    data.efc.pos,
-                    data.efc.aref,
-                ],
-                device=self.device,
-            )
+        wp.launch(
+            speculative.set_contact_targets,
+            dim=data.naconmax,
+            inputs=[
+                data.nacon,
+                model.opt.timestep,
+                contact.worldid,
+                self._speculative_clearance,
+                contact.efc_address,
+                contact.dist,
+                contact.includemargin,
+                data.efc.vel,
+                data.efc.pos,
+                data.efc.aref,
+            ],
+            device=self.device,
+        )
         self._mujoco_warp.step2(model, data)
 
     @event_scope
@@ -6070,7 +6073,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.body_weldid,
                 self.mjw_model.body_dofnum,
                 self.mjw_model.body_invweight0,
-                self.mjw_model.opt.timestep,
                 self.mjw_model.geom_condim,
                 self.mjw_model.geom_priority,
                 self.mjw_model.geom_solmix,
@@ -6134,6 +6136,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._supports_hydroelastic_compliance(),
                 self._contacts_epoch,
                 recovery,
+                self.mjw_model.opt.timestep,
                 self.mjw_model.opt.integrator != self._mujoco.mjtIntegrator.mjINT_DISCRETE
                 and not self.mjw_model.opt.disableflags & self._mujoco.mjtDisableBit.mjDSBL_REFSAFE,
                 compact_stale,

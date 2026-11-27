@@ -230,23 +230,6 @@ def _hydroelastic_pair_enabled(shape_flags: wp.array[int], solref_mode: wp.array
 
 
 @wp.func
-def hydroelastic_solref(stiffness: float, damping: float, invweight: float, timestep: float):
-    """Map a backward-Euler spring to MuJoCo contact parameters."""
-    damping_implicit = wp.max(damping, 0.0) + timestep * stiffness
-    compliance_scaled = invweight * timestep * damping_implicit
-    # The reciprocal form avoids inf / inf for stiff contacts.
-    imp = wp.clamp(1.0 / (1.0 + 1.0 / wp.max(compliance_scaled, FLOAT64_EPS)), MJ_MINIMP, MJ_MAXIMP)
-    factor = invweight * (1.0 - imp)
-    solref = convert_solref(
-        wp.max(stiffness * factor, FLOAT64_EPS),
-        wp.max(damping_implicit * factor, FLOAT64_EPS),
-        1.0,
-        1.0,
-    )
-    return solref, vec5(imp, imp, 0.001, 1.0, 0.5)
-
-
-@wp.func
 def _hydroelastic_tangent_scale(
     normal_weight: float,
     invweight: float,
@@ -564,7 +547,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
-    opt_timestep: wp.array[float],
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
@@ -628,6 +610,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     hydroelastic_compliance: bool,
     contacts_epoch: int,
     recovery: MeshRecoveryData,
+    world_timestep: wp.array[float],
     refsafe: bool,
     compact_stale: bool,
 ):
@@ -656,7 +639,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     needs_full = gen != last_gen or (compact_stale and has_recovery_contacts(recovery, gen))
     if last_contact_timestep:
         needs_full = (
-            needs_full or opt_timestep[0] != last_contact_timestep[0] or contacts_epoch != last_contacts_epoch[0]
+            needs_full or world_timestep[0] != last_contact_timestep[0] or contacts_epoch != last_contacts_epoch[0]
         )
 
     if needs_full:
@@ -857,14 +840,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 )
                 if hydroelastic and pressure_contact[tid]:
                     if is_elliptic and condim > 1:
-                        h = opt_timestep[0]
+                        h = world_timestep[0]
                         normal_weight = wp.max(h * (wp.max(kd, 0.0) + h * contact_ke), FLOAT64_EPS)
                         ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
                         tangent_scale = _hydroelastic_tangent_scale(
                             normal_weight, invweight, solimp[1], ir, friction[0]
                         )
                         friction_weight = normal_weight * tangent_scale * tangent_scale / (ir * ir)
-                    solref, solimp = hydroelastic_solref(contact_ke, kd, invweight, opt_timestep[0])
+                    # Seed the impedance for conditioning; the constraint pass sets the normal response.
+                    weight = invweight * world_timestep[0] * (wp.max(kd, 0.0) + world_timestep[0] * contact_ke)
+                    # The reciprocal form avoids inf / inf for stiff contacts.
+                    imp = wp.clamp(1.0 / (1.0 + 1.0 / wp.max(weight, FLOAT64_EPS)), MJ_MINIMP, MJ_MAXIMP)
+                    solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
                 elif solimp[1] < 1.0:
                     imp = solimp[1]
                     factor = _normal_contact_gain_factor(
@@ -883,7 +870,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
                         timeconst = 2.0 / wp.max(kd * factor, FLOAT64_EPS)
                         if refsafe and timeconst < critical_timeconst:
                             # Keep the stiffness; cap overdamped damping at the refsafe floor.
-                            dt = opt_timestep[worldid % opt_timestep.shape[0]]
+                            dt = world_timestep[worldid % world_timestep.shape[0]]
                             timeconst = wp.min(wp.max(timeconst, 2.0 * dt), critical_timeconst)
                     dampratio = critical_timeconst / timeconst
                     solref = wp.vec2(timeconst, dampratio)
@@ -891,7 +878,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # Use the final normal impedance when mapping the authored friction slope.
         if friction_weight > 0.0:
             # Direct-format solreffriction avoids MuJoCo's time-constant clamp.
-            rate = 1.0 / opt_timestep[0]
+            rate = 1.0 / world_timestep[0]
             if kf > 0.0:
                 rate = wp.min(rate, kf * (invweight + 1.0 / friction_weight))
             solreffriction = wp.vec2(0.0, -rate * solimp[1])
@@ -919,7 +906,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
             )
 
         if recovery_slot >= 0 and dist < margin:
-            dt = opt_timestep[worldid % opt_timestep.shape[0]]
+            dt = world_timestep[worldid % world_timestep.shape[0]]
             solref = _recovery_solref(recovery.contacts[recovery_slot].thickness, margin - dist, dt, solimp)
 
         cid = wp.atomic_add(nacon_out, 0, 1)
@@ -1022,7 +1009,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 depth = contact_includemargin_out[cid] - dist
                 if slot >= 0 and depth > 0.0:
                     world = contact_worldid_out[cid]
-                    dt = opt_timestep[world % opt_timestep.shape[0]]
+                    dt = world_timestep[world % world_timestep.shape[0]]
                     contact_solref_out[cid] = _recovery_solref(
                         recovery.contacts[slot].thickness, depth, dt, contact_solimp_out[cid]
                     )

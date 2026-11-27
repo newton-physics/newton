@@ -2738,10 +2738,10 @@ class TestMuJoCoHydroelastic(unittest.TestCase):
         cases = [((), None)] + [((), (a, b)) for a in modes for b in modes if (a, b) != force_space]
         cases += [(shapes, force_space) for shapes in ((0,), (1,), (0, 1))]
         for cone in ("elliptic", "pyramidal"):
-            if cone == "pyramidal":
-                cases.append(((), force_space))
+            # Elliptic covers the shape/mode gates; pyramidal only needs the cone fallback.
+            cone_cases = cases if cone == "elliptic" else [((), None), ((), force_space)]
             velocities = []
-            for ordinary_shapes, solref_modes in cases:
+            for ordinary_shapes, solref_modes in cone_cases:
                 with self.subTest(cone=cone, ordinary_shapes=ordinary_shapes, solref_modes=solref_modes):
                     model = _mujoco_model(solref_modes=solref_modes, ordinary_shapes=ordinary_shapes)
                     solver = _mujoco_solver(model, cone=cone)
