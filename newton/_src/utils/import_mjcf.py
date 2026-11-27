@@ -22,6 +22,7 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
+from ..sim.enums import friction_mode_from_condim
 from ..sim.model import Model
 from ..solvers.mujoco import dcmotor
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
@@ -42,6 +43,7 @@ from ..solvers.mujoco.utils import (
     solref_invalid_mask,
 )
 from ..usd.schemas import solref_to_stiffness_damping
+from .deprecation import warn_deprecation
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
     clamp_imported_opacity,
@@ -502,6 +504,56 @@ def _load_and_expand_mjcf(
 AttributeFrequency = Model.AttributeFrequency
 
 
+_HINGE_ANCHOR_TOLERANCE = 1.0e-4
+"""Largest distance from a hinge axis line, in MJCF length units, at which a point counts as lying on it."""
+
+
+_AXIS_PARALLEL_TOLERANCE = 1.0e-3
+"""Sine of the angle below which two joint axes of a body count as parallel.
+
+No meeting point is computed for parallel hinge axes: it is sensitive to small changes in the axes.
+"""
+
+
+def _unit_vector(vector: Any) -> np.ndarray:
+    vector = np.array(vector, dtype=np.float64)
+    norm = np.linalg.norm(vector)
+    return vector / norm if norm > 0.0 else vector
+
+
+def _common_hinge_anchor(positions: Sequence[Any], axes: Sequence[np.ndarray], tolerance: float) -> wp.vec3 | None:
+    """Find a point shared by a body's hinge axis lines.
+
+    Args:
+        positions: Hinge positions [m] in the body frame.
+        axes: Unit hinge axes in the body frame.
+        tolerance: Largest distance [m] from an axis line at which a point counts as lying on it.
+
+    Returns:
+        The first position if it lies on every axis line, otherwise the point where the axis lines meet. ``None`` if
+        they do not meet or all axes are parallel within :data:`_AXIS_PARALLEL_TOLERANCE`.
+    """
+    points = np.array(positions, dtype=np.float64)
+    if len(points) == 1:
+        return wp.vec3(*points[0])
+    directions = np.array(axes, dtype=np.float64)
+    # Each projector removes the component along its axis, leaving the offset from that axis line.
+    projectors = np.eye(3) - directions[:, :, None] * directions[:, None, :]
+
+    def on_all_axis_lines(point: np.ndarray) -> bool:
+        distances = np.linalg.norm(np.einsum("nij,nj->ni", projectors, point - points), axis=1)
+        return bool(distances.max() <= tolerance)
+
+    if on_all_axis_lines(points[0]):
+        return wp.vec3(*points[0])
+    # Axis lines that are all parallel have no single closest point, and nearly parallel ones meet far from the hinges.
+    if np.linalg.norm(np.cross(directions, directions[0]), axis=1).max() <= _AXIS_PARALLEL_TOLERANCE:
+        return None
+    # Least-squares point closest to all axis lines.
+    anchor = np.linalg.lstsq(projectors.sum(axis=0), np.einsum("nij,nj->i", projectors, points), rcond=None)[0]
+    return wp.vec3(*anchor) if on_all_axis_lines(anchor) else None
+
+
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
@@ -516,6 +568,7 @@ def parse_mjcf(
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
     parse_sites: bool = True,
+    parse_cameras: bool = True,
     parse_visuals: bool = True,
     parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
@@ -553,6 +606,9 @@ def parse_mjcf(
     MJCF textures default to a white tint. Without an MJCF color or base-color texture,
     mesh-file appearance and primitive palette colors are retained for compatibility.
     Other PBR texture layers are not imported.
+
+    A body's hinge and slide joints are merged into one Newton joint. See the
+    :ref:`limitations of merged MJCF joints <mjcf-merged-joints>` for anchor selection, warnings, and deprecations.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
@@ -639,11 +695,16 @@ def parse_mjcf(
         parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
+            :meth:`~newton.ModelBuilder.add_camera`). Tracking cameras (``track``, ``trackcom``,
+            ``targetbody``, ``targetbodycom``) are imported as fixed mounts on their body, which match
+            MuJoCo only at the initial pose, and are logged at debug level. Orthographic cameras are
+            skipped and logged. Default is True.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
-        ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
-        ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
+        ignore_names: A list of regular expressions. Geoms and sites with a name matching one of the regular expressions will be ignored.
+        ignore_classes: A list of regular expressions. Geoms and sites with a ``class`` matching one of the regular expressions will be ignored, as will bodies with a matching ``childclass`` and everything nested in them.
         visual_classes: A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
         collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
@@ -1713,6 +1774,9 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.mu_rolling = float(friction_values[2])
 
+            if "condim" in geom_attrib:
+                shape_cfg.friction_mode = friction_mode_from_condim(int(geom_attrib["condim"]))
+
             # MJCF solref also fills shape_material_ke/kd via the lossy
             # conversion for back-compat with the legacy
             # convert_solref(ke, kd, 1, 1) round-trip; raw solref is
@@ -2306,6 +2370,107 @@ def parse_mjcf(
 
         return site_shapes
 
+    tracking_camera_names: list[str] = []
+    builder_custom_attr_camera: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [Model.AttributeFrequency.CAMERA]
+    )
+
+    def _parse_cameras_impl(defaults, body_name, link, cameras, incoming_xform=None, label_prefix=""):
+        """Parse camera elements from MJCF into model cameras.
+
+        Camera frames follow MuJoCo's convention (look along local -Z, +Y up), which matches
+        :meth:`ModelBuilder.add_camera`, so the frame is used as authored.
+        """
+        for camera_count, camera in enumerate(cameras):
+            camera_class = camera.attrib.get("class")
+            if camera_class is not None and is_ignored_class(camera_class):
+                continue
+            camera_attrib = resolve_element_attrib(camera, "camera", defaults)
+            camera_name = camera_attrib.get("name", f"{body_name}_camera_{camera_count}")
+            if any(re.match(pattern, camera_name) for pattern in ignore_names):
+                continue
+
+            if camera_attrib.get("orthographic", "false").lower() == "true":
+                logger.warning("MJCF camera '%s' is orthographic, which is not supported; skipping.", camera_name)
+                continue
+            if camera_attrib.get("mode", "fixed") != "fixed":
+                tracking_camera_names.append(camera_name)
+
+            camera_pos = parse_vec(camera_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+            camera_xform = wp.transform(camera_pos, parse_orientation(camera_attrib))
+            if incoming_xform is not None:
+                camera_xform = incoming_xform * camera_xform
+
+            resolution = None
+            if "resolution" in camera_attrib:
+                res = np.array(camera_attrib["resolution"].split(), dtype=float)
+                if len(res) >= 2 and res[0] > 0 and res[1] > 0:
+                    resolution = (int(res[0]), int(res[1]))
+
+            # MuJoCo switches to intrinsic parameters when a sensor size is authored; fovy is
+            # then ignored. Pixel-valued intrinsics convert through the sensor pixel pitch.
+            intrinsics: dict[str, Any] = {}
+            sensorsize = np.array(camera_attrib.get("sensorsize", "0 0").split(), dtype=float)
+            if len(sensorsize) >= 2 and sensorsize[0] > 0.0 and sensorsize[1] > 0.0:
+                pitch = sensorsize[:2] / np.array(resolution, dtype=float) if resolution is not None else None
+                focal = None
+                if "focal" in camera_attrib:
+                    focal = np.array(camera_attrib["focal"].split(), dtype=float)[:2]
+                elif "focalpixel" in camera_attrib:
+                    if pitch is None:
+                        logger.warning(
+                            "MJCF camera '%s' sets focalpixel without a resolution; using fovy.", camera_name
+                        )
+                    else:
+                        focal = np.array(camera_attrib["focalpixel"].split(), dtype=float)[:2] * pitch
+                if focal is None or len(focal) < 2 or focal[0] <= 0.0 or focal[1] <= 0.0:
+                    fovy = float(camera_attrib.get("fovy", 45.0))
+                    fy = 0.5 * sensorsize[1] / np.tan(0.5 * np.radians(fovy))
+                    focal = np.array([fy, fy])
+                principal = np.zeros(2)
+                if "principal" in camera_attrib:
+                    principal = np.array(camera_attrib["principal"].split(), dtype=float)[:2]
+                elif "principalpixel" in camera_attrib:
+                    if pitch is None:
+                        logger.warning(
+                            "MJCF camera '%s' sets principalpixel without a resolution; ignoring it.", camera_name
+                        )
+                    else:
+                        principal = np.array(camera_attrib["principalpixel"].split(), dtype=float)[:2] * pitch
+                # add_camera takes one focal length; fold an anisotropic fx into the horizontal
+                # aperture and offset so their ratios to the focal length are preserved.
+                x_to_y = focal[1] / focal[0]
+                intrinsics = {
+                    "focal_length": float(focal[1]) * scale,
+                    "horizontal_aperture": float(sensorsize[0] * x_to_y) * scale,
+                    "vertical_aperture": float(sensorsize[1]) * scale,
+                    "horizontal_aperture_offset": float(principal[0] * x_to_y) * scale,
+                    "vertical_aperture_offset": float(principal[1]) * scale,
+                }
+                if resolution is not None:
+                    # The aperture spans the authored resolution exactly, which fixes the pixel shape.
+                    intrinsics["pixel_aspect_ratio"] = float(
+                        (intrinsics["horizontal_aperture"] * resolution[1])
+                        / (intrinsics["vertical_aperture"] * resolution[0])
+                    )
+            else:
+                # fovy is in degrees regardless of the compiler angle setting.
+                intrinsics = {"fov": float(np.radians(float(camera_attrib.get("fovy", 45.0))))}
+
+            camera_label = f"{label_prefix}/{camera_name}" if label_prefix else camera_name
+            camera_custom_attrs = (
+                parse_custom_attributes(camera_attrib, builder_custom_attr_camera, parsing_mode="mjcf")
+                if builder_custom_attr_camera
+                else None
+            )
+            builder.add_camera(
+                link,
+                xform=camera_xform,
+                label=camera_label,
+                custom_attributes=camera_custom_attrs,
+                **intrinsics,
+            )
+
     def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
         """Compute composed transform for a frame element."""
         frame_pos = parse_vec(frame_element.attrib, "pos", (0.0, 0.0, 0.0)) * scale
@@ -2537,6 +2702,24 @@ def parse_mjcf(
                         label_prefix=label_prefix,
                     )
 
+            # Process child cameras (need body-relative transform)
+            if parse_cameras:
+                child_cameras = frame.findall("camera")
+                if child_cameras:
+                    body_name = "world" if parent_body == -1 else builder.body_label[parent_body]
+                    camera_xform = composed_body_rel
+                    if body_relative_xform is None and parent_body != -1:
+                        # Worldbody frames compose world transforms; mount cameras relative to parent_body.
+                        camera_xform = wp.transform_inverse(builder.body_q[parent_body]) * composed_world
+                    _parse_cameras_impl(
+                        _defaults,
+                        body_name,
+                        parent_body,
+                        child_cameras,
+                        incoming_xform=camera_xform,
+                        label_prefix=label_prefix,
+                    )
+
             # Add nested frames to stack with current defaults and childclass (in reverse to maintain order)
             frame_stack.extend(
                 (f, composed_world, composed_body_rel, _defaults, _childclass) for f in reversed(frame.findall("frame"))
@@ -2630,6 +2813,12 @@ def parse_mjcf(
 
         linear_axes = []
         angular_axes = []
+        # Hinge names, positions, and unit axes in MJCF order, to decide whether one Newton joint can represent them.
+        hinge_names = []
+        hinge_positions = []
+        hinge_axes = []
+        # (slide name, hinge name) of the first slide that is not parallel to a hinge listed before it.
+        rotated_slide: tuple[str, str] | None = None
         joint_type = None
         # Builder DOF array -> value for an MJCF free joint.
         free_dof_values: dict[str, float] = {}
@@ -2838,10 +3027,19 @@ def parse_mjcf(
 
             # Keep each DOF's attributes next to its axis so both share Newton's DOF order.
             if is_angular:
+                hinge_names.append(joint_name[-1])
+                hinge_positions.append(joint_pos[-1])
+                hinge_axes.append(_unit_vector(axis_vec))
                 mjcf_joint_dof_slots.append((joint_name[-1], False, len(angular_dof_attrs), inert_range))
                 angular_axes.append(ax)
                 angular_dof_attrs.append(dof_attr)
             else:
+                if rotated_slide is None:
+                    slide_axis = _unit_vector(axis_vec)
+                    for hinge_name, hinge_axis in zip(hinge_names, hinge_axes, strict=True):
+                        if np.linalg.norm(np.cross(slide_axis, hinge_axis)) > _AXIS_PARALLEL_TOLERANCE:
+                            rotated_slide = (joint_name[-1], hinge_name)
+                            break
                 mjcf_joint_dof_slots.append((joint_name[-1], True, len(linear_dof_attrs), inert_range))
                 linear_axes.append(ax)
                 linear_dof_attrs.append(dof_attr)
@@ -2959,8 +3157,32 @@ def parse_mjcf(
                 )
 
         else:
-            # Extract joint position for non-root bodies
-            joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
+            # The body's MJCF joints become one Newton joint, which applies slides in the parent frame before hinges
+            # about a single anchor. Warn about joints that this cannot represent. Hinges rotate about the anchor, so
+            # it must lie on every hinge axis line; a slide's position does not affect its motion.
+            if hinge_positions:
+                # Hinge positions are scaled, so scale the tolerance with them.
+                hinge_anchor = _common_hinge_anchor(hinge_positions, hinge_axes, _HINGE_ANCHOR_TOLERANCE * scale)
+                if hinge_anchor is None:
+                    hinge_anchor = wp.vec3(*hinge_positions[0])
+                    logger.warning(
+                        "MJCF body '%s': hinge joints %s cannot be merged about a common point: their axes are "
+                        "nearly parallel or do not meet. The imported Newton joint rotates all of them about the "
+                        "position of '%s', which changes the body's motion.",
+                        body_label_path,
+                        hinge_names,
+                        hinge_names[0],
+                    )
+                joint_pos = hinge_anchor
+            else:
+                joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
+            if rotated_slide is not None:
+                warn_deprecation(
+                    f"MJCF body '{body_label_path}': slide joint '{rotated_slide[0]}' is listed after hinge joint "
+                    f"'{rotated_slide[1]}' and is not parallel to its axis. The imported Newton joint applies the "
+                    "slide before the hinge, which changes the body's motion. Importing such bodies is deprecated "
+                    "and will raise an error in a future release."
+                )
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]
             joint_label_name = "_".join(joint_name)
@@ -3061,6 +3283,11 @@ def parse_mjcf(
                     sites=sites,
                     label_prefix=body_label_path,
                 )
+
+        if parse_cameras:
+            cameras = body.findall("camera")
+            if cameras:
+                _parse_cameras_impl(defaults, body_name, link, cameras, label_prefix=body_label_path)
 
         if not infer_body_inertia_from_geoms and not ignore_inertial_definitions and has_inertial_definition:
             inertial = body.find("inertial")
@@ -3613,6 +3840,16 @@ def parse_mjcf(
                 label_prefix=root_label_path,
             )
 
+        if parse_cameras:
+            _parse_cameras_impl(
+                world_defaults,
+                "world",
+                -1,
+                world.findall("camera"),
+                incoming_xform=xform,
+                label_prefix=root_label_path,
+            )
+
         # -----------------
         # process frame elements at worldbody level
 
@@ -3629,6 +3866,14 @@ def parse_mjcf(
 
     # -----------------
     # Report once outside the recursive body parser so the warning points to the caller.
+    if tracking_camera_names:
+        # Tracking cameras are common in MuJoCo assets, and the fixed-mount approximation is documented
+        # under parse_cameras, so one debug record per import keeps loading such assets quiet.
+        logger.debug(
+            "MJCF cameras %s use tracking modes, which are not supported; they are imported as fixed mounts "
+            "that match MuJoCo only at the initial pose.",
+            tracking_camera_names,
+        )
     if approximated_spring_rest:
         warnings.warn(
             "Converting three hinges to a ball joint uses an identity spring rest orientation; "

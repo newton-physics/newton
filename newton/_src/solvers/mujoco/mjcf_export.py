@@ -217,6 +217,7 @@ def _publish_native_world_parameters(
             elif kind == "tendon":
                 flag = "has_tendon_stiffness" if field == "tendon_stiffnesspoly" else "has_tendon_damping"
                 setattr(mjw_model, flag, getattr(mjw_model, flag) or bool(np.any(compiled)))
+    return pair_rows
 
 
 def _apply_native_element_parameters(model, spec, shapes, actuator_indices):

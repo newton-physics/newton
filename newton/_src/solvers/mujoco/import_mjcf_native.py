@@ -22,8 +22,11 @@ from ...exceptions import NewtonWarning
 from ...geometry import Mesh, ShapeFlags
 from ...geometry.types import Heightfield
 from ...sim import BodyFlags, JointTargetMode, JointType, ModelBuilder
+from ...sim.enums import friction_mode_from_condim
 from ...sim.model import Model
 from ...usd.schemas import solref_to_stiffness_damping
+from ...utils.deprecation import warn_deprecation
+from ...utils.import_mjcf import _AXIS_PARALLEL_TOLERANCE, _HINGE_ANCHOR_TOLERANCE, _common_hinge_anchor
 from ...utils.import_utils import (
     clamp_imported_opacity,
     collapse_massless_fixed_root_joints,
@@ -197,7 +200,7 @@ def _scale_spec(spec: mujoco.MjSpec, scale: float) -> None:
             equality.data[10] *= scale
 
 
-def _add_joints(builder, model, selected, parent, body, local, label, convert_ball):
+def _add_joints(builder, model, selected, parent, body, local, label, convert_ball, scale):
     import mujoco
 
     if not selected:
@@ -211,7 +214,6 @@ def _add_joints(builder, model, selected, parent, body, local, label, convert_ba
         )
         for j in selected
     )
-    # Match legacy's shared anchor before reordering scalar DOFs.
     anchor = wp.transform(model.jnt_pos[first], wp.quat_identity())
     if kind == int(mujoco.mjtJoint.mjJNT_FREE):
         joint = builder.add_joint_free(body, parent=parent, label=f"{label}/{name}")
@@ -225,6 +227,39 @@ def _add_joints(builder, model, selected, parent, body, local, label, convert_ba
             label=f"{label}/{name}",
         )
         return joint, {first: builder.joint_qd_start[joint]}
+    hinges = [j for j in selected if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_HINGE]
+    if hinges:
+        position = _common_hinge_anchor(model.jnt_pos[hinges], model.jnt_axis[hinges], _HINGE_ANCHOR_TOLERANCE * scale)
+        if position is None:
+            position = model.jnt_pos[hinges[0]]
+            logger.warning(
+                "MJCF body '%s': hinge joints %s cannot be merged about a common point: their axes are "
+                "nearly parallel or do not meet. The imported Newton joint rotates all of them about the "
+                "position of '%s', which changes the body's motion.",
+                label,
+                [model.joint(j).name for j in hinges],
+                model.joint(hinges[0]).name,
+            )
+        anchor = wp.transform(position, wp.quat_identity())
+    for j in selected:
+        if model.jnt_type[j] != mujoco.mjtJoint.mjJNT_SLIDE:
+            continue
+        rotated_by = next(
+            (
+                h
+                for h in hinges
+                if h < j and np.linalg.norm(np.cross(model.jnt_axis[h], model.jnt_axis[j])) > _AXIS_PARALLEL_TOLERANCE
+            ),
+            None,
+        )
+        if rotated_by is not None:
+            warn_deprecation(
+                f"MJCF body '{label}': slide joint '{model.joint(j).name}' is listed after hinge joint "
+                f"'{model.joint(rotated_by).name}' and is not parallel to its axis. The imported Newton joint applies the "
+                "slide before the hinge, which changes the body's motion. Importing such bodies is deprecated "
+                "and will raise an error in a future release."
+            )
+            break
     canonical_joint_cfg = ModelBuilder.JointDofConfig()
     ordered = sorted(selected, key=lambda j: model.jnt_type[j] != int(mujoco.mjtJoint.mjJNT_SLIDE))
     linear, angular = [], []
@@ -1001,7 +1036,7 @@ def _validate(spec: mujoco.MjSpec) -> None:
     ]
     if omitted:
         warnings.warn(
-            f"Native MJCF import omits {', '.join(omitted)}; Newton has no corresponding model fields.",
+            f"Native MJCF import omits {', '.join(omitted)}.",
             NewtonWarning,
             stacklevel=3,
         )
@@ -1027,7 +1062,7 @@ def _validate(spec: mujoco.MjSpec) -> None:
 
 def _parse_spec(
     builder: ModelBuilder, source: str, scale: float
-) -> tuple[mujoco.MjSpec, set[mujoco.MjsJoint], set[mujoco.MjsGeom]]:
+) -> tuple[mujoco.MjSpec, set[mujoco.MjsJoint], set[mujoco.MjsGeom], set[mujoco.MjsGeom]]:
     import mujoco
 
     is_xml = source.lstrip().removeprefix("\ufeff").lstrip().startswith("<")
@@ -1072,6 +1107,7 @@ def _parse_spec(
     joint_defaults.set("ref", "1")
     joint_defaults.set("springref", "1")
     geom_defaults.set("friction", "2")
+    geom_defaults.set("condim", "1")
     probe = parse()
     default_limits = {
         joint
@@ -1082,6 +1118,9 @@ def _parse_spec(
         geom
         for geom, other in zip(spec.geoms, probe.geoms, strict=True)
         if not np.array_equal(geom.friction[:1], other.friction[:1], equal_nan=True)
+    }
+    default_friction_modes = {
+        geom for geom, other in zip(spec.geoms, probe.geoms, strict=True) if geom.condim != other.condim
     }
     for geom in default_friction:
         cfg = builder.default_shape_cfg
@@ -1100,7 +1139,7 @@ def _parse_spec(
                     if spec.compiler.degree
                     else builder.default_joint_cfg.rest_q
                 )
-    return spec, default_limits, default_friction
+    return spec, default_limits, default_friction, default_friction_modes
 
 
 def parse_mjcf(
@@ -1155,7 +1194,7 @@ def parse_mjcf(
         root, _ = _load_and_expand_mjcf(source, path_resolver)
         source = ET.tostring(root, encoding="unicode")
     try:
-        spec, default_limits, default_friction = _parse_spec(builder, source, scale)
+        spec, default_limits, default_friction, default_friction_modes = _parse_spec(builder, source, scale)
     except (ValueError, ET.ParseError) as exc:
         raise ValueError(f"Native MJCF parsing failed: {exc}") from exc
     custom_values = _extract_custom_attributes(builder, spec, scale, parse_mujoco_options)
@@ -1305,6 +1344,7 @@ def parse_mjcf(
                 local,
                 label,
                 convert_3d_hinge_to_ball_joints,
+                scale,
             )
             mapped_dofs = [
                 dof + k
@@ -1382,6 +1422,8 @@ def parse_mjcf(
         if kd is not None:
             cfg.kd = kd
         cfg.mu, cfg.mu_torsional, cfg.mu_rolling = map(float, model.geom_friction[i])
+        if spec.geoms[i] not in default_friction_modes:
+            cfg.friction_mode = friction_mode_from_condim(int(model.geom_condim[i]))
         if spec.geoms[i] not in default_friction:
             cfg.mu_static = None
         cfg.margin, cfg.gap = float(model.geom_margin[i]), float(model.geom_gap[i])
@@ -1430,7 +1472,6 @@ def parse_mjcf(
                 contype=contype,
                 conaffinity=conaffinity,
                 collision_mask_domain=domain,
-                condim=int(model.geom_condim[i]),
                 geom_priority=int(model.geom_priority[i]),
                 geom_group=int(model.geom_group[i]),
                 **_read_native_parameters("geom", spec.geoms[i]),

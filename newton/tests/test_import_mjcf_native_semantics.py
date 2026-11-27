@@ -869,7 +869,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             (model.shape_gap, reference.geom_gap),
             (model.joint_damping, reference.dof_damping),
             (model.mujoco.gravcomp, reference.body_gravcomp[1:]),
-            (model.mujoco.condim, reference.geom_condim),
+            (model.shape_material_friction_mode, [{1: 0, 3: 1, 4: 3, 6: 7}[c] for c in reference.geom_condim]),
             (model.mujoco.geom_priority, reference.geom_priority),
             (model.mujoco.geom_solmix, reference.geom_solmix),
             (model.mujoco.dof_ref, reference.qpos0),
@@ -944,9 +944,9 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
 
     def test_geom_friction_defaults(self):
         """Let authored friction replace both coefficients while omitted values use builder defaults."""
-        xml = """<mujoco><default><default class="explicit"><geom friction="1"/></default></default>
-            <worldbody><geom size=".1" friction="1"/><geom size=".1" class="explicit"/>
-            <geom size=".1" friction="0"/><geom size=".1"/></worldbody></mujoco>"""
+        xml = """<mujoco><default><default class="explicit"><geom friction="1" condim="4"/></default></default>
+            <worldbody><geom size=".1" friction="1" condim="3"/><geom size=".1" class="explicit"/>
+            <geom size=".1" friction="0" condim="1"/><geom size=".1"/></worldbody></mujoco>"""
         for discard in (False, True):
             with self.subTest(discardvisual=discard):
                 source = xml
@@ -958,10 +958,12 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.default_shape_cfg.mu = 0.5
                 builder.default_shape_cfg.mu_static = 0.8
+                builder.default_shape_cfg.friction_mode = newton.ShapeFrictionMode.SLIDING_ROLLING
                 builder.add_mjcf_native(source)
                 model = builder.finalize()
                 np.testing.assert_allclose(model.shape_material_mu.numpy(), [1, 1, 0, 0.5])
                 np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [1, 1, 0, 0.8])
+                np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [1, 3, 0, 5])
 
     def test_native_builder_defaults_per_import(self):
         for gap in (None, 0.0, 0.2):
@@ -1460,7 +1462,8 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             <fixed springlength="-1 .4"><joint joint="s" coef="1"/></fixed>
             </tendon></mujoco>"""
         asset = newton.ModelBuilder()
-        asset.add_mjcf_native(xml)
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "slide before the hinge"):
+            asset.add_mjcf_native(xml)
         for cpu in (False, True):
             with self.subTest(cpu=cpu):
                 builder = newton.ModelBuilder()

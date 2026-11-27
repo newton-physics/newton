@@ -18,7 +18,6 @@ import numpy as np
 import warp as wp
 
 from ...core.types import MAXVAL, override
-from ...exceptions import NewtonDeprecationWarning
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
@@ -28,6 +27,7 @@ from ...sim import (
     Model,
     ModelBuilder,
     ModelFlags,
+    ShapeFrictionMode,
     State,
     StateFlags,
 )
@@ -38,9 +38,10 @@ from ...sim.collide import (
     _RIGID_CONTACTS_PER_PRIMITIVE_PAIR,
     _estimate_rigid_contact_max,
 )
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
 from ...utils.deprecation import warn_deprecation
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, warn_unsupported_friction_modes
 
 if TYPE_CHECKING:
     from .config import (
@@ -130,8 +131,7 @@ class SolverKamino(SolverBase, CouplingInterface):
     discrete step-average center-of-mass acceleration in the world frame
     [m/s², rad/s²]. The value is computed from the input and output body twists
     over each step, so impacts include their velocity impulse divided by the
-    step duration. The deprecated :attr:`~newton.State.body_qdd` destination
-    remains supported during migration.
+    step duration.
 
     This solver is currently in Beta.
 
@@ -398,6 +398,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.SCCSolverConfig.register_custom_attributes(builder)
             config.LOXSolverConfig.register_custom_attributes(builder)
             config.MaterialManagerConfig.register_custom_attributes(builder)
+            config._register_dynamics_solver_settings(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
             builder.add_custom_attribute(
@@ -419,23 +420,29 @@ class SolverKamino(SolverBase, CouplingInterface):
             Creates a configuration container by attempting to parse
             custom attributes from a :class:`Model` if available.
 
-            Note: If the model was imported from USD and contains custom attributes defined
-            by the KaminoSceneAPI, those attributes will be parsed and used to populate
-            the configuration container. Additionally, any sub-configurations that are
-            provided as keyword arguments will also be used to populate the corresponding
-            sections of the configuration, allowing for a combination of model-imported
-            and explicit user-provided configurations. If certain configurations are not
-            provided either via the model's custom attributes or as keyword arguments,
-            then default values will be used.
+            Scene settings from `NewtonKaminoSceneAPI` and `NewtonKaminoSccSceneAPI`
+            take precedence over the corresponding keyword values. For solver selection
+            and the SCC bilateral solver, a keyword value takes precedence over an
+            unauthored USD schema fallback. Other unspecified fields use runtime defaults.
+            When the scene selects SCC, preconditioning is disabled in the dynamics
+            fallback. An explicit Python selection of SCC requires a compatible config.
 
             Args:
                 model: The Newton model from which to parse configurations.
+                **kwargs: Default configuration values for fields the model does not set.
             """
             # Import here to avoid module-level imports and circular dependencies
             from . import config  # noqa: PLC0415
 
-            # Create a base config with default values and
-            # user-provided provided kwarg overrides
+            # Select the solver before constructing Config so its solver-specific defaults apply.
+            scene_solver = config._scene_dynamics_solver(
+                model, use_schema_fallback=kwargs.get("dynamics_solver") is None
+            )
+            if scene_solver is not None:
+                kwargs["dynamics_solver"] = scene_solver
+            dynamics = kwargs.get("dynamics")
+            if scene_solver == "scc" and dynamics is not None and dynamics.preconditioning:
+                kwargs["dynamics"] = replace(dynamics, preconditioning=False)
             cfg = SolverKamino.Config(**kwargs)
 
             # Parse solver-specific attributes imported from USD
@@ -459,13 +466,18 @@ class SolverKamino(SolverBase, CouplingInterface):
                 nested_config = kwargs.get(attr_name, None)
                 if nested_config is not None:
                     nested_kwargs = nested_config.__dict__
-                elif cfg.dynamics_solver == "scc" and attr_name in {"dynamics", "scc"}:
+                elif cfg.dynamics_solver == "scc" and attr_name == "dynamics":
                     nested_kwargs = getattr(cfg, attr_name).__dict__
                 else:
                     nested_kwargs = {}
-                setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
+                if attr_name == "scc":
+                    cfg.scc = config.SCCSolverConfig.from_model(
+                        model, use_scene_settings=cfg.dynamics_solver == "scc", **nested_kwargs
+                    )
+                else:
+                    setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
 
-            if cfg.dynamics_solver == "scc" and "dynamics" not in kwargs:
+            if cfg.dynamics_solver == "scc":
                 cfg.dynamics.preconditioning = False
 
             cfg.validate()
@@ -824,6 +836,33 @@ class SolverKamino(SolverBase, CouplingInterface):
                 base_velocity=SolverKamino.ResetConfig.FromJointU(),
             )
 
+    @staticmethod
+    def _resolve_spatial_friction(model: Model, config: Config) -> tuple[Config, bool]:
+        """Enable LOX spatial friction for shapes whose friction mode needs it.
+
+        Returns:
+            The configuration to use and whether the deprecated
+            ``contact_spatial_friction`` option requested spatial friction.
+        """
+        if config.dynamics_solver != "lox":
+            warn_unsupported_friction_modes(model, "SolverKamino")
+            return config, False
+        if config.lox.contact_spatial_friction:
+            warn_deprecation(
+                "SolverKamino.Config.lox.contact_spatial_friction is deprecated in Newton 1.9; set "
+                "ModelBuilder.ShapeConfig.friction_mode to a ShapeFrictionMode with torsional or rolling "
+                "friction on the shapes that need spatial friction instead."
+            )
+            return config, True
+        modes = model.shape_material_friction_mode
+        if (
+            model.shape_count
+            and modes is not None
+            and np.any(modes.numpy() & (FRICTION_TORSIONAL_BIT | FRICTION_ROLLING_BIT))
+        ):
+            config = replace(config, lox=replace(config.lox, contact_spatial_friction=True))
+        return config, False
+
     def __init__(
         self,
         model: Model,
@@ -858,6 +897,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         else:
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
+        config, legacy_spatial_friction = self._resolve_spatial_friction(model, config)
         self._config = config
         if config.use_collision_detector and model._has_body_variants:
             raise NotImplementedError(
@@ -883,6 +923,14 @@ class SolverKamino(SolverBase, CouplingInterface):
             include_shape_contact_pairs=include_shape_contact_pairs,
             kinematic_only_immovable=config.dynamics_solver == "lox",
         )
+        geom_friction_mode = self._model_kamino.geoms.friction_mode
+        if legacy_spatial_friction and geom_friction_mode is not None:
+            # The deprecated option enables spatial friction on every contact with friction.
+            modes = geom_friction_mode.numpy()
+            modes[modes > int(ShapeFrictionMode.NONE)] = int(ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING)
+            geom_friction_mode.assign(modes)
+            if not np.any(modes == int(ShapeFrictionMode.NONE)):
+                self._model_kamino.geoms.friction_mode = None
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()
@@ -1156,13 +1204,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             success_mask=success_mask,
         )
 
-        if state.body_qdd is not None:
-            self._kamino.reset_body_acceleration(
-                body_wid=self._model_kamino.bodies.wid,
-                body_qdd=state.body_qdd,
-                world_mask=local_world_mask,
-            )
-
         # Restore fields excluded from the reset op
         for array, snapshot in restore_after_reset:
             wp.copy(array, snapshot)
@@ -1286,6 +1327,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
                     kinematic_only_immovable=self._config.dynamics_solver == "lox",
                     contact_dead_zone=self._config.constraints.delta,
+                    geom_friction_mode=self._model_kamino.geoms.friction_mode,
                 )
         else:
             self._detector = None
@@ -1305,8 +1347,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
             else None
         )
-        if body_qdd is None:
-            body_qdd = state_out.body_qdd
         if body_qdd is not None:
             # The output acceleration buffer is preallocated and can safely hold
             # the input twist until integration completes, including in-place steps.
@@ -1332,8 +1372,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                 body_qdd=body_qdd,
                 dt=dt,
             )
-            if state_out.body_qdd is not None and state_out.body_qdd.ptr != body_qdd.ptr:
-                wp.copy(state_out.body_qdd, body_qdd)
 
         # Convert back from Kamino CoM-frame to Newton body-frame poses
         if state_in_kamino.q_i.ptr != state_out_kamino.q_i.ptr:
@@ -1355,8 +1393,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._populate_contact_observables(
                 observable_contacts, self._contact_observable_state, observables.contact_f
             )
-            if observable_contacts.force is not None and observable_contacts.force.ptr != observables.contact_f.ptr:
-                wp.copy(observable_contacts.force, observables.contact_f, count=observable_contacts.force.shape[0])
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -1454,24 +1490,13 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Update contact geometry and optional legacy force storage from Kamino.
+        """Update contact geometry from Kamino.
 
-        Geometry-only export remains supported when ``contacts.force`` is ``None``.
-
-        .. deprecated:: 1.7
-            Exporting ``contacts.force`` is deprecated. Request
-            :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and pass the
-            resulting container to :meth:`step` instead. Geometry-only export
-            is not deprecated.
+        Writes the contacts detected by Kamino into the rigid-contact geometry arrays of
+        ``contacts``. Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F`
+        and pass the resulting container to :meth:`step` to obtain contact forces.
         """
-        if contacts.force is not None:
-            warnings.warn(
-                "SolverKamino.update_contacts() force export is deprecated in Newton 1.7; request "
-                "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
-                NewtonDeprecationWarning,
-                stacklevel=2,
-            )
-        self._populate_contact_observables(contacts, state, contacts.force)
+        self._populate_contact_observables(contacts, state, None)
 
     def _populate_contact_observables(
         self,

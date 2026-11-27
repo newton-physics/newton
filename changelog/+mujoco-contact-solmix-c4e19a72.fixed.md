@@ -1,1 +1,1 @@
-Match MuJoCo's contact mixing for `solmix` values below its numerical minimum when using Newton contacts.
+Fix contact parameter mixing for tiny `solmix` weights in `SolverMuJoCo` when using Newton contacts.

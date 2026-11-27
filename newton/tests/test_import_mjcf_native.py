@@ -403,23 +403,38 @@ class TestImportMjcfNative(unittest.TestCase):
                 xml = f'<mujoco><worldbody><body pos=".1 .2 .3">{joints}<geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody></mujoco>'
                 self.assert_roundtrip(xml, ("jnt_type", "dof_armature", "dof_damping", "body_mass", "qpos0"))
 
-    def test_compound_joints_share_first_anchor(self):
-        """Match legacy anchors and kinematics even when scalar joints have different positions."""
-        for second_type in ("hinge", "slide"):
-            with self.subTest(second_type=second_type):
-                xml = f'''<mujoco><worldbody><body name="compound" pos=".1 .2 .3" euler="20 30 40">
-                    <joint name="first" axis="1 0 0" pos=".2 .3 .4"/>
-                    <joint name="second" type="{second_type}" axis="0 1 0" pos="-.3 .1 .2"/>
-                    <geom type="box" size=".1 .2 .3" mass="1"/>
-                    </body></worldbody></mujoco>'''
-                builders = []
-                poses = []
+    def test_compound_joint_anchors(self):
+        """Match legacy compound anchors and moving poses, including representable MuJoCo kinematics."""
+        import mujoco
+
+        first = '<joint name="first" axis="1 0 0" pos=".2 .3 .4"/>'
+        slide = '<joint name="slide" type="slide" axis="0 1 0" pos="-.3 .1 .2"/>'
+        cases = (
+            (first + '<joint name="second" axis="0 1 0" pos="-.3 .1 .2"/>', [0.2, 0.3, 0.4], "anchor"),
+            (first + slide, [0.2, 0.3, 0.4], "order"),
+            (first + '<joint name="second" axis="0 1 0" pos="-.3 .1 .4"/>', [-0.3, 0.3, 0.4], None),
+            (slide + first, [0.2, 0.3, 0.4], None),
+        )
+        for (joints, expected, diagnostic), scale in product(cases, (1.0, 0.01)):
+            with self.subTest(joints=joints, scale=scale):
+                xml = f"""<mujoco><worldbody><body name="compound" pos=".1 .2 .3" euler="20 30 40">
+                    {joints}<geom type="box" size=".1 .2 .3" mass="1"/>
+                    </body></worldbody></mujoco>"""
+                builders, poses = [], []
                 for importer in ("add_mjcf", "add_mjcf_native"):
                     builder = newton.ModelBuilder()
-                    getattr(builder, importer)(xml)
+                    diagnostic_context = nullcontext()
+                    if diagnostic == "anchor":
+                        diagnostic_context = self.assertLogs("newton", level="WARNING")
+                    elif diagnostic == "order":
+                        diagnostic_context = self.assertWarnsRegex(
+                            newton.NewtonDeprecationWarning, "slide before the hinge"
+                        )
+                    with diagnostic_context:
+                        getattr(builder, importer)(xml, scale=scale)
                     self.assertEqual(builder.joint_count, 1)
                     self.assertEqual(builder.joint_type[0], newton.JointType.D6)
-                    np.testing.assert_allclose(builder.joint_X_c[0].p, [0.2, 0.3, 0.4], atol=1e-6)
+                    np.testing.assert_allclose(builder.joint_X_c[0].p, np.asarray(expected) * scale, atol=1e-6)
                     builders.append(builder)
                     model = builder.finalize()
                     state = model.state()
@@ -429,6 +444,13 @@ class TestImportMjcfNative(unittest.TestCase):
                 for field in ("joint_X_p", "joint_X_c", "joint_axis"):
                     np.testing.assert_allclose(getattr(builders[0], field), getattr(builders[1], field), atol=1e-6)
                 np.testing.assert_allclose(poses[0], poses[1], atol=1e-6)
+                if diagnostic is None and scale == 1.0:
+                    reference = mujoco.MjModel.from_xml_string(xml)
+                    data = mujoco.MjData(reference)
+                    data.qpos[:] = [0.25, -0.4]
+                    mujoco.mj_forward(reference, data)
+                    np.testing.assert_allclose(poses[1][0, :3], data.xpos[1], atol=1e-6)
+                    np.testing.assert_allclose(poses[1][0, 3:], data.xquat[1, [1, 2, 3, 0]], atol=1e-6)
 
     def test_reject_mixed_ball_joints_before_mutation(self):
         """Reject mixed ball/scalar joints without changing an existing builder."""
@@ -471,8 +493,13 @@ class TestImportMjcfNative(unittest.TestCase):
             <actuator><motor joint="kept_joint"/><motor joint="kept_slide"/><motor joint="removed_joint"/></actuator></mujoco>"""
         builder = newton.ModelBuilder()
         for _ in range(2):
-            with self.assertWarnsRegex(UserWarning, "Actuator.*excluded element"):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
                 builder.add_mjcf_native(xml, floating=False, ignore_names=("removed",))
+            self.assertEqual(len(caught), 2)
+            self.assertIs(caught[0].category, newton.NewtonDeprecationWarning)
+            self.assertRegex(str(caught[0].message), "slide before the hinge")
+            self.assertRegex(str(caught[1].message), "Actuator.*excluded element")
         self.assertEqual(builder.joint_dof_count, 4)
         self.assertEqual(builder._custom_frequency_counts["mujoco:actuator"], 4)
         solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
@@ -874,20 +901,29 @@ class TestImportMjcfNative(unittest.TestCase):
             </worldbody><contact><pair geom1="a" geom2="b" friction=".2 .3 .01 .02 .03" solref=".01 1" adhesion=".3"/>
             <pair geom1="a" geom2="c" adhesion=".6"/>
             <exclude body1="a" body2="b"/></contact></mujoco>"""
-        asset, _, _ = self.assert_roundtrip(
+        asset, _, reference = self.assert_roundtrip(
             xml, ("pair_friction", "pair_solref", "pair_solimp", "pair_adhesion", "geom_contype", "geom_conaffinity")
         )
         for attribute in asset.custom_attributes.values():
             if attribute.frequency == "mujoco:pair":
                 attribute.values[0], attribute.values[1] = attribute.values[1], attribute.values[0]
         builder = newton.ModelBuilder()
-        for adhesion in (0.0, 0.7):
+        for world, adhesion in enumerate((0.0, 0.7)):
             asset.custom_attributes["mujoco:native_pair_adhesion"].values[0] = adhesion
             asset.custom_attributes["mujoco:native_pair_adhesion"].values[1] = 2 * adhesion
+            if world == 1:
+                for attribute in asset.custom_attributes.values():
+                    if attribute.frequency == "mujoco:pair":
+                        attribute.values[0], attribute.values[1] = attribute.values[1], attribute.values[0]
             builder.add_world(asset)
         solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.pair_adhesion.numpy(), [[0.0, 0.0], [1.4, 0.7]])
         self.assertTrue(solver.mjw_model.flg_adhesion)
+        for field in ("pair_friction", "pair_solref", "pair_solimp"):
+            np.testing.assert_allclose(getattr(solver.mjw_model, field).numpy(), [getattr(reference, field)] * 2)
+        solver.model.mujoco.pair_friction.assign(2 * solver.model.mujoco.pair_friction.numpy())
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.pair_friction.numpy(), [2 * reference.pair_friction] * 2)
 
         attached = newton.ModelBuilder()
         ground = attached.add_ground_plane()

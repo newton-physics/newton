@@ -130,6 +130,42 @@ def _validate_hollow_thickness(
     return thickness
 
 
+def _validate_hollow_mesh_thickness(
+    thickness: list[float] | np.ndarray | float, num_vertices: int
+) -> float | np.ndarray:
+    """Validate a hollow mesh shell thickness given as a scalar or as one value per vertex."""
+    if np.isscalar(thickness):
+        return _validate_hollow_thickness("mesh", thickness, ())
+
+    try:
+        values = np.asarray(thickness, dtype=np.float64)
+    except (TypeError, ValueError) as e:
+        raise TypeError("thickness must be a real scalar or one real value per vertex for a hollow mesh geom") from e
+    if values.ndim == 0:
+        return _validate_hollow_thickness("mesh", values.item(), ())
+    if values.shape != (num_vertices,):
+        raise ValueError(
+            f"per-vertex thickness for a hollow mesh geom must have one value per vertex "
+            f"(shape ({num_vertices},)); got shape {values.shape}"
+        )
+
+    invalid = ~np.isfinite(values)
+    if invalid.any():
+        i = int(np.flatnonzero(invalid)[0])
+        raise ValueError(f"thickness must be finite for a hollow mesh geom; got {values[i]} at vertex {i}")
+    negative = values < 0.0
+    if negative.any():
+        i = int(np.flatnonzero(negative)[0])
+        raise ValueError(f"thickness must be >= 0 for a hollow mesh geom; got {values[i]} at vertex {i}")
+    if not values.any():
+        warnings.warn(
+            "A hollow mesh geom with zero thickness has zero mass and inertia.",
+            NewtonWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+    return values
+
+
 def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid sphere
 
@@ -551,12 +587,23 @@ def compute_inertia_mesh(
     indices = np.array(indices).flatten()
     num_tris = len(indices) // 3
 
+    # Float32 tetrahedron sums about a distant origin cancel, so sum about the bounding-box
+    # center of the referenced vertices.
+    vertices = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    reference = np.zeros(3)
+    if num_tris > 0:
+        referenced = np.zeros(len(vertices), dtype=bool)
+        referenced[indices[: num_tris * 3]] = True
+        used = vertices if referenced.all() else vertices[referenced]
+        columns = np.ascontiguousarray(used.T)  # axis-0 reductions over (N, 3) are slow
+        reference = 0.5 * (columns.min(axis=1) + columns.max(axis=1))
+
     # Allocating for mass and inertia
     com_warp = wp.zeros(1, dtype=wp.vec3)
     I_warp = wp.zeros(1, dtype=wp.mat33)
     vol_warp = wp.zeros(1, dtype=float)
 
-    wp_vertices = wp.array(vertices, dtype=wp.vec3)
+    wp_vertices = wp.array(vertices - reference, dtype=wp.vec3)
     wp_indices = wp.array(indices, dtype=int)
 
     if is_solid:
@@ -596,8 +643,8 @@ def compute_inertia_mesh(
         )
 
     V_tot = float(vol_warp.numpy()[0])  # signed volume
-    F_tot = com_warp.numpy()[0]  # first moment
-    S_tot = I_warp.numpy()[0]  # second moment
+    F_tot = com_warp.numpy()[0].astype(np.float64)  # first moment about the reference point
+    S_tot = I_warp.numpy()[0].astype(np.float64)  # second moment about the reference point
 
     # If the winding is inward, flip signs
     if V_tot < 0:
@@ -612,11 +659,11 @@ def compute_inertia_mesh(
         com = F_tot
 
     S_tot *= density  # include density
-    I_origin = np.trace(S_tot) * np.eye(3) - S_tot  # inertia about origin
+    I_reference = np.trace(S_tot) * np.eye(3) - S_tot  # inertia about the reference point
     r = com
-    I_com = I_origin - mass * ((r @ r) * np.eye(3) - np.outer(r, r))
+    I_com = I_reference - mass * ((r @ r) * np.eye(3) - np.outer(r, r))
 
-    return mass, wp.vec3(*com), wp.mat33(*I_com), V_tot
+    return mass, wp.vec3(*(com + reference)), wp.mat33(*I_com), V_tot
 
 
 @wp.func
@@ -778,7 +825,9 @@ def compute_inertia_shape(
         return 0.0, wp.vec3(), wp.mat33()
     elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
         assert src is not None, "src must be provided for mesh or convex hull shapes"
-        if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
+        # Only reuse cached solid mass properties: a hollow shell depends on the requested
+        # thickness and does not scale with the mesh volume.
+        if src.has_inertia and src.mass > 0.0 and src.is_solid and is_solid:
             m, c, I = src.mass, src.com, src.inertia
             scale = wp.vec3(scale)
             sx, sy, sz = scale
@@ -815,6 +864,10 @@ def compute_inertia_shape(
         elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
             assert isinstance(src, Mesh), "src must be a Mesh for mesh or convex hull shapes"
             # fall back to computing inertia from mesh geometry
+            if not is_solid:
+                thickness = _validate_hollow_mesh_thickness(thickness, len(src.vertices))
+                if not np.any(thickness):
+                    return 0.0, wp.vec3(), wp.mat33()
             vertices = np.array(src.vertices) * np.array(scale)
             m, c, I, _vol = compute_inertia_mesh(density, vertices, src.indices, is_solid, thickness)
             return m, c, I
