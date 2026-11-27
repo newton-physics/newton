@@ -1654,6 +1654,135 @@ class TestSensorCamera(unittest.TestCase):
         np.testing.assert_allclose(identity, (255, 0, 0), atol=2)
         np.testing.assert_allclose(shifted, (0, 255, 0), atol=2)
 
+    def test_shape_texture_and_mesh_data_ids(self) -> None:
+        """Verify each shape indexes the texture and the UVs and normals of its source.
+
+        Shapes that share a source object share both ids. Sources that are equal but distinct
+        objects share one texture and keep their own UVs and normals. A convex hull takes its
+        source's texture but none of its UVs and normals. Ids number the data in shape order.
+        """
+        box = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
+        uvs = np.asarray(box.uvs, dtype=np.float32)
+        normals = np.asarray(box.normals, dtype=np.float32)
+        red = np.full((4, 4, 4), (255, 0, 0, 255), dtype=np.uint8)
+        green = np.full((8, 8, 4), (0, 255, 0, 255), dtype=np.uint8)
+
+        textured = newton.Mesh(box.vertices, box.indices, uvs=uvs, texture=red, compute_inertia=False)
+        twin = newton.Mesh(box.vertices, box.indices, uvs=uvs, texture=red.copy(), compute_inertia=False)
+        untextured = newton.Mesh(box.vertices, box.indices, uvs=uvs * 0.5, normals=normals, compute_inertia=False)
+        bare = newton.Mesh(box.vertices, box.indices, texture=green, compute_inertia=False)
+
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        world.add_shape_sphere(-1, radius=0.1)
+        world.add_shape_mesh(-1, mesh=textured)
+        world.add_shape_mesh(-1, mesh=textured)
+        world.add_shape_mesh(-1, mesh=twin)
+        world.add_shape_convex_hull(-1, mesh=textured)
+        world.add_shape_mesh(-1, mesh=untextured)
+        world.add_shape_mesh(-1, mesh=bare)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, 2)
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+
+        context = SensorCamera(model)._render_context
+        # Both worlds share the sources, so they share the ids; the ground plane comes last.
+        np.testing.assert_array_equal(
+            context._shape_texture_ids.numpy(), [-1, 0, 0, 0, 0, -1, 1, -1, 0, 0, 0, 0, -1, 1, -1]
+        )
+        np.testing.assert_array_equal(
+            context._shape_mesh_data_ids.numpy(), [-1, 0, 0, 1, -1, 2, -1, -1, 0, 0, 1, -1, 2, -1, -1]
+        )
+        self.assertEqual(len(context._texture_data_source), 2)
+        self.assertEqual(context._texture_data_source[0].texture.width, 4)
+        self.assertEqual(context._texture_data_source[1].texture.width, 8)
+        self.assertEqual(len(context._mesh_data_source), 3)
+        np.testing.assert_array_equal(context._mesh_data_source[0].uvs.numpy(), uvs)
+        self.assertIsNone(context._mesh_data_source[0].normals)
+        np.testing.assert_array_equal(context._mesh_data_source[1].uvs.numpy(), uvs)
+        self.assertIsNone(context._mesh_data_source[1].normals)
+        self.assertNotEqual(context._mesh_data_source[0].uvs.ptr, context._mesh_data_source[1].uvs.ptr)
+        np.testing.assert_array_equal(context._mesh_data_source[2].uvs.numpy(), uvs * 0.5)
+        np.testing.assert_array_equal(context._mesh_data_source[2].normals.numpy(), normals)
+
+        untextured_context = SensorCamera(model, load_textures=False)._render_context
+        np.testing.assert_array_equal(untextured_context._shape_texture_ids.numpy(), [-1] * 15)
+        np.testing.assert_array_equal(
+            untextured_context._shape_mesh_data_ids.numpy(), [-1, 0, 0, 1, -1, 2, -1, -1, 0, 0, 1, -1, 2, -1, -1]
+        )
+        self.assertEqual(len(untextured_context._texture_data_source), 0)
+        self.assertEqual(len(untextured_context._mesh_data_source), 3)
+
+        # The same sources in the opposite order: the hull now precedes the mesh shapes of its
+        # source, so it numbers the texture while the first mesh shape numbers the UVs.
+        reverse = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        reverse.add_shape_mesh(-1, mesh=bare)
+        reverse.add_shape_mesh(-1, mesh=untextured)
+        reverse.add_shape_convex_hull(-1, mesh=textured)
+        reverse.add_shape_mesh(-1, mesh=twin)
+        reverse.add_shape_mesh(-1, mesh=textured)
+        reverse.add_shape_mesh(-1, mesh=textured)
+        reverse.add_shape_sphere(-1, radius=0.1)
+        reverse_context = SensorCamera(reverse.finalize(device="cpu"))._render_context
+        np.testing.assert_array_equal(reverse_context._shape_texture_ids.numpy(), [0, -1, 1, 1, 1, 1, -1])
+        np.testing.assert_array_equal(reverse_context._shape_mesh_data_ids.numpy(), [-1, 0, -1, 1, 2, 2, -1])
+        self.assertEqual(len(reverse_context._texture_data_source), 2)
+        self.assertEqual(reverse_context._texture_data_source[0].texture.width, 8)
+        self.assertEqual(reverse_context._texture_data_source[1].texture.width, 4)
+        self.assertEqual(len(reverse_context._mesh_data_source), 3)
+        np.testing.assert_array_equal(reverse_context._mesh_data_source[0].uvs.numpy(), uvs * 0.5)
+        np.testing.assert_array_equal(reverse_context._mesh_data_source[0].normals.numpy(), normals)
+
+    def test_variant_shape_texture_and_mesh_data_ids(self) -> None:
+        """Verify variant shapes index the texture and mesh data tables that the shape rows index.
+
+        Variant shapes are numbered after the shape rows: they reuse what the rows loaded and
+        add the data that only an unselected variant uses.
+        """
+        box = newton.Mesh.create_box(0.2, 0.2, 0.1, compute_inertia=False)
+        uvs = np.asarray(box.uvs, dtype=np.float32)
+        red = np.full((4, 4, 4), (255, 0, 0, 255), dtype=np.uint8)
+        green = np.full((8, 8, 4), (0, 255, 0, 255), dtype=np.uint8)
+        textured = newton.Mesh(box.vertices, box.indices, uvs=uvs, texture=red, compute_inertia=False)
+        untextured = newton.Mesh(box.vertices, box.indices, uvs=uvs * 0.5, compute_inertia=False)
+        bare = newton.Mesh(box.vertices, box.indices, texture=green, compute_inertia=False)
+
+        hull_variant = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = hull_variant.add_body()
+        hull_variant.add_shape_convex_hull(body, mesh=textured)
+        hull_variant.add_shape_mesh(body, mesh=bare)
+        mesh_variant = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = mesh_variant.add_body()
+        mesh_variant.add_shape_mesh(body, mesh=untextured)
+        mesh_variant.add_shape_mesh(body, mesh=textured)
+
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = world.add_body()
+        world.add_shape_mesh(body, mesh=untextured)
+        world.add_body_variants(body, [hull_variant, mesh_variant])
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, 2)
+        model = builder.finalize(device="cpu")
+        # The worlds share one copy of the variants: the hull variant's shapes, then the mesh variant's.
+        self.assertEqual(len(model._variant_shape_source), 4)
+        self.assertIs(model._variant_shape_source[0], textured)
+        self.assertIs(model._variant_shape_source[1], bare)
+        self.assertIs(model._variant_shape_source[2], untextured)
+        self.assertIs(model._variant_shape_source[3], textured)
+
+        context = SensorCamera(model)._render_context
+        # Per world: the fixed mesh, then two rows holding the hull variant.
+        np.testing.assert_array_equal(context._shape_texture_ids.numpy(), [-1, 0, 1, -1, 0, 1])
+        np.testing.assert_array_equal(context._shape_mesh_data_ids.numpy(), [0, -1, -1, 0, -1, -1])
+        np.testing.assert_array_equal(context._variant_texture_ids.numpy(), [0, 1, -1, 0])
+        np.testing.assert_array_equal(context._variant_mesh_data_ids.numpy(), [-1, -1, 0, 1])
+        self.assertEqual(len(context._texture_data_source), 2)
+        self.assertEqual(context._texture_data_source[0].texture.width, 4)
+        self.assertEqual(context._texture_data_source[1].texture.width, 8)
+        self.assertEqual(len(context._mesh_data_source), 2)
+        np.testing.assert_array_equal(context._mesh_data_source[0].uvs.numpy(), uvs * 0.5)
+        np.testing.assert_array_equal(context._mesh_data_source[1].uvs.numpy(), uvs)
+
     def test_update_uses_default_render_settings(self) -> None:
         """Verify update falls back to the default clear data and render config."""
         parameters = inspect.signature(SensorCamera.update).parameters
