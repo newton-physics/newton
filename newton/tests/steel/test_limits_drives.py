@@ -3081,6 +3081,19 @@ def test_distance_bounds_hold_a_push_through_or_across_the_anchor(test, device):
                 test.assertLess(distances.max(), upper + 1.0e-5)
             if lower > 0.0:
                 test.assertGreater(distances.min(), lower - 1.0e-5)
+    # The lower bound stops the crossing on the near side of the anchor, at +2 mm along x.
+    model, _ = _build_tether(
+        device,
+        start=tuple(_TETHER_ANCHOR + np.array((0.003, 0.0, 0.0))),
+        lower=0.002,
+        velocity=(-4.0, 0.0, 0.0),
+        gravity=False,
+    )
+    solver = SolverSteel(model, enable_joint_limits=True)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    solver.step(state_0, state_1, model.control(), None, _TETHER_DT)
+    np.testing.assert_allclose(state_1.joint_q.numpy()[0:3], (0.002, 0.0, 0.0), atol=1.0e-6)
 
 
 def test_equal_distance_bounds_on_a_step_through_the_anchor(test, device):
@@ -3096,7 +3109,9 @@ def test_equal_distance_bounds_on_a_step_through_the_anchor(test, device):
         gravity=False,
     )
     distances = _tether_distances(model, body, 10, enable_joint_limits=True)
-    test.assertLess(distances.max(), 2.0 * cap)
+    # The lower row holds x at the cap and the upper row, along the predicted end point (cap - 4 dt, 4 dt), stops the
+    # first step at y = 7.39 mm, 8.92 mm from the anchor.
+    test.assertLess(distances.max(), 8.93e-3)
     test.assertAlmostEqual(distances[-1], cap, delta=1.0e-5)
 
 
