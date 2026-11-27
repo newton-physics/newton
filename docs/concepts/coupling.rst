@@ -391,7 +391,11 @@ Implicit MPM supports proxy body and proxy particle rewind/harvest hooks.
 Transfer-active proxy particles can participate in P2G/G2P momentum transfer
 while being excluded from material volume, stress, strain, and constitutive
 updates. Deformable collider particles registered through collider-particle ids
-use collider impulse collection rather than material transfer.
+use collider impulse collection rather than material transfer. MPM integrates the
+velocity of proxy bodies with a finite collider mass across its substeps, applying
+gravity and the response to its own contact impulses, and the harvested wrench sums
+the impulses of every substep. Deformable collider particles still report only the
+impulses of the last substep.
 
 XPBD understands proxy particles and proxy bodies in particle contact kernels.
 Owned particles may collide with destination proxy particles, but proxy-proxy,
@@ -438,7 +442,10 @@ The coupled-solver framework is useful today, but it is still experimental:
 
 - Proxy stability is tuning-sensitive. Virtual inertia scale, contact
   stiffness, solver iterations, and lagged versus staggered scheduling strongly
-  affect damping and convergence.
+  affect damping and convergence. A sub-stepped MPM destination with dynamic proxy
+  bodies resolves contact within the step and needs ``iterations=2`` or more to
+  avoid lagged oscillation; staggered proxies also need under-relaxed feedback,
+  such as ``proxy_relaxation_mode="aitken"``, for their iterations to converge.
 - Generic momentum harvesting is only a fallback. Solver-private contact modes
   should expose custom harvest hooks where possible.
 - ADMM contact detection is internal and does not consume arbitrary caller

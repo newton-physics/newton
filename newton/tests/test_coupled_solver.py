@@ -358,6 +358,22 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _ProxyHeightRecordingSolver(SolverBase, CouplingInterface):
+    """Test destination that records the proxy body height each step sees and writes no proxy rows."""
+
+    instances: ClassVar[dict[str, "_ProxyHeightRecordingSolver"]] = {}
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.proxy_row = int(np.flatnonzero(model.body_flags.numpy() & int(newton.BodyFlags.PROXY))[0])
+        self.heights = []
+        self.instances[model.name] = self
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del state_out, control, contacts, dt
+        self.heights.append(float(state_in.body_q.numpy()[self.proxy_row][2]))
+
+
 class _EffectiveMassCountingSolver(_StepCountingCopySolver):
     """Copy solver that counts effective-mass evaluations and keeps the default refresh flags."""
 
@@ -2843,6 +2859,50 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(solver.in_place_calls, [True, True, True])
         np.testing.assert_allclose(solver.dt_values, [0.1, 0.1, 0.1])
         np.testing.assert_allclose(state.particle_qd.numpy()[0], np.array([0.0, 6.0, 0.0]))
+
+    def test_entry_scratch_substeps_see_synchronized_proxy_pose(self):
+        """Every substep of a non-in-place entry sees the proxy pose synchronized for the coupled step."""
+        _ProxyHeightRecordingSolver.instances.clear()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+        source_body = builder.add_body(mass=1.0)
+        recorder_body = builder.add_body(mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="source", solver=SolverSemiImplicit, bodies=[source_body]),
+                SolverCoupled.Entry(
+                    name="recorder",
+                    solver=_ProxyHeightRecordingSolver,
+                    bodies=[recorder_body],
+                    substeps=2,
+                    in_place=False,
+                ),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="source",
+                        destination="recorder",
+                        bodies=[source_body],
+                        mode="staggered",
+                        collision_pipeline=lambda _view: None,
+                    )
+                ]
+            ),
+        )
+
+        state_0, state_1 = model.state(), model.state()
+        synced_heights = []
+        for _ in range(2):
+            coupled.step(state_0, state_1, control=None, contacts=None, dt=0.1)
+            # Staggered proxies see the source's end-of-step pose.
+            synced_heights.append(float(state_1.body_q.numpy()[source_body][2]))
+            state_0, state_1 = state_1, state_0
+
+        heights = _ProxyHeightRecordingSolver.instances["recorder"].heights
+        np.testing.assert_allclose(heights, np.repeat(synced_heights, 2), atol=1.0e-6)
 
     def test_particle_views_deactivate_non_owned_particles(self):
         """Each particle owner view should expose only its owned particles as active."""
