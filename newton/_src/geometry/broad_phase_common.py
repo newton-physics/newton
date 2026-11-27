@@ -53,12 +53,26 @@ def check_aabb_overlap_moving(
             box_lower[shape1], box_upper[shape1], cutoff1, box_lower[shape2], box_upper[shape2], cutoff2
         )
 
-    cutoff_combined = cutoff1 + cutoff2
-    relative_displacement = shape_displacement[shape1] - shape_displacement[shape2]
-    lower_box1 = box_lower[shape1]
-    upper_box1 = box_upper[shape1]
-    lower_box2 = box_lower[shape2]
-    upper_box2 = box_upper[shape2]
+    return check_aabb_sweep(
+        box_lower[shape1],
+        box_upper[shape1],
+        box_lower[shape2],
+        box_upper[shape2],
+        cutoff1 + cutoff2,
+        shape_displacement[shape1] - shape_displacement[shape2],
+    )
+
+
+@wp.func
+def check_aabb_sweep(
+    lower_box1: wp.vec3,
+    upper_box1: wp.vec3,
+    lower_box2: wp.vec3,
+    upper_box2: wp.vec3,
+    cutoff_combined: float,
+    relative_displacement: wp.vec3,
+) -> bool:
+    """Test whether two boxes can overlap during linear relative motion."""
     # An empty box, such as that of an empty variant row (see Model.select_body_variants), never overlaps.
     if lower_box1[0] > upper_box1[0] or lower_box2[0] > upper_box2[0]:
         return False

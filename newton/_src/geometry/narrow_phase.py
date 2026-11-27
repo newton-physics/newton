@@ -50,6 +50,7 @@ from ..geometry.contact_data import (
     contact_separation,
     contact_sort_key_layout,
     make_contact_sort_key_with_bits,
+    mesh_search_envelope,
     prepare_speculative_contact,
 )
 from ..geometry.contact_reduction_global import (
@@ -70,10 +71,11 @@ from ..geometry.contact_reduction_global import (
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.flags import ShapeFlags
+from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
     MESH_SDF_BLOCK_DIM,
+    _mesh_sweep_may_contact,
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
@@ -591,9 +593,13 @@ def create_narrow_phase_primitive_kernel(
         max_speculative_extension: float,
         shape_source: wp.array[wp.uint64],
         shape_gap: wp.array[float],
+        shape_base_gap: wp.array[float],
         shape_flags: wp.array[wp.int32],
         shape_sdf_index: wp.array[wp.int32],
         shape_edge_range: wp.array[wp.vec2i],
+        shape_mesh_properties: wp.array[wp.int32],
+        shape_collision_aabb_lower: wp.array[wp.vec3],
+        shape_collision_aabb_upper: wp.array[wp.vec3],
         shape_unit_scale_sdf: wp.array[wp.int32],
         writer_data: Any,
         total_num_threads: int,
@@ -738,6 +744,49 @@ def create_narrow_phase_primitive_kernel(
                 and has_sdf_edges_b
                 and not (is_box_a and is_box_b)
             ):
+                if wp.static(speculative):
+                    if (
+                        is_mesh_a
+                        and is_mesh_b
+                        and max_speculative_extension > 0.0
+                        and collision_update_dt > 0.0
+                        and shape_sdf_index[shape_a] < 0
+                        and shape_sdf_index[shape_b] < 0
+                        and (shape_mesh_properties[shape_a] & MeshProperties.WATERTIGHT) != 0
+                        and (shape_mesh_properties[shape_b] & MeshProperties.WATERTIGHT) != 0
+                        and wp.length_sq(shape_angular_velocity[shape_a]) == 0.0
+                        and wp.length_sq(shape_angular_velocity[shape_b]) == 0.0
+                    ):
+                        probe, target = shape_a, shape_b
+                        target_scale = scale_b
+                        if shape_edge_range[probe][1] > shape_edge_range[target][1]:
+                            probe, target = shape_b, shape_a
+                            target_scale = scale_a
+                        target_mesh = shape_source[target]
+                        displacement = (
+                            shape_linear_velocity[probe] - shape_linear_velocity[target]
+                        ) * collision_update_dt
+                        clearance = mesh_search_envelope(
+                            shape_base_gap[shape_a] + shape_base_gap[shape_b], data_a[3] + data_b[3]
+                        )
+                        if (
+                            target_mesh != wp.uint64(0)
+                            and wp.min(target_scale) > 0.0
+                            and wp.length_sq(displacement) > 0.0
+                            and not _mesh_sweep_may_contact(
+                                shape_transform[probe],
+                                shape_transform[target],
+                                shape_collision_aabb_lower[probe],
+                                shape_collision_aabb_upper[probe],
+                                shape_collision_aabb_lower[target],
+                                shape_collision_aabb_upper[target],
+                                displacement,
+                                clearance,
+                                target_mesh,
+                                target_scale,
+                            )
+                        ):
+                            continue
                 idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                 if idx < shape_pairs_mesh_mesh.shape[0]:
                     shape_pairs_mesh_mesh[idx] = wp.vec2i(shape_a, shape_b)
@@ -3666,9 +3715,13 @@ class NarrowPhase:
                 max_speculative_extension,
                 shape_source,
                 shape_gap,
+                shape_base_gap,
                 shape_flags,
                 shape_sdf_index,
                 shape_edge_range,
+                shape_mesh_properties,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
                 self._shape_unit_scale_sdf,
                 contact_writer_data,
                 self.total_num_threads,
