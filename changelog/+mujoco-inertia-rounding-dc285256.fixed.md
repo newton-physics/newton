@@ -1,0 +1,1 @@
+Fix `SolverMuJoCo` failing to compile a body whose principal moments miss the triangle inequality `A + B >= C` only by float32 rounding. Newton's inertia validation accepts such a body, but MuJoCo checks the inequality exactly and rejected it. The export now shifts the moments by that tiny amount so MuJoCo accepts them. The simulation still uses Newton's inertia.

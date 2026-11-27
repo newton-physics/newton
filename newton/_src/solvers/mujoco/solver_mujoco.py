@@ -24,6 +24,7 @@ from ...core._warnings import _external_warning_stacklevel
 from ...core.types import MAXVAL, Axis, override, vec5, vec10
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry import GeoType, Mesh, ParticleFlags, ShapeFlags
+from ...geometry.inertia import _INERTIA_ABS_FLOOR
 from ...geometry.sdf_planar_recovery import empty_mesh_recovery
 from ...sim import (
     BodyFlags,
@@ -406,6 +407,28 @@ def _make_nonplanar_mujoco_mesh(
     inflated_vertices = np.vstack((vertices, apex))
     inflated_indices = np.concatenate((indices, np.array([edge[0], edge[1], apex_index], dtype=np.int32)))
     return inflated_vertices, inflated_indices, max(maxhullvert, 4)
+
+
+def _mujoco_accepted_inertia(inertia: np.ndarray) -> np.ndarray:
+    """Return ``inertia`` with principal moments that pass MuJoCo's exact ``A + B >= C`` check."""
+    # MuJoCo reads only the upper triangle that fullinertia exports, and finds the moments with mju_eig3. Do the same.
+    upper = np.triu(inertia.astype(np.float64))
+    symmetric = upper + np.triu(upper, 1).T
+    moments, axes, axes_quat = np.zeros(3), np.zeros(9), np.zeros(4)
+    mujoco = import_mujoco_module()
+    mujoco.mju_eig3(moments, axes, axes_quat, symmetric.flatten())
+    largest, middle, smallest = moments
+    excess = largest - middle - smallest
+    # Newton's validation accepts an excess up to `tolerance`. It checks float32 moments, so the exact excess it
+    # keeps reaches about 2 tolerances. Fixing up to 4 leaves a margin. Larger excesses stay errors.
+    # The model does not keep ModelBuilder.inertia_absolute_tolerance, so this uses its default.
+    rounding = np.finfo(np.float32).eps * largest
+    tolerance = max(rounding, _INERTIA_ABS_FLOOR)
+    # A moment MuJoCo rejects as too small is not a rounding miss, so it stays an error.
+    if smallest > mujoco.mjMINVAL and middle + smallest < largest and excess <= 4.0 * tolerance:
+        # Adding s to every moment shrinks C - A - B by s. The extra eps * C covers MuJoCo's rounding.
+        return inertia + (excess + rounding) * np.eye(3)
+    return inertia
 
 
 # MuJoCo Warp model fields allocated with one entry per world (instead of a
@@ -8638,6 +8661,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if mass > 0.0:
                 body_kwargs["mass"] = mass
                 body_kwargs["ipos"] = body_com[child, :]
+                inertia = _mujoco_accepted_inertia(inertia)
                 if inertia[0, 1] == 0.0 and inertia[0, 2] == 0.0 and inertia[1, 2] == 0.0:
                     body_kwargs["inertia"] = [inertia[0, 0], inertia[1, 1], inertia[2, 2]]
                 else:
