@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
+from ...core.types import override
 from ...geometry import ParticleFlags, ShapeFlags
 from ...geometry.sdf_planar_recovery import MeshRecoveryData
 from ...sim import JointType, Model, ModelFlags, StateFlags
@@ -430,6 +431,7 @@ class SolverEntry:
     body_gravity_acceleration: wp.array[wp.vec3] | None = None
     particle_gravity_acceleration: wp.array[wp.vec3] | None = None
     free_root_joints: _FreeRootJoints | None = None
+    particle_target_q: wp.array[wp.vec3] | None = None
 
 
 _CORE_RESET_STATE_FLAGS = {
@@ -447,8 +449,6 @@ _RESET_FORCE_INPUT_FREQUENCIES = {
 _RESET_TRANSIENT_FIELDS = (
     ("body_f", Model.AttributeFrequency.BODY),
     ("particle_f", Model.AttributeFrequency.PARTICLE),
-    ("body_qdd", Model.AttributeFrequency.BODY),
-    ("body_parent_f", Model.AttributeFrequency.BODY),
 )
 _RESET_RECONCILABLE_FREQUENCIES = frozenset(
     {
@@ -779,6 +779,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _build_entries(self) -> None:
         model = self.model
         device = model.device
+        # A deprecated alias may hold edits that reading it applies to the model, as mujoco:condim does.
+        for namespace in vars(model).values():
+            if isinstance(namespace, Model.AttributeNamespace):
+                for getter, _message in namespace._deprecated_aliases.values():
+                    getter()
         any_body_owner = any(owner >= 0 for owner in self._body_owner)
         any_particle_owner = any(owner >= 0 for owner in self._particle_owner)
         any_joint_owner = any(owner >= 0 for owner in self._joint_owner)
@@ -952,6 +957,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
             entry.control = _entry_control(entry.view)
+            if entry.substeps > 1 and _entry_has_kinematic_particles(entry):
+                raise NotImplementedError(
+                    f"Entry '{entry.name}' uses substeps={entry.substeps} with ParticleFlags.KINEMATIC particles; "
+                    "kinematic particle targets are not interpolated across coupled substeps."
+                )
+            if int(entry.view.particle_count):
+                entry.particle_target_q = wp.clone(entry.view.particle_q)
             entry.has_body_force_input = entry.state_0.body_f is not None
             entry.has_particle_force_input = entry.state_0.particle_f is not None
             if entry.substeps > 1 and not entry.in_place:
@@ -1984,6 +1996,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        # Compact views have no cameras: their body indices no longer match the model's cameras, and
+        # sensors render from the full model.
+        view.camera_count = 0
+        view.camera_label = []
         view.curve_count = len(compact.order(frequency.CURVE))
         view.surface_count = len(compact.order(frequency.SURFACE))
         view.volume_count = len(compact.order(frequency.VOLUME))
@@ -3578,8 +3594,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         if filtered.rigid_contact_force is not None:
             filtered.rigid_contact_force.zero_()
-        if filtered.force is not None:
-            filtered.force.zero_()
 
         contact_update_dim = max(
             contacts.rigid_contact_max, contacts.soft_contact_max, filtered.contact_counters.shape[0]
@@ -3742,14 +3756,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415
 
-            requested = {"force"} if contacts.force is not None else None
             filtered = Contacts(
                 contacts.rigid_contact_max,
                 contacts.soft_contact_max,
                 requires_grad=contacts.requires_grad,
                 device=contacts.device,
                 per_contact_shape_properties=contacts.per_contact_shape_properties,
-                requested_attributes=requested,
                 contact_matching=contacts.rigid_contact_match_index is not None,
                 rigid_contact_surface_velocity=contacts.rigid_contact_surface_velocity is not None,
             )
@@ -3831,7 +3843,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             and filtered.soft_contact_max == contacts.soft_contact_max
             and filtered.requires_grad == contacts.requires_grad
             and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
-            and (filtered.force is not None) == (contacts.force is not None)
             and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
             and (filtered.rigid_contact_surface_velocity is None) == (contacts.rigid_contact_surface_velocity is None)
         )
@@ -3872,48 +3883,34 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 self._filter_shape_contact_pairs(entry.view)
 
     def _attribute_matches_model_flags(self, attribute: _AttributeProjection, flags: int) -> bool:
-        """Return whether a projected model attribute is covered by change flags."""
-        frequency = attribute.frequency
-        model_frequency = self.model.AttributeFrequency
-        if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
-            if frequency == model_frequency.BODY:
-                return True
-        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref")
-        if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if (
-                frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) and attribute.name != "joint_rest_q"
-            ) or attribute.name in ("joint_axis", "joint_target_q"):
-                return True
+        """Return whether a projected model attribute is covered by change flags.
+
+        An attribute matches the flags it declares (see :meth:`Model.get_attribute_update_flags`).
+        Entry views hold copies, so attributes that declare no flag, including those solvers read at
+        every step, match the flags of their entity frequency.
+        """
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
-            if frequency == model_frequency.JOINT_DOF or attribute.name in ("joint_target_q", "joint_rest_q"):
-                return True
-        if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
-            if (
-                frequency == model_frequency.JOINT_DOF and attribute.name != "joint_armature" and not configuration_dof
-            ) or attribute.name == "joint_target_q":
-                return True
-        if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
-            "joint_target_q",
-            "mujoco:dof_ref",
-            "joint_rest_q",
-        ):
-            return True
-        if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":
-            return True
-        if flags & int(ModelFlags.SHAPE_PROPERTIES):
-            if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
-                return True
-        if flags & int(ModelFlags.MODEL_PROPERTIES):
-            if frequency in (model_frequency.ONCE, model_frequency.WORLD):
-                return True
-        if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
-                return True
-            if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
-                return True
-        if flags & int(ModelFlags.TENDON_PROPERTIES) and "tendon" in attribute.name:
-            return True
-        return bool(flags & int(ModelFlags.ACTUATOR_PROPERTIES) and "actuator" in attribute.name)
+            flags |= int(
+                ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+                | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+            )
+        spec = self.model._attribute_spec(attribute.name)
+        if spec is not None and spec.update_flags:
+            return bool(flags & int(spec.update_flags))
+        model_frequency = self.model.AttributeFrequency
+        frequency_flags = {
+            model_frequency.BODY: ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES,
+            model_frequency.JOINT: ModelFlags.JOINT_PROPERTIES,
+            model_frequency.JOINT_COORD: ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
+            model_frequency.JOINT_DOF: ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+            model_frequency.SHAPE: ModelFlags.SHAPE_PROPERTIES,
+            model_frequency.ONCE: ModelFlags.MODEL_PROPERTIES,
+            model_frequency.WORLD: ModelFlags.MODEL_PROPERTIES,
+            model_frequency.CONSTRAINT_MIMIC: ModelFlags.CONSTRAINT_PROPERTIES,
+            model_frequency.ATTACHMENT_PARTICLE_BODY: ModelFlags.CONSTRAINT_PROPERTIES,
+        }
+        return bool(flags & int(frequency_flags.get(attribute.frequency, 0)))
 
     def _refresh_body_inertial_view_overrides(self, entry: SolverEntry) -> None:
         """Refresh base ownership masks derived from parent body inertia."""
@@ -3929,6 +3926,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.solver.notify_model_changed(flags)
         if int(flags) & self._gravity_acceleration_refresh_flags():
             self._refresh_gravity_accelerations()
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # Entry model views re-project the changed attributes into newly allocated copies.
+        return ~0
+
+
+def _entry_has_kinematic_particles(entry: SolverEntry) -> bool:
+    view = entry.view
+    if not int(view.particle_count) or view.particle_flags is None:
+        return False
+    flags = view.particle_flags.numpy()
+    owned = np.ones(flags.shape[0], dtype=bool)
+    owned[entry.particle_dynamics_disabled_local_indices.numpy()] = False
+    return bool(np.any(flags[owned] & int(ParticleFlags.KINEMATIC)))
 
 
 def _entry_control(view: ModelView) -> Control:
@@ -3991,6 +4003,16 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
         _copy_control_float_array(src, dst, name, local_to_global, device, allow_direct_copy=not has_free_root_joints)
     for name in ("tri_activations", "tet_activations", "muscle_activations"):
         _copy_control_prefix_float_array(src, dst, name)
+    if src.particle_target_q is None or entry.particle_target_q is None:
+        dst.particle_target_q = None
+    else:
+        dst.particle_target_q = entry.particle_target_q
+        wp.launch(
+            _copy_mapped_vec3,
+            dim=entry.particle_local_to_global.shape[0],
+            inputs=[entry.particle_local_to_global, src.particle_target_q, dst.particle_target_q],
+            device=device,
+        )
     model = entry.view.parent
     for full_name, spec in model._iter_attribute_specs():
         if spec.assignment != model.AttributeAssignment.CONTROL:

@@ -124,6 +124,37 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.viewer.log_gaussian(f"/gaussian_{int(color_space)}", gaussian)
             np.testing.assert_allclose(add_splats.call_args.kwargs["rgbs"], [expected], atol=1e-5)
 
+    def test_gaussian_world_visibility_preserves_handles(self):
+        """Hide excluded Gaussian handles and reuse them when worlds become visible again."""
+        builder = newton.ModelBuilder()
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_gaussian(-1, gaussian=gaussian)
+        for world in range(2):
+            builder.begin_world()
+            body = builder.add_body(xform=wp.transform((float(world), 0.0, 1.0), wp.quat_identity()))
+            builder.add_shape_gaussian(body, gaussian=gaussian)
+            builder.end_world()
+        model = builder.finalize(device="cpu")
+        self.viewer.set_model(model)
+        self.viewer.show_gaussians = True
+        state = model.state()
+        self.viewer.log_state(state)
+
+        names = {world: name for name, _, _, _, world, _, _ in self.viewer._gaussian_instances}
+        handles = {world: self.viewer._scene_handles[name] for world, name in names.items()}
+        self.assertEqual(set(names), {-1, 0, 1})
+        for worlds in ([1], [], [0], None, [1], None):
+            with self.subTest(worlds=worlds):
+                self.viewer.set_visible_worlds(worlds)
+                self.viewer.log_state(state)
+                visible_worlds = {-1, 0, 1} if worlds is None else {-1, *worlds}
+                active_names = {world: name for name, _, _, _, world, _, _ in self.viewer._gaussian_instances}
+                self.assertEqual(active_names, {world: names[world] for world in visible_worlds})
+                self.assertEqual(set(self.viewer._gaussian_splats), set(names.values()))
+                for world, handle in handles.items():
+                    self.assertIs(self.viewer._scene_handles[names[world]], handle)
+                    self.assertEqual(handle.visible, world in visible_worlds)
+
     def test_hidden_shapes_preserve_colors(self):
         """Restore colored rigid geometry after toggling visual and collision layers."""
         model = self.make_model(static_box=True)

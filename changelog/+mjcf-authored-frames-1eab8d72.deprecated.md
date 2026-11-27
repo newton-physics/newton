@@ -1,0 +1,1 @@
+Deprecate importing an MJCF body with a slide joint listed after a hinge joint it is not parallel to. Newton applies the slide before the hinge, which changes the body's motion. List the slide before the hinge if that is the intended mechanism.

@@ -24,7 +24,6 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.inertia import _inverse_inertia_wp
 from ..utils.deprecation import warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
-from .contacts import Contacts
 from .control import Control
 from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
@@ -414,6 +413,8 @@ class Model:
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
         ACTUATOR = 26
         """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
+        CAMERA = 27
+        """Attribute frequency follows the number of model cameras (see :attr:`~newton.Model.camera_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -461,6 +462,14 @@ class Model:
         Coupled model views use it for the rows they synthesize.
         """
 
+        update_flags: int | None = field(default=None, compare=False)
+        """:class:`~newton.ModelFlags` announcing an edit of the attribute, or ``None`` when no flag
+        covers it; see :meth:`Model.get_attribute_update_flags`.
+
+        :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` sets it to
+        :attr:`ModelBuilder.CustomAttribute.update_flags <newton.ModelBuilder.CustomAttribute.update_flags>`.
+        """
+
         def __post_init__(self) -> None:
             if self.row_width < 1:
                 raise ValueError(f"Attribute row_width must be positive, got {self.row_width}")
@@ -478,6 +487,19 @@ class Model:
                 raise ValueError(f"Attribute compaction policy {self.compaction_policy!r} requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
+        "gravity": AttributeSpec(
+            AttributeFrequency.WORLD, compaction_policy="passthrough", update_flags=ModelFlags.MODEL_PROPERTIES
+        ),
+        "camera_label": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_world": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.WORLD),
+        "camera_body": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.BODY),
+        "camera_transform": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_lens_type": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_focal_length": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_aperture": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_aperture_offset": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_clipping_range": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_pixel_aspect_ratio": AttributeSpec(AttributeFrequency.CAMERA),
         "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
         "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
         "tendon_start": AttributeSpec(
@@ -487,13 +509,19 @@ class Model:
         "tendon_guide_type": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_radius": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_orientation": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
-        "tendon_guide_mu": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_mu": AttributeSpec(AttributeFrequency.TENDON_GUIDE, update_flags=ModelFlags.TENDON_PROPERTIES),
         "tendon_guide_flags": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_offset": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_axis": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
-        "tendon_segment_compliance": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_segment_damping": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_segment_rest_length": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_compliance": AttributeSpec(
+            AttributeFrequency.TENDON_SEGMENT, update_flags=ModelFlags.TENDON_PROPERTIES
+        ),
+        "tendon_segment_damping": AttributeSpec(
+            AttributeFrequency.TENDON_SEGMENT, update_flags=ModelFlags.TENDON_PROPERTIES
+        ),
+        "tendon_segment_rest_length": AttributeSpec(
+            AttributeFrequency.TENDON_SEGMENT, update_flags=ModelFlags.TENDON_PROPERTIES
+        ),
         "tendon_segment_attachment_l_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
         "tendon_segment_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
         "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
@@ -502,10 +530,11 @@ class Model:
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_target_q": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE),
-        "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
+        "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE, update_flags=ModelFlags.MODEL_PROPERTIES),
         "particle_world": AttributeSpec(AttributeFrequency.PARTICLE, references=AttributeFrequency.WORLD),
         "particle_colors": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_world_start": AttributeSpec(
@@ -517,14 +546,17 @@ class Model:
             compaction_policy="color_groups",
         ),
         # bodies
-        "body_q": AttributeSpec(AttributeFrequency.BODY),
-        "body_qd": AttributeSpec(AttributeFrequency.BODY),
-        "body_com": AttributeSpec(AttributeFrequency.BODY),
-        "body_inertia": AttributeSpec(AttributeFrequency.BODY),
-        "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY),
-        "body_mass": AttributeSpec(AttributeFrequency.BODY),
-        "body_inv_mass": AttributeSpec(AttributeFrequency.BODY),
-        "body_flags": AttributeSpec(AttributeFrequency.BODY),
+        "body_q": AttributeSpec(
+            AttributeFrequency.BODY,
+            update_flags=ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
+        ),
+        "body_qd": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_PROPERTIES),
+        "body_com": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inertia": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_inv_mass": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_INERTIAL_PROPERTIES),
+        "body_flags": AttributeSpec(AttributeFrequency.BODY, update_flags=ModelFlags.BODY_PROPERTIES),
         "body_f": AttributeSpec(AttributeFrequency.BODY),
         "body_label": AttributeSpec(AttributeFrequency.BODY),
         "body_world": AttributeSpec(AttributeFrequency.BODY, references=AttributeFrequency.WORLD),
@@ -562,34 +594,37 @@ class Model:
         "_shape_variant_shape": AttributeSpec(AttributeFrequency.SHAPE),
         # shapes
         "shape_label": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_transform": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_transform": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_body": AttributeSpec(
             AttributeFrequency.SHAPE,
             references=AttributeFrequency.BODY,
         ),
         "shape_flags": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_gap": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_ke": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_kd": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_mu_torsional": AttributeSpec(
+            AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES
+        ),
+        "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_material_friction_mode": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_kh": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_gap": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_type": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_is_solid": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_margin": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_is_solid": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
+        "shape_margin": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_source": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_scale": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
-        "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE, update_flags=ModelFlags.SHAPE_PROPERTIES),
         "shape_world": AttributeSpec(AttributeFrequency.SHAPE, references=AttributeFrequency.WORLD),
         "shape_heightfield_index": AttributeSpec(
             AttributeFrequency.SHAPE,
@@ -652,9 +687,15 @@ class Model:
             references=AttributeFrequency.PARTICLE,
         ),
         "attachment_particle_body_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
-        "attachment_particle_body_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
-        "attachment_particle_body_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
-        "attachment_particle_body_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_stiffness": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "attachment_particle_body_damping": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "attachment_particle_body_enabled": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
         "attachment_particle_body_world": AttributeSpec(
             AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.WORLD,
@@ -700,11 +741,11 @@ class Model:
             AttributeFrequency.JOINT,
             references=AttributeFrequency.JOINT,
         ),
-        "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_X_p": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.CONSTRAINT_PROPERTIES),
+        "joint_X_p": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
+        "joint_X_c": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
-        "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_enabled": AttributeSpec(AttributeFrequency.JOINT, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
@@ -733,27 +774,55 @@ class Model:
             AttributeFrequency.JOINT_CONSTRAINT,
             compaction_policy="world_start",
         ),
-        "joint_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
+        "joint_q": AttributeSpec(AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.JOINT_PROPERTIES),
         "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
-        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_mode": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_target_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_damping": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_stiffness": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_rest_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
-        "joint_limit_lower": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_upper": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_ke": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_limit_kd": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_armature": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        ),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.NONE),
+        "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.NONE),
+        "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_PROPERTIES),
+        "joint_target_mode": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_target_ke": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_target_kd": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_damping": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_stiffness": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_rest_q": AttributeSpec(
+            AttributeFrequency.JOINT_COORD, update_flags=ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+        ),
+        "joint_limit_lower": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_limit_upper": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_limit_ke": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_limit_kd": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_effort_limit": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_friction": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
+        "joint_velocity_limit": AttributeSpec(
+            AttributeFrequency.JOINT_DOF, update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        ),
         # articulations and deprecated mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
@@ -831,9 +900,15 @@ class Model:
             AttributeFrequency.CONSTRAINT_MIMIC,
             references=AttributeFrequency.JOINT,
         ),
-        "constraint_mimic_coef0": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_coef1": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
-        "constraint_mimic_enabled": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
+        "constraint_mimic_coef0": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "constraint_mimic_coef1": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
+        "constraint_mimic_enabled": AttributeSpec(
+            AttributeFrequency.CONSTRAINT_MIMIC, update_flags=ModelFlags.CONSTRAINT_PROPERTIES
+        ),
         "constraint_mimic_label": AttributeSpec(AttributeFrequency.CONSTRAINT_MIMIC),
         "constraint_mimic_world": AttributeSpec(
             AttributeFrequency.CONSTRAINT_MIMIC,
@@ -855,6 +930,7 @@ class Model:
         AttributeFrequency.TETRAHEDRON: "tet_count",
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.TENDON: "tendon_count",
+        AttributeFrequency.CAMERA: "camera_count",
         AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
         AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
@@ -885,7 +961,6 @@ class Model:
             """
             object.__setattr__(self, "_name", name)
             object.__setattr__(self, "_deprecated_aliases", {})
-            object.__setattr__(self, "_removed_attributes", {})
 
         def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
             """Add a deprecated attribute alias.
@@ -913,9 +988,6 @@ class Model:
             self._deprecated_aliases[name] = (getter, message)
 
         def __getattr__(self, name: str) -> Any:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                return removed.__get__(self)
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
@@ -925,9 +997,6 @@ class Model:
 
         def __setattr__(self, name: str, value: Any) -> None:
             if not name.startswith("_"):
-                removed = self.__dict__.get("_removed_attributes", {}).get(name)
-                if removed is not None:
-                    removed.__set__(self, value)
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
@@ -938,12 +1007,6 @@ class Model:
                         return
                     raise AttributeError(f"Deprecated alias '{self._name}.{name}' does not support assignment")
             object.__setattr__(self, name, value)
-
-        def __delattr__(self, name: str) -> None:
-            removed = self.__dict__.get("_removed_attributes", {}).get(name)
-            if removed is not None:
-                removed.__delete__(self)
-            object.__delattr__(self, name)
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
@@ -991,7 +1054,7 @@ class Model:
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array[wp.int32] | None = None
-        """Particle enabled state, shape [particle_count], int."""
+        """Particle flags (:class:`~newton.ParticleFlags`), shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array[wp.int32] | None = None
@@ -1054,6 +1117,12 @@ class Model:
         """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
         """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_friction_mode: wp.array[wp.int32] | None = None
+        """Shape friction mode, shape [shape_count], int.
+
+        Values are :class:`~newton.ShapeFrictionMode`. Solvers and the collision
+        pipeline may read the mode only when they are constructed: set it before
+        constructing them; changing it afterwards is not supported."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
@@ -1263,6 +1332,39 @@ class Model:
         """Particle spring activation [dimensionless], shape [spring_count], float."""
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
+
+        # cameras
+        self.camera_count: int = 0
+        """Number of model cameras."""
+        self.camera_label: list[str] = []
+        """Camera labels, shape (camera_count,)."""
+        self.camera_world: wp.array[wp.int32] | None = None
+        """Owning world of each camera, shape [camera_count], int. ``-1`` is the global world;
+        a global camera is rendered once in every world, just as global shapes appear in every world."""
+        self.camera_body: wp.array[wp.int32] | None = None
+        """Parent body of each camera, shape [camera_count], int. ``-1`` means the camera is fixed."""
+        self.camera_transform: wp.array[wp.transformf] | None = None
+        """Camera frame relative to its parent body, or its world pose for fixed cameras [m, unitless quaternion],
+        shape [camera_count], transform. The camera looks along its local -Z axis with +Y up."""
+        self.camera_lens_type: wp.array[wp.int32] | None = None
+        """Lens type of each camera (:class:`~newton.CameraLensType`), shape [camera_count], int."""
+        self.camera_focal_length: wp.array[wp.float32] | None = None
+        """Focal length of each pinhole camera [m], shape [camera_count], float."""
+        self.camera_aperture: wp.array[wp.vec2f] | None = None
+        """Horizontal and vertical aperture (sensor size) of each pinhole camera [m], shape [camera_count], vec2.
+        A zero component is derived from the rendered image aspect ratio. When both are set and the image
+        aspect ratio differs, the aperture is expanded to it, like USD's default ``expandAperture`` policy.
+        Both use the pixel shape in :attr:`camera_pixel_aspect_ratio`."""
+        self.camera_aperture_offset: wp.array[wp.vec2f] | None = None
+        """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2."""
+        self.camera_clipping_range: wp.array[wp.vec2f] | None = None
+        """Near and far clip distance of each camera [m], shape [camera_count], vec2. For ``PINHOLE`` cameras
+        they are depths along the camera's -Z axis (planar clipping, as in USD and MJCF) for rays projected from
+        the camera's intrinsics, and distances along each ray for rays a sensor gives the camera explicitly."""
+        self.camera_pixel_aspect_ratio: wp.array[wp.float32] | None = None
+        """Pixel width over pixel height of each pinhole camera [unitless], shape [camera_count], float.
+        ``1`` means square pixels. The image resolution is not part of the camera; the sensor that renders it
+        chooses it."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0
@@ -1901,20 +2003,12 @@ class Model:
         self.custom_frequency_label_attributes: dict[str, str] = {}
         """Attribute keys containing labels for custom-frequency rows."""
 
-        self._requested_state_attributes: set[str] = set()
-        self._requested_contact_attributes: set[str] = set()
-
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
         Attribute values remain normal Python attributes on the model. This
         registry describes their indexing, ownership, and reference semantics.
         """
-
-        # Deprecated solver-produced State attributes remain registered for
-        # compatibility with request_state_attributes().
-        for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
-            self.attribute_specs[full_name] = Model.AttributeSpec(getattr(Model.AttributeFrequency, template.frequency))
 
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {
             name: spec.frequency for name, spec in self.attribute_specs.items()
@@ -2737,8 +2831,6 @@ class Model:
             The state object.
         """
 
-        requested = self.get_requested_state_attributes()
-
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
@@ -2768,41 +2860,10 @@ class Model:
             s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
             s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
 
-        self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
-
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
-
-    def _add_requested_state_attributes(
-        self,
-        state: State,
-        requested: list[str],
-        requires_grad: bool = False,
-    ) -> None:
-        """Allocate optional built-in state attributes requested by name."""
-        for full_name in requested:
-            template = State.EXTENDED_ATTRIBUTE_TEMPLATES.get(full_name)
-            if template is None:
-                continue
-
-            frequency = getattr(Model.AttributeFrequency, template.frequency)
-            value = wp.zeros(
-                self._attribute_frequency_count(frequency),
-                dtype=template.dtype,
-                device=self.device,
-                requires_grad=requires_grad,
-            )
-            if ":" in full_name:
-                namespace_name, attr_name = full_name.split(":", 1)
-                namespace = getattr(state, namespace_name, None)
-                if namespace is None:
-                    namespace = Model.AttributeNamespace(namespace_name)
-                    setattr(state, namespace_name, namespace)
-                setattr(namespace, attr_name, value)
-            else:
-                setattr(state, full_name, value)
 
     def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
         if isinstance(frequency, str):
@@ -2834,6 +2895,7 @@ class Model:
             requires_grad: Whether the control variables should have `requires_grad` enabled.
                 If None, uses the model's :attr:`requires_grad` setting.
             clone_variables: If True, clone the control input arrays; if False, use references.
+                With ``False``, :attr:`Control.particle_target_q` is ``None``.
 
         Returns:
             The initialized control object.
@@ -2855,6 +2917,8 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
+            if self.particle_count:
+                c.particle_target_q = wp.clone(self.particle_q, requires_grad=requires_grad)
         else:
             c.joint_target_q = self.joint_target_q
             c.joint_target_qd = self.joint_target_qd
@@ -3160,65 +3224,6 @@ class Model:
             )
         return self.rigid_contact_max, self.soft_contact_max
 
-    def request_state_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced state attributes.
-
-        .. deprecated:: 1.7
-
-            Request :class:`newton.solvers.SolverBase.Observables` from the solver
-            instead.
-
-        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_state_attributes(*attributes)
-
-    def _request_state_attributes(self, *attributes: str) -> None:
-        """Register legacy state fields after the entry point emits its warning."""
-        State.validate_extended_attributes(attributes)
-        self._requested_state_attributes.update(attributes)
-
-    def request_contact_attributes(self, *attributes: str) -> None:
-        """Request optional solver-produced contact attributes.
-
-        .. deprecated:: 1.7
-
-            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
-            the solver instead.
-
-        Args:
-            *attributes: Variable number of attribute names (strings).
-        """
-        warnings.warn(
-            "Model.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverBase.Observables from the solver instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        self._request_contact_attributes(*attributes)
-
-    def _request_contact_attributes(self, *attributes: str) -> None:
-        """Register legacy contact fields after the entry point emits its warning."""
-        Contacts.validate_extended_attributes(attributes)
-        self._requested_contact_attributes.update(attributes)
-
-    def get_requested_contact_attributes(self) -> set[str]:
-        """
-        Get the set of requested contact attribute names.
-
-        Returns:
-            The set of requested contact attributes.
-        """
-        return self._requested_contact_attributes
-
     def _add_custom_attributes(
         self,
         destination: object,
@@ -3283,6 +3288,8 @@ class Model:
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
         references: Model.AttributeFrequency | str | None = None,
+        *,
+        update_flags: int | None = None,
     ):
         """
         Add a custom attribute to the model.
@@ -3305,10 +3312,15 @@ class Model:
                 ``"body"`` and ``"world"`` are also supported. Use enums for
                 ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
                 to custom frequencies.
+            update_flags: :class:`~newton.ModelFlags` announcing an edit of a model-assigned
+                attribute, or ``None`` when no flag covers it. See :meth:`get_attribute_update_flags`.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
+            ValueError: If ``update_flags`` is given for an attribute not assigned to the model.
         """
+        if update_flags is not None and assignment not in (None, Model.AttributeAssignment.MODEL):
+            raise ValueError(f"Attribute '{name}': only model-assigned attributes declare update flags")
         if isinstance(attrib, wp.array) and attrib.device != self.device:
             raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
@@ -3355,6 +3367,7 @@ class Model:
                 frequency=frequency,
                 assignment=assignment,
                 references=reference_frequency,
+                update_flags=update_flags,
             ),
         )
 
@@ -3376,6 +3389,74 @@ class Model:
         if spec is None:
             raise KeyError(f"Attribute frequency of '{name}' is not known")
         return spec.frequency
+
+    def get_attribute_update_flags(self, name: str) -> ModelFlags | int | None:
+        """Get the flags that announce an edit of a model attribute to solvers.
+
+        Solvers cache data derived from some model attributes, such as MuJoCo's per-world geom
+        properties derived from :attr:`shape_material_mu`. After editing a model attribute in place,
+        pass the returned flags to :meth:`~newton.solvers.SolverBase.notify_model_changed`. Solvers
+        that read the attribute directly ignore the flags. Custom attributes report the flags
+        declared in :attr:`ModelBuilder.CustomAttribute.update_flags
+        <newton.ModelBuilder.CustomAttribute.update_flags>`, for example by the solver that registered
+        them.
+
+        Example:
+
+            .. testcode::
+
+                import newton
+
+                builder = newton.ModelBuilder()
+                newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_shape_sphere(builder.add_body(), radius=0.1)
+                model = builder.finalize(device="cpu")
+
+                print(model.get_attribute_update_flags("shape_material_mu").name)
+                print(model.get_attribute_update_flags("mujoco:solref").name)
+                print(model.get_attribute_update_flags("shape_material_friction_mode"))
+
+            .. testoutput::
+
+                SHAPE_PROPERTIES
+                SHAPE_PROPERTIES
+                None
+
+        Args:
+            name: Name of the model attribute: a built-in attribute such as ``"shape_material_mu"``, or a
+                custom attribute as ``"namespace:name"``, such as ``"mujoco:solref"``.
+
+        Returns:
+            :class:`~newton.ModelFlags`, or an ``int`` when several flags are needed.
+            :attr:`ModelFlags.NONE <newton.ModelFlags.NONE>` when solvers read the attribute at every
+            step. ``None`` when no flag covers the attribute, for example because solvers read it only
+            at construction, as for topology and indices; recreate solvers that cache it.
+
+        Raises:
+            KeyError: If the model has no attribute ``name``. :class:`~newton.State`,
+                :class:`~newton.Control`, and :class:`~newton.Contacts` attributes are not covered.
+        """
+        spec = self._attribute_spec(name)
+        if spec is not None and spec.assignment is not None:
+            # Custom attribute with a declared assignment.
+            if spec.assignment != Model.AttributeAssignment.MODEL:
+                raise KeyError(
+                    f"Attribute '{name}' is assigned to {spec.assignment.name}; only model attributes report update flags"
+                )
+        else:
+            # Check a deprecated alias through its target so the query does not warn.
+            target = spec.alias_of if spec is not None and spec.alias_of is not None else name
+            namespace, _, attribute = target.rpartition(":")
+            owner = getattr(self, namespace, None) if namespace else self
+            if owner is None or not hasattr(owner, attribute):
+                raise KeyError(f"No model attribute '{name}' exists")
+        flags = None if spec is None else spec.update_flags
+        if flags is None:
+            return None
+        try:
+            return ModelFlags(flags)
+        except ValueError:  # several flags
+            return int(flags)
 
     def get_custom_frequency_count(self, frequency: str) -> int:
         """
@@ -3424,5 +3505,4 @@ class Model:
         if self.joint_count:
             attributes.extend(("joint_q", "joint_qd"))
 
-        attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes

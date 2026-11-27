@@ -143,6 +143,7 @@ _MATERIAL_FIELDS = (
     "shape_material_mu",
     "shape_material_mu_torsional",
     "shape_material_mu_rolling",
+    "shape_material_friction_mode",
     "shape_material_restitution",
 )
 

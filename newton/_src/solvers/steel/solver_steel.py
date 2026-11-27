@@ -20,8 +20,19 @@ from ...core.types import MAXVAL, override
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry.flags import MeshProperties, ShapeFlags
 from ...geometry.utils import _scan_scratch_size, scan_with_total
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
+from ...sim import (
+    BodyFlags,
+    Contacts,
+    Control,
+    JointType,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    State,
+    StateFlags,
+)
 from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
@@ -1417,7 +1428,9 @@ class SolverSteel(SolverBase, CouplingInterface):
       :attr:`~newton.Model.joint_rest_q` on PRISMATIC, REVOLUTE and D6 DOFs, applied
       explicitly as ``stiffness * (rest_q - q)`` like :class:`~newton.solvers.SolverFeatherstone`,
       independently of drives and joint limits. Unlike the implicit drives, explicit springs
-      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF.
+      stay stable only for roughly ``dt * sqrt(stiffness / m_eff) < 2`` per DOF. Construction and
+      eager :meth:`notify_model_changed` calls warn about stiffness on other DOFs, which is ignored; a
+      notification during CUDA graph capture skips the check.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -1720,8 +1733,11 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         - ``steel:min_torsional_patch_radius`` [m] is the effective spin radius of the
           shape's contacts (``physxCollision:minTorsionalPatchRadius``, default 0, no
-          torsion). PhysX also scales a radius with the penetration depth through
-          ``physxCollision:torsionalPatchRadius``; this solver does not.
+          torsion). A positive radius needs a :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode`
+          with torsional friction, which the USD importer selects with it. PhysX also
+          scales a radius with the penetration depth through
+          ``physxCollision:torsionalPatchRadius``; this solver does not. Set it before
+          constructing the solver, which enables torsion only when a radius is positive.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -1759,6 +1775,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_angular_damping",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1770,6 +1787,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_linear_damping",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1781,6 +1799,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_linear_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1792,6 +1811,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_angular_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1815,6 +1835,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="rigid_body_max_depenetration_velocity",
+                update_flags=ModelFlags.NONE,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.BODY,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -1826,6 +1847,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="joint_friction_load_coefficient",
+                update_flags=ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
                 namespace=_ATTRIBUTE_NAMESPACE,
                 frequency=Model.AttributeFrequency.JOINT_DOF,
                 assignment=Model.AttributeAssignment.MODEL,
@@ -2236,7 +2258,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 normal. It has no effect on friction patch rows, which act at their anchors.
             contact_torsion_device: Experimental contact torsion is enabled at construction
                 when any shape has a positive ``steel:min_torsional_patch_radius`` (see
-                :meth:`register_custom_attributes`). It adds one angular row per contact group
+                :meth:`register_custom_attributes`), which needs a
+                :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` with torsional friction. It adds one
+                angular row per contact group
                 of an articulated body, about the group's normal, bounded by
                 ``r * (mu * N - sliding)``: sliding and spin share one Coulomb budget, ``N`` is
                 the final solved load of the group's normal rows, and ``r`` is the largest
@@ -2263,7 +2287,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ring that does not match its group) makes an eager step raise before it applies
                 torsion rows. In a captured step the error is deferred: the failing step
                 restores its output motion arrays
-                (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``, ``body_qdd``) to the input
+                (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``) to the input
                 values, while other outputs, observables and solver history still advance,
                 and :meth:`check_constraint_capacity` raises after the replays.
                 Check before using replay results, discard failed output, fix the cause and
@@ -2317,9 +2341,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 connect them into one island; its fixed root supports that island. A
                 supported island whose bodies stay below ``sleep_linear_threshold`` and
                 ``sleep_angular_threshold`` for ``sleep_quiet_time`` falls asleep, and its
-                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd`` and, when
-                requested, ``body_parent_f``) is frozen until a wake event: a nonzero or nonfinite
-                external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
+                published state (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``) and, when
+                requested, its ``observables.body_parent_f`` rows are frozen until a wake event:
+                a nonzero or nonfinite external force (:attr:`~newton.State.body_f`, :attr:`~newton.Control.joint_f`),
                 a changed state or gravity, a contact with an awake or moving body, lost
                 support or row capacity, a :meth:`reset` of its world, or
                 :meth:`notify_model_changed` for properties of its joints, DOFs, bodies or
@@ -2405,8 +2429,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ``None`` (default) to inherit ``wp.config.deterministic``, which defaults to
                 ``NOT_GUARANTEED``. With ``RUN_TO_RUN`` the solver reserves its constraint rows in a fixed
                 order instead of the order in which GPU threads reach the per-world row counters: joint
-                rows in articulation order, contact rows in contact-buffer order within each world. Given
-                identical inputs,
+                rows in articulation order, contact rows in contact-buffer order within each world. Mimic and
+                loop-closure rows take element order in either mode, since they couple the DOFs of one
+                articulation and a serial sweep visits rows in slot order. Given identical inputs,
                 including identically ordered contacts, repeated runs are then bitwise identical on the
                 same GPU model, driver and Warp build, eagerly and under CUDA graph replay; combine it with
                 ``CollisionPipeline(deterministic=True)`` for a reproducible contact order (see
@@ -2608,6 +2633,20 @@ class SolverSteel(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
         configure_contact_torsion(self)
+        torsion_radius = self._contact_torsion_shape_radius
+        if model.shape_count and model.shape_material_friction_mode is not None:
+            modes = model.shape_material_friction_mode.numpy()
+            radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
+            limits = []
+            if np.any(modes & FRICTION_ROLLING_BIT):
+                limits.append("does not support rolling friction")
+            if np.any((modes & FRICTION_TORSIONAL_BIT != 0) & (radii <= 0.0)):
+                limits.append(
+                    "applies torsional friction only to contacts of shapes with a positive "
+                    "steel:min_torsional_patch_radius"
+                )
+            if limits:
+                warnings.warn(f"SolverSteel {' and '.join(limits)}.", NewtonWarning, stacklevel=2)
         self._nesterov_momentum = bool(nesterov_momentum)
         if self._nesterov_momentum and (
             articulated_contact_response != "immediate" or self._row_schedule != "interleaved"
@@ -3265,8 +3304,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
         raises :class:`ValueError` for invalid values, after applying every other update. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
-        DOF inputs and axes on the host to warn about the ones a closure ignores. A captured notification
-        skips both checks.
+        DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
+        Steel spring, an eager joint DOF or DOF force notification also reads
+        :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
+        Steel ignores. A captured notification skips all three checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3354,6 +3395,29 @@ class SolverSteel(SolverBase, CouplingInterface):
         joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
         if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
+            if flags & dof_force:
+                self._warn_ignored_spring_stiffness(stacklevel=3)
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        # The kinematic-state refresh reads body flags on the host.
+        flags = ModelFlags.BODY_PROPERTIES
+        if self._sleeping is not None:
+            # Sleeping compares the tracked model arrays on the host to find the islands to wake.
+            flags |= (
+                ModelFlags.JOINT_PROPERTIES
+                | ModelFlags.JOINT_DOF_PROPERTIES
+                | ModelFlags.BODY_INERTIAL_PROPERTIES
+                | ModelFlags.SHAPE_PROPERTIES
+            )
+        mujoco = getattr(self.model, "mujoco", None)
+        if int(getattr(mujoco, "equality_constraint_count", 0) or 0):
+            # MuJoCo equality rows are validated on the host.
+            flags |= ModelFlags.CONSTRAINT_PROPERTIES
+        if self._enable_restitution and self._sparse_mass_matrix_size is not None:
+            # Sparse mass factors check restitution support on the host.
+            flags |= ModelFlags.SHAPE_PROPERTIES
+        return int(flags)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
@@ -4416,7 +4480,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self._reserve_rows(self._mimic_world_index, self._slot_counter, launch_mimic)
+            self._reserve_rows(self._mimic_world_index, self._slot_counter, launch_mimic, ordered=True)
             for size in self._size_groups:
                 if size not in self._mimic_sizes:
                     continue
@@ -4475,7 +4539,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self._reserve_rows(self._connect_world_index, self._slot_counter, launch_connect)
+            self._reserve_rows(self._connect_world_index, self._slot_counter, launch_connect, ordered=True)
             for size in self._connect_sizes:
                 wp.launch(
                     populate_connect_J_for_size,
@@ -4609,9 +4673,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             joint_type = model.joint_type.numpy()
             qd_start = model.joint_qd_start.numpy()
             sprung = np.isin(joint_type, [int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)])
-            sprung &= self._model_plan.loop_joint_articulation < 0
+            sprung &= model.joint_articulation.numpy() >= 0
             for joint in np.flatnonzero(sprung):
                 spring_dof_mask[qd_start[joint] : qd_start[joint + 1]] = 1
+            # Loop-closing REVOLUTE joints warn about their ignored inputs separately.
+            unsprung = ~sprung
+            unsprung[self._revolute_loop_joints] = False
+            self._spring_ignored_dof_mask = np.repeat(unsprung, np.diff(qd_start))
+        else:
+            self._spring_ignored_dof_mask = np.zeros(0, dtype=bool)
+        self._warn_ignored_spring_stiffness(stacklevel=4)
         self._passive_spring_dof_mask = wp.array(spring_dof_mask, dtype=wp.int32, device=model.device)
         self._passive_spring_stiffness = wp.zeros(n_dofs, dtype=wp.float32, device=model.device)
         self._passive_spring_rest_q = wp.zeros(
@@ -4619,6 +4690,20 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         self._refresh_passive_spring_stiffness()
         self._refresh_passive_spring_rest_q()
+
+    def _warn_ignored_spring_stiffness(self, stacklevel: int) -> None:
+        """Warn about nonzero spring stiffness on DOFs that carry no Steel spring."""
+        stiffness = self.model.joint_stiffness
+        if stiffness is None or not self._spring_ignored_dof_mask.any():
+            return
+        ignored = int(np.count_nonzero((stiffness.numpy() != 0.0) & self._spring_ignored_dof_mask))
+        if ignored:
+            warnings.warn(
+                f"SolverSteel ignores the passive spring stiffness on {ignored} DOF(s) of joints other than "
+                "tree PRISMATIC, REVOLUTE and D6 joints.",
+                NewtonWarning,
+                stacklevel=stacklevel,
+            )
 
     def _refresh_passive_spring_stiffness(self) -> None:
         """Copy the model's passive spring stiffness of sprung DOFs into the solver's fixed buffer."""
@@ -6973,8 +7058,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`notify_state_changed` first. Bodies outside every
                 articulation keep their ``body_q`` and ``body_qd``, which pass through to
                 ``state_out``; contacts treat their velocity as zero.
-            state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``,
-                ``body_qd`` and, when requested, ``body_parent_f``.
+            state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``, and
+                ``body_qd``. Parent wrenches go to ``observables.body_parent_f`` when
+                :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` is requested.
             control: Control input; ``None`` uses the model's default control.
             contacts: Rigid contacts from :class:`~newton.CollisionPipeline`, or ``None``.
                 The buffer must not hold more contacts than ``model.rigid_contact_max``
@@ -7000,9 +7086,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 "contact_warmstart=True matches contacts across steps and requires a Contacts buffer created "
                 'with contact matching; create the CollisionPipeline with contact_matching="latest".'
             )
-        body_parent_f = state_out.body_parent_f
-        if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F):
-            body_parent_f = observables.body_parent_f
+        body_parent_f = (
+            observables.body_parent_f
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
+            else None
+        )
         try:
             self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
         except BaseException:
@@ -7069,9 +7157,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.copy(state_out.joint_q, state_in.joint_q)
                 wp.copy(state_out.joint_qd, state_in.joint_qd)
             # Bodies outside every articulation carry no parent wrench.
-            for target in (body_parent_f, state_out.body_parent_f):
-                if target is not None:
-                    target.zero_()
+            if body_parent_f is not None:
+                body_parent_f.zero_()
             self._step += 1
             return state_out
         wp.launch(
@@ -7305,13 +7392,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._stage7_update_kinematics(state_out)
         if self._sleeping is not None:
             self._sleeping.finish(state_in, state_out, state_aug, dt)
-        if computed_parent_f is not None:
-            published = {}
-            for target in (body_parent_f, state_out.body_parent_f):
-                if target is not None and target.ptr != computed_parent_f.ptr:
-                    published[target.ptr] = target
-            for target in published.values():
-                target.assign(computed_parent_f)
+        if body_parent_f is not None and computed_parent_f is not None and body_parent_f.ptr != computed_parent_f.ptr:
+            body_parent_f.assign(computed_parent_f)
 
         if self._friction_anchors_enabled:
             if has_contacts:
@@ -9399,14 +9481,18 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
 
     def _init_ordered_rows(self, model: Model) -> None:
-        """Build the per-world element lists that order row reservations with ``deterministic=RUN_TO_RUN``."""
+        """Build the per-world element lists that order row reservations.
+
+        Mimic and loop-closure rows are always reserved in element order; the other families only with
+        ``deterministic=RUN_TO_RUN``.
+        """
         device = model.device
         self._row_cursor = wp.zeros(1, dtype=wp.int32, device=device)
         self._articulation_world_index = None
         self._mimic_world_index = None
         self._connect_world_index = None
         self._rigid_velocity_limit_world_index = None
-        if not self._ordered_rows or self._art_to_world is None:
+        if self._art_to_world is None:
             return
 
         def world_index(element_world):
@@ -9429,13 +9515,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 launches,
             )
 
-        art_world = self._art_to_world.numpy()
-        self._articulation_world_index = world_index(art_world)
-        cursor_size = max(len(art_world), self._mimic_count, self._connect_count, 1)
+        # A serial sweep visits a world's rows in slot order, and the mimic and closure rows of one
+        # articulation are coupled, so an atomic reservation would reorder their sweep every step.
+        cursor_size = max(self._mimic_count, self._connect_count, 1)
         if self._mimic_count:
             self._mimic_world_index = world_index(self._mimic_world.numpy())
         if self._connect_count:
             self._connect_world_index = world_index(self._connect_world.numpy())
+        if not self._ordered_rows:
+            self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
+            return
+        art_world = self._art_to_world.numpy()
+        self._articulation_world_index = world_index(art_world)
+        cursor_size = max(len(art_world), cursor_size)
         if self._free_rigid_body_count:
             body_art = self._body_to_articulation.numpy()[self._free_rigid_body_indices.numpy()]
             self._rigid_velocity_limit_world_index = world_index(
@@ -9459,9 +9551,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
         self._contact_slot_scan_length = wp.ones(1, dtype=wp.int32, device=device)
 
-    def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
+    def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch, ordered: bool = False) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
-        if not self._ordered_rows:
+        if not (self._ordered_rows or ordered):
             launch(ROW_SLOTS_ATOMIC)
             return
         device = self.model.device
@@ -10068,6 +10160,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._prescribed_articulation,
                     self._articulation_origin,
                     self._shape_mu,
+                    model.shape_material_friction_mode,
                     self._shape_restitution,
                     self._friction_patches.view,
                     *self._contact_anchor_args,
@@ -10222,6 +10315,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._prescribed_articulation,
                         int(self._has_contact_target_velocity),
                         self._shape_mu,
+                        model.shape_material_friction_mode,
                         self._contact_slots_needed,
                         self._shape_restitution,
                         self._friction_patches.view,
@@ -11374,6 +11468,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self._prescribed_articulation,
                 self._articulation_origin,
                 self._shape_mu,
+                model.shape_material_friction_mode,
                 self._shape_restitution,
                 self._contact_slots_needed,
                 *self._contact_anchor_args,

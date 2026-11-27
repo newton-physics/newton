@@ -53,6 +53,7 @@ __all__ += [
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
     BodyFlags,
+    CameraLensType,
     CollisionPipeline,
     CollisionSubstepScheduler,
     Contacts,
@@ -63,6 +64,7 @@ from ._src.sim import (  # noqa: E402
     ModelBuilder,
     ModelFlags,
     Rod,
+    ShapeFrictionMode,
     State,
     StateFlags,
     TendonGuide,
@@ -80,6 +82,7 @@ from ._src.sim import (  # noqa: E402
 
 __all__ += [
     "BodyFlags",
+    "CameraLensType",
     "CollisionPipeline",
     "CollisionSubstepScheduler",
     "Contacts",
@@ -90,6 +93,7 @@ __all__ += [
     "ModelBuilder",
     "ModelFlags",
     "Rod",
+    "ShapeFrictionMode",
     "State",
     "StateFlags",
     "TendonGuide",
