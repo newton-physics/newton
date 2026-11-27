@@ -289,7 +289,7 @@ class SolverKaminoImpl(SolverBase):
                 solver=None if uses_lox or uses_dense_scc else linear_solver_type,
                 solver_kwargs=None if uses_lox or uses_dense_scc else linear_solver_kwargs,
                 sparse=self._config.sparse_dynamics,
-                decouple_joint_dynamics=self._config.dynamics_solver == "padmm",
+                decouple_joint_dynamics=self._config.dynamics_solver in ("padmm", "scc"),
             )
 
         # Allocate the impulses that act on the bodies, and the impulses of the original rows,

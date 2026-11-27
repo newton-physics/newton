@@ -94,6 +94,33 @@ class TestDynamicJointDecoupling(NewtonTestCase):
         self.assertTrue(np.all(rows >= 0))
         self.assertEqual(np.unique(rows).size, rows.size)
 
+    def test_decouple_solution(self):
+        """Decoupling a preconditioned solution of the original rows applies the change of variables."""
+        device = self.model.device
+        s = self._shares(0.1, 0.9)
+        self.decoupling.body_share.assign(s)
+        P = self.rng.uniform(0.5, 2.0, self.num_rows).astype(np.float32)
+        # Preconditioned impulses x = lambda / P and velocities z = P v of the original rows
+        x = self.rng.standard_normal(self.num_rows).astype(np.float32)
+        z = self.rng.standard_normal(self.num_rows).astype(np.float32)
+        x_wp = wp.array(x, dtype=wp.float32, device=device)
+        z_wp = wp.array(z, dtype=wp.float32, device=device)
+
+        self.decoupling.decouple_solution(wp.array(P, dtype=wp.float32, device=device), x_wp, z_wp)
+
+        lambdas, v_plus = P * x, z / P
+        decoupled_lambdas, decoupled_v_plus = P * x_wp.numpy(), z_wp.numpy() / P
+        q, f, e = self.table["dynamic_row"], self.table["friction_row"], self.table["effort_row"]
+        c = s - 1.0
+        # lambda_q' = lambda_q - c (lambda_f + lambda_e), and v_f' = v_f + c v_q
+        np.testing.assert_allclose(
+            decoupled_lambdas[q], lambdas[q] - c * (lambdas[f] + lambdas[e]), rtol=1e-5, atol=1e-6
+        )
+        for row in (f, e):
+            np.testing.assert_allclose(decoupled_v_plus[row], v_plus[row] + c * v_plus[q], rtol=1e-5, atol=1e-6)
+            np.testing.assert_array_equal(x_wp.numpy()[row], x[row])
+        np.testing.assert_array_equal(z_wp.numpy()[q], z[q])
+
     def test_rebase_solution_preserves_original_variables(self):
         """Rebasing a solution to a new body share leaves the original impulses and velocities unchanged."""
         device = self.model.device

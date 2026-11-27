@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...core.types import vec6f
+from .decoupling import coupled_rows_entry
 from .sparse_kernels import _subgroup_sum, _unilateral_nzb_offsets
 
 if TYPE_CHECKING:
@@ -70,8 +71,16 @@ def _assemble(
     slots: int,
     masks: wp.array[wp.uint64],
     values: wp.array[wp.float32],
+    has_coupled_rows: wp.bool,
+    coupled_row: wp.array2d[wp.int32],
+    coupled_coef: wp.array2d[wp.float32],
+    jacobian_row_scale: wp.array[wp.float32],
 ):
-    """Cache exact shared-body coefficients without materializing zero blocks."""
+    """Cache exact shared-body coefficients without materializing zero blocks.
+
+    A joint dynamics row and a friction or effort row of the same DoF share their bodies, so the
+    joint-space coupling of decoupled joint rows has a slot.
+    """
     w, col = wp.tid()
     if col >= dim[w] - njc[w]:
         return
@@ -123,7 +132,12 @@ def _assemble(
                     if offsets[1] >= 0 and body == body1:
                         for component in range(6):
                             value += weighted_j[component] * jac1[component]
-            values[((w * slots + slot) * 6 + local) * width + col] = value * scale
+            value *= scale
+            if has_coupled_rows and row >= 0 and col < nbc[w]:
+                value += coupled_rows_entry(
+                    vio[w] + row, vio[w], njc[w] + col, coupled_row, coupled_coef, jacobian_row_scale
+                )
+            values[((w * slots + slot) * 6 + local) * width + col] = value
         slot += 1
         remaining = remaining & (remaining - wp.uint64(1))
 
@@ -221,7 +235,8 @@ class PackedCoupling:
                 data.lio,
                 data.cio,
                 data.vio,
-                data.P,
+                # Column scale, with the body share of decoupled joint rows
+                path.decoupled_rows.row_scale(problem),
                 bsm.num_nzb,
                 bsm.nzb_start,
                 bsm.nzb_coords,
@@ -239,6 +254,7 @@ class PackedCoupling:
                 self.slots,
                 self.masks,
                 self.values,
+                *path.decoupled_rows.inputs(problem),
             ],
             device=self._device,
         )

@@ -15,9 +15,9 @@ from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
-    PADMM_CONFIGS,
     make_padmm_sparse_fused_config,
     make_single_iteration_config,
+    solve_variants,
 )
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -205,11 +205,11 @@ class TestSolverKaminoJointEffortLimitImplicitPd(NewtonTestCase):
                     ):
                         expected_effort = direction * effort_limit
                         expected_velocity = DT * expected_effort / (_EFFECTIVE_JOINT_INERTIA + armature)
-                        # PADMM decouples the effort row from the armature row of the same DoF, and
-                        # the body actuation wrench holds the part of the effort that acts on the
+                        # PADMM and SCC decouple the effort row from the armature row of the same DoF,
+                        # and the body actuation wrench holds the part of the effort that acts on the
                         # body directly, ``r / (d + r)`` with ``d = 1 / I`` and ``r = 1 / armature``.
                         expected_body_effort = expected_effort
-                        if config_name in PADMM_CONFIG_NAMES and armature > 0.0:
+                        if armature > 0.0:
                             expected_body_effort *= (1.0 / armature) / (1.0 / _BODY_INERTIA + 1.0 / armature)
                         self.assertAlmostEqual(float(actual_efforts[world]), expected_effort, delta=3.0e-4)
                         self.assertAlmostEqual(float(reported_efforts[world]), expected_effort, delta=3.0e-4)
@@ -382,7 +382,7 @@ class TestSolverKaminoJointEffortLimitDominantArmature(NewtonTestCase):
 
     def test_bounded_pd_with_dominant_armature(self):
         """Solve effort-limited PD accurately when the armature dwarfs the body inertia."""
-        self._check_bounded_pd(PADMM_CONFIGS)
+        self._check_bounded_pd(KAMINO_CONFIGS)
 
     def test_bounded_pd_with_dominant_armature_fused_cr(self):
         """Solve effort-limited PD with the fused conjugate residual solver, see the test above."""
@@ -414,22 +414,23 @@ class TestSolverKaminoJointEffortLimitDominantArmature(NewtonTestCase):
             builder.end_world()
         model = builder.finalize(device=test_context.device)
         for config_name, config_factory in configs:
-            solver = SolverKamino(model, config_factory())
-            control = model.control()
-            control.joint_target_q.assign([target] * len(cases))
-            state_out = model.state()
-            solver.step(_initial_state(model), state_out, control=control, contacts=None, dt=dt)
-            efforts = state_out.joint_lambdas_tau.numpy()
-            velocities = state_out.joint_qd.numpy()
-            for world, (limit, friction) in enumerate(cases):
-                with self.subTest(config=config_name, limit=limit, friction=friction):
-                    # Backward PD and momentum balance solved together, then saturated.
-                    effort = kp * target * joint_inertia / (joint_inertia + dt * kd + dt * dt * kp)
-                    effort = min(limit, effort)
-                    velocity = dt * (effort - friction) / joint_inertia
-                    self.assertGreater(velocity, 0.0)
-                    np.testing.assert_allclose(efforts[world], effort, rtol=1.0e-3)
-                    np.testing.assert_allclose(velocities[world], velocity, rtol=1.0e-3)
+            for variant, config in solve_variants(config_factory):
+                solver = SolverKamino(model, config)
+                control = model.control()
+                control.joint_target_q.assign([target] * len(cases))
+                state_out = model.state()
+                solver.step(_initial_state(model), state_out, control=control, contacts=None, dt=dt)
+                efforts = state_out.joint_lambdas_tau.numpy()
+                velocities = state_out.joint_qd.numpy()
+                for world, (limit, friction) in enumerate(cases):
+                    with self.subTest(config=config_name, limit=limit, friction=friction, **variant):
+                        # Backward PD and momentum balance solved together, then saturated.
+                        effort = kp * target * joint_inertia / (joint_inertia + dt * kd + dt * dt * kp)
+                        effort = min(limit, effort)
+                        velocity = dt * (effort - friction) / joint_inertia
+                        self.assertGreater(velocity, 0.0)
+                        np.testing.assert_allclose(efforts[world], effort, rtol=1.0e-3)
+                        np.testing.assert_allclose(velocities[world], velocity, rtol=1.0e-3)
 
 
 if __name__ == "__main__":

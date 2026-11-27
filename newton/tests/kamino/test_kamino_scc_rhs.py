@@ -4,6 +4,7 @@
 """Dense references for cached bilateral right-hand sides."""
 
 import unittest
+from itertools import product
 from types import SimpleNamespace
 from unittest import mock
 
@@ -12,6 +13,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
+from newton._src.solvers.kamino._src.solvers.scc.decoupling import SparseDecoupledRows
 from newton._src.solvers.kamino._src.solvers.scc.solver import SCCSolver
 from newton._src.solvers.kamino._src.solvers.scc.sparse import _build_sparse_bilateral_row_nzb_topology
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
@@ -104,8 +106,21 @@ class TestKaminoBilateralRHS(NewtonTestCase):
             previous = rng.normal(size=bvio + n + 2).astype(np.float32)
             inverse_storage = inverse.ravel()
             body = jacobian[n:].astype(np.float64).T @ impulses[pvio + n : pvio + rows].astype(np.float64)
-            expected_rhs = -scale[bvio : bvio + n] * (weighted.astype(np.float64) @ body + free[pvio : pvio + n])
-            expected_solution = inverse.astype(np.float64).T @ expected_rhs
+            # With decoupling, each bilateral row couples to up to two unilateral rows, relative to
+            # their entries of the row-scaled impulses (see `update_decoupled_coupled_rows`).
+            num_vec = pvio + rows + 2
+            row_scale = rng.uniform(0.01, 1.5, size=num_vec).astype(np.float32)
+            coupled_row = np.full((num_vec, 2), -1, dtype=np.int32)
+            coupled_coef = np.zeros((num_vec, 2), dtype=np.float32)
+            if rows > n:
+                coupled_row[pvio : pvio + n, 0] = n + np.arange(n) % (rows - n)
+                coupled_row[pvio : pvio + n : 2, 1] = n + (np.arange(0, n, 2) + 1) % (rows - n)
+                coupled_coef[pvio : pvio + n] = rng.normal(size=(n, 2)) * (coupled_row[pvio : pvio + n] >= 0)
+            coupling = np.zeros(n)
+            for row in range(n):
+                for col, coef in zip(coupled_row[pvio + row], coupled_coef[pvio + row], strict=True):
+                    if col >= 0:
+                        coupling[row] += coef * row_scale[pvio + col] * impulses[pvio + col]
             coords = [(row, col) for row in range(n) for col in range(0, body_dofs, 6)]
             blocks = [weighted[row, col : col + 6] for row, col in coords]
             for column_major in (False, True):
@@ -115,8 +130,20 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                 else:
                     transpose_coords = [(row, col) for row in range(rows) for col in range(0, body_dofs, 6)]
                     transpose_values = [jacobian[row, col : col + 6] for row, col in transpose_coords]
-                for active, row_storage in ((False, False), (True, False), (True, True)):
-                    with self.subTest(n=n, column_major=column_major, active=active, row_storage=row_storage):
+                for active, row_storage, decoupled in (
+                    (False, False, False),
+                    (True, False, False),
+                    (True, True, False),
+                    (True, False, True),
+                ):
+                    with self.subTest(
+                        n=n, column_major=column_major, active=active, row_storage=row_storage, decoupled=decoupled
+                    ):
+                        value = weighted.astype(np.float64) @ body + free[pvio : pvio + n]
+                        if decoupled:
+                            value = value + coupling
+                        expected_rhs = -scale[bvio : bvio + n] * value
+                        expected_solution = inverse.astype(np.float64).T @ expected_rhs
 
                         def ints(values):
                             return wp.array(values, dtype=wp.int32, device=device)
@@ -164,6 +191,16 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 ints(coords),
                                 wp.array(blocks, dtype=vec6f, device=device),
                                 int(row_storage),  # world_start
+                                *(
+                                    (
+                                        wp.bool(True),
+                                        wp.array(coupled_row, dtype=wp.int32, device=device),
+                                        floats(coupled_coef),
+                                        floats(row_scale),
+                                    )
+                                    if decoupled
+                                    else SparseDecoupledRows(device).disabled_inputs(floats(scale))
+                                ),
                             ],
                             device=device,
                             block_dim=128,
@@ -234,8 +271,14 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                 coords = np.column_stack((rows, np.array([0, 0, 0, 6, 6, 6])))
                 raw = np.zeros((6, 6), dtype=np.float32)
                 raw[:, 0] = rows + 1
-                scale = np.linspace(0.5, 1.5, n + nu).astype(np.float32)
-                weighted = raw * scale[rows, None]
+                preconditioner = np.linspace(0.5, 1.5, n + nu).astype(np.float32)
+                # With decoupling, the bounded rows 2 and 3 have a body share, and the bilateral rows
+                # couple to bounded rows (see `update_decoupled_coupled_rows`).
+                share = np.array([1.0, 1.0, 0.3, 0.6, 1.0, 1.0], dtype=np.float32)
+                coupled_row = np.array([[n, n + 1], [n + 2, -1], [0, n + 1], [0, n], [1, -1], [-1, -1]])
+                coupled_coef = np.array(
+                    [[0.7, -0.4], [0.25, 0.0], [0.5, 0.2], [-0.3, 0.1], [0.6, 0.0], [0.0, 0.0]], dtype=np.float32
+                )
                 jacobian = SimpleNamespace(nzb_start=ints([0]), nzb_coords=ints(coords))
                 problem = SimpleNamespace(
                     delassus=SimpleNamespace(constraint_jacobian=jacobian),
@@ -243,12 +286,28 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                 )
                 path = SimpleNamespace(jacobians=SimpleNamespace(joint_constraint_nzb_count=ints([6])), device=device)
                 _build_sparse_bilateral_row_nzb_topology(path, problem)
-                dense_j = np.zeros((n + nu, 12))
-                for block, (row, col) in enumerate(coords):
-                    dense_j[row, col : col + 6] = raw[block] * scale[row]
-                expected = (dense_j @ dense_j.T)[:n, n:]
-                for compact in (False, True):
-                    with self.subTest(compact=compact):
+                for decoupled, compact in product((False, True), (False, True)):
+                    with self.subTest(decoupled=decoupled, compact=compact):
+                        # The row scale of the Jacobian includes the body share of decoupled joint rows
+                        scale = preconditioner * share if decoupled else preconditioner
+                        weighted = raw * scale[rows, None]
+                        dense_j = np.zeros((n + nu, 12))
+                        for block, (row, col) in enumerate(coords):
+                            dense_j[row, col : col + 6] = raw[block] * scale[row]
+                        expected = (dense_j @ dense_j.T)[:n, n:]
+                        if decoupled:
+                            for row in range(n):
+                                for col, coef in zip(coupled_row[row], coupled_coef[row], strict=True):
+                                    if col >= n:
+                                        expected[row, col - n] += coef * scale[col]
+                            decoupled_inputs = (
+                                wp.bool(True),
+                                wp.array(coupled_row, dtype=wp.int32, device=device),
+                                wp.array(coupled_coef, dtype=wp.float32, device=device),
+                                floats(scale),
+                            )
+                        else:
+                            decoupled_inputs = SparseDecoupledRows(device).disabled_inputs(floats(scale))
                         coupling = wp.full(n * stride + 7, -123.0, dtype=wp.float32, device=device)
                         wp.launch(
                             _assemble_sparse_bilateral_unilateral_coupling,
@@ -278,6 +337,7 @@ class TestKaminoBilateralRHS(NewtonTestCase):
                                 coupling,
                                 3,
                                 compact,
+                                *decoupled_inputs,
                             ],
                             device=device,
                         )

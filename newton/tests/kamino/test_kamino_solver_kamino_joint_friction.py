@@ -19,11 +19,11 @@ from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
-    PADMM_CONFIGS,
     make_padmm_dense_config,
     make_padmm_sparse_config,
     make_padmm_sparse_fused_config,
     make_single_iteration_config,
+    solve_variants,
 )
 from newton.tests.unittest_utils import NewtonTestCase
 
@@ -660,7 +660,7 @@ class TestSolverKaminoJointFrictionDominantArmature(NewtonTestCase):
 
     def test_spin_down_with_dominant_armature(self):
         """Spin down without adding energy when the armature dwarfs the body inertia."""
-        self._check_spin_down(PADMM_CONFIGS)
+        self._check_spin_down(KAMINO_CONFIGS)
 
     def test_spin_down_with_dominant_armature_fused_cr(self):
         """Spin down with the fused conjugate residual solver, see the test above."""
@@ -674,8 +674,8 @@ class TestSolverKaminoJointFrictionDominantArmature(NewtonTestCase):
         stop_steps = int(round(w0 / decrement))
         steps = stop_steps + 10
         for config_name, config_factory in configs:
-            for use_acceleration in (True, False):
-                with self.subTest(config=config_name, use_acceleration=use_acceleration):
+            for variant, config in solve_variants(config_factory):
+                with self.subTest(config=config_name, **variant):
                     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
                     body = builder.add_link(mass=0.01, inertia=wp.mat33(np.eye(3) * inertia), lock_inertia=True)
                     joint = builder.add_joint_revolute(
@@ -683,8 +683,6 @@ class TestSolverKaminoJointFrictionDominantArmature(NewtonTestCase):
                     )
                     builder.add_articulation([joint])
                     model = builder.finalize(device=test_context.device)
-                    config = config_factory()
-                    config.padmm.use_acceleration = use_acceleration
                     solver = SolverKamino(model, config)
                     state = _initialize_state(model, qd=w0)
                     _, _, velocities, _ = _rollout(solver, model, state, steps=steps, dt=dt)

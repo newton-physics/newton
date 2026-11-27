@@ -18,6 +18,7 @@ __all__ = [
     "make_scc_dense_config",
     "make_scc_sparse_config",
     "make_single_iteration_config",
+    "solve_variants",
 ]
 
 
@@ -122,3 +123,21 @@ PADMM_CONFIG_NAMES = ("dense", "sparse")
 
 # The PADMM entries of KAMINO_CONFIGS
 PADMM_CONFIGS = tuple(entry for entry in KAMINO_CONFIGS if entry[0] in PADMM_CONFIG_NAMES)
+
+
+def solve_variants(config_factory) -> list[tuple[dict[str, Any], SolverKamino.Config]]:
+    """Return a configuration for each way its dynamics solver iterates, with a label for sub-tests.
+
+    PADMM runs with and without acceleration. SCC runs with and without the Schur complement of
+    the bilateral rows, i.e. its two ways of coupling the joint rows with the bounded rows.
+    """
+    variants = []
+    for option in (True, False):
+        config = config_factory()
+        if config.dynamics_solver == "padmm":
+            config.padmm.use_acceleration = option
+            variants.append(({"use_acceleration": option}, config))
+        else:
+            config.scc.use_schur_complement = option
+            variants.append(({"use_schur_complement": option}, config))
+    return variants

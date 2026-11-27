@@ -14,6 +14,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.solvers.scc import sparse
+from newton._src.solvers.kamino._src.solvers.scc.decoupling import SparseDecoupledRows
 from newton._src.solvers.kamino._src.solvers.scc.joint_blocks import (
     JointBlockSolver,
     _build_body_masks,
@@ -109,8 +110,10 @@ def _fixture(device, *, topology="chain"):
         data=SimpleNamespace(bilateral_dim=info.dim, bilateral_operator=operator, state=state),
         bilateral_nzb_pairs=(ints(pair_world), ints(pair_row), ints(pair_col), *[ints(np.zeros(len(pair_world)))] * 3),
         bilateral_entry_starts=ints(np.arange(len(pair_world) + 1)),
+        # No decoupled joint rows
+        decoupled_rows=SparseDecoupledRows(device),
     )
-    problem = SimpleNamespace(data=SimpleNamespace(dim=ints(n + nus), njc=info.dim))
+    problem = SimpleNamespace(data=SimpleNamespace(dim=ints(n + nus), njc=info.dim), joint_decoupling=None)
     return path, problem, dense, matrix, vio, rio, nus, scale, coupling
 
 

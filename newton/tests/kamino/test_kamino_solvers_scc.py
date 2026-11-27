@@ -32,6 +32,8 @@ from newton._src.solvers.kamino._src.linalg import (
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.scc import SCCSolver, sparse_factor
+from newton._src.solvers.kamino._src.solvers.scc.decoupling import SparseDecoupledRows
+from newton._src.solvers.kamino._src.solvers.scc.effort_limit_condensation import EffortLimitCondensation
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
@@ -83,6 +85,7 @@ from newton.tests.kamino.utils.make import (
     make_test_problem_fourbar,
     update_containers,
 )
+from newton.tests.kamino.utils.solver_configs import make_scc_dense_config, make_scc_sparse_config
 from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils import basics, testing
 
@@ -1044,6 +1047,8 @@ class TestSCCSolver(NewtonTestCase):
                     int32_array([6]),  # transpose_max_cols
                     column_major,  # transpose_column_major
                     0,  # world_start
+                    # No decoupled joint rows
+                    *SparseDecoupledRows(self.device).disabled_inputs(float_array([1.0])),
                 ],
                 device=self.device,
                 block_dim=threads_per_world,
@@ -5073,6 +5078,180 @@ class TestSCCSolver(NewtonTestCase):
                     atol=2.0e-6,
                     rtol=2.0e-6,
                 )
+
+
+class TestSCCSparseDecoupledJointRows(NewtonTestCase):
+    """Sparse SCC applies the change of variables of decoupled joint rows like dense SCC.
+
+    A chain with 36 joint rows takes the cooperative and compact Schur sparse paths on CUDA, which
+    form row products and matrix entries from the Jacobian blocks themselves.
+    """
+
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        setup_test_output(self)
+
+    @staticmethod
+    def _build_armature_dominant_chain(num_worlds: int = 1):
+        """Build a 6-joint chain with friction and effort-limited PD on every joint, armature 100x body inertia.
+
+        Args:
+            num_worlds: Number of worlds, each with a copy of the chain.
+        """
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        SolverKamino.register_custom_attributes(builder)
+        parent, joints = -1, []
+        for k in range(6):
+            # The body inertia about each axis is 1e-3, and the armature 0.1
+            body = builder.add_link(
+                mass=0.01, com=wp.vec3(0.05, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3), lock_inertia=True
+            )
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    body,
+                    parent_xform=wp.transform(wp.vec3(0.1 if parent >= 0 else 0.0, 0.0, 0.0), wp.quat_identity()),
+                    axis=(newton.Axis.Z, newton.Axis.Y, newton.Axis.X)[k % 3],
+                    armature=0.1,
+                    friction=0.05,
+                    target_ke=100.0,
+                    target_kd=10.0,
+                    effort_limit=1.0,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                )
+            )
+            parent = body
+        builder.add_articulation(joints)
+        if num_worlds > 1:
+            scene = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+            SolverKamino.register_custom_attributes(scene)
+            scene.replicate(builder, num_worlds)
+            builder = scene
+        return builder.finalize(device=test_context.device)
+
+    @staticmethod
+    def _rollout_armature_dominant_chain(
+        model, config, num_worlds: int = 1, steps: int = 3, capture: bool = False
+    ) -> tuple[SolverKamino, np.ndarray]:
+        """Step the chain from fixed velocities and targets, and return the joint velocities after each step.
+
+        With ``capture``, the steps run in a CUDA graph of two steps, which the joint block solver
+        requires, and the velocities are returned after every second step. A first step on separate
+        states allocates the solver outside the capture.
+        """
+        rng = np.random.default_rng(0)
+        targets = rng.uniform(-0.3, 0.3, model.joint_coord_count // num_worlds)
+        initial_velocities = rng.uniform(-0.5, 0.5, model.joint_dof_count // num_worlds)
+        solver = SolverKamino(model, config)
+        model.joint_q.zero_()
+        model.joint_qd.assign(np.tile(initial_velocities, num_worlds))
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        control = model.control()
+        control.joint_target_q.assign(np.tile(targets, num_worlds))
+        velocities = []
+        if capture:
+            warmup_in, warmup_out = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, warmup_in)
+            solver.step(warmup_in, warmup_out, control=control, contacts=None, dt=0.005)
+            with wp.ScopedCapture() as graph:
+                solver.step(state_in, state_out, control=control, contacts=None, dt=0.005)
+                solver.step(state_out, state_in, control=control, contacts=None, dt=0.005)
+            for _ in range(steps // 2):
+                wp.capture_launch(graph.graph)
+                velocities.append(state_in.joint_qd.numpy().reshape(num_worlds, -1))
+            return solver, np.array(velocities)
+        for _ in range(steps):
+            solver.step(state_in, state_out, control=control, contacts=None, dt=0.005)
+            state_in, state_out = state_out, state_in
+            velocities.append(state_in.joint_qd.numpy().reshape(num_worlds, -1))
+        return solver, np.array(velocities)
+
+    def test_sparse_matches_dense_on_armature_dominant_chain(self):
+        """Match dense SCC with friction and effort-limited PD on every joint of an armature-dominant chain."""
+        model = self._build_armature_dominant_chain()
+
+        def rollout(config):
+            return self._rollout_armature_dominant_chain(model, config)
+
+        for use_schur_complement, unilateral_solver in product((True, False), ("pgs", "apgd")):
+            configs = []
+            for factory in (make_scc_dense_config, make_scc_sparse_config):
+                config = factory()
+                config.scc.use_schur_complement = use_schur_complement
+                config.scc.unilateral_solver = unilateral_solver
+                configs.append(config)
+            with (
+                self.subTest(use_schur_complement=use_schur_complement, unilateral_solver=unilateral_solver),
+                mock.patch.object(
+                    EffortLimitCondensation, "publish", autospec=True, side_effect=EffortLimitCondensation.publish
+                ) as publish,
+            ):
+                (_, dense), (solver, sparse) = rollout(configs[0]), rollout(configs[1])
+                np.testing.assert_allclose(sparse, dense, rtol=0.0, atol=1.0e-4 * np.max(np.abs(dense)))
+                if use_schur_complement and wp.get_device(test_context.device).is_cuda:
+                    # The chain must keep taking the paths that form row products and matrix
+                    # entries from the Jacobian blocks themselves.
+                    path = solver._solver_kamino._solver_fd._sparse_path
+                    self.assertTrue(_can_use_cooperative_articulation(path))
+                    self.assertGreaterEqual(path.size.max_of_num_bilateral_joint_cts, 32)
+                    self.assertGreaterEqual(path.max_alternating_iterations, 4)
+                    if unilateral_solver == "pgs":
+                        # The compact PGS solve condenses the effort limits of each world
+                        self.assertIsNotNone(path.effort_limit_condensation)
+                        self.assertGreater(publish.call_count, 0)
+
+    def test_large_batch_matches_single_world_dense(self):
+        """Match dense SCC in every world of a captured 2048-world batch of armature-dominant chains.
+
+        Captured large batches solve with the joint block solver and the packed bilateral-unilateral
+        coupling, which applies the body share and couplings of decoupled joint rows itself.
+        """
+        if not wp.get_device(test_context.device).is_cuda or not wp.is_conditional_graph_supported():
+            self.skipTest("The joint block solver requires CUDA conditional graphs.")
+        num_worlds = 2048
+        config = make_scc_dense_config()
+        config.scc.use_schur_complement = True
+        _, dense = self._rollout_armature_dominant_chain(self._build_armature_dominant_chain(), config, steps=4)
+        config = make_scc_sparse_config()
+        config.scc.use_schur_complement = True
+        model = self._build_armature_dominant_chain(num_worlds)
+        solver, sparse = self._rollout_armature_dominant_chain(model, config, num_worlds, steps=4, capture=True)
+        dense = dense[1::2]
+        self.assertIsNotNone(solver._solver_kamino._problem_fd.joint_decoupling)
+        path = solver._solver_kamino._solver_fd._sparse_path
+        self.assertIsNotNone(path.joint_block_solver)
+        self.assertIsNotNone(path.packed_coupling)
+        np.testing.assert_allclose(
+            sparse, np.broadcast_to(dense, sparse.shape), rtol=0.0, atol=1.0e-4 * np.max(np.abs(dense))
+        )
+
+    def test_raw_jacobian_transpose_matches_column_major_with_decoupled_rows(self):
+        """Apply the body Jacobian of decoupled joint rows in the raw transpose product used by large batches."""
+        model = self._build_armature_dominant_chain()
+        config = make_scc_sparse_config()
+        config.scc.use_schur_complement = True
+        solver = SolverKamino(model, config)
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        solver.step(state_in, state_out, control=model.control(), contacts=None, dt=0.005)
+
+        problem = solver._solver_kamino._problem_fd
+        self.assertIsNotNone(problem.joint_decoupling)
+        delassus = problem.delassus
+        rng = np.random.default_rng(1)
+        impulses = wp.array(rng.uniform(-1.0, 1.0, problem.data.P.shape[0]).astype(np.float32), device=delassus.device)
+        mask = wp.ones(delassus.constraint_jacobian.num_matrices, dtype=wp.bool, device=delassus.device)
+        products = []
+        for raw in (False, True):
+            delassus._set_raw_transpose_enabled(raw)
+            delassus.update()
+            product = wp.zeros_like(delassus._vec_temp_body_space)
+            delassus.apply_jacobian_transpose(impulses, product, mask)
+            products.append(product.numpy())
+        column_major, raw = products
+        np.testing.assert_allclose(raw, column_major, rtol=0.0, atol=1.0e-6 * np.max(np.abs(column_major)))
 
 
 if __name__ == "__main__":
