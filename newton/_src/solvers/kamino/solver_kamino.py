@@ -398,6 +398,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.SCCSolverConfig.register_custom_attributes(builder)
             config.LOXSolverConfig.register_custom_attributes(builder)
             config.MaterialManagerConfig.register_custom_attributes(builder)
+            config._register_dynamics_solver_settings(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
             builder.add_custom_attribute(
@@ -419,23 +420,29 @@ class SolverKamino(SolverBase, CouplingInterface):
             Creates a configuration container by attempting to parse
             custom attributes from a :class:`Model` if available.
 
-            Note: If the model was imported from USD and contains custom attributes defined
-            by the KaminoSceneAPI, those attributes will be parsed and used to populate
-            the configuration container. Additionally, any sub-configurations that are
-            provided as keyword arguments will also be used to populate the corresponding
-            sections of the configuration, allowing for a combination of model-imported
-            and explicit user-provided configurations. If certain configurations are not
-            provided either via the model's custom attributes or as keyword arguments,
-            then default values will be used.
+            Scene settings from `NewtonKaminoSceneAPI` and `NewtonKaminoSccSceneAPI`
+            take precedence over the corresponding keyword values. For solver selection
+            and the SCC bilateral solver, a keyword value takes precedence over an
+            unauthored USD schema fallback. Other unspecified fields use runtime defaults.
+            When the scene selects SCC, preconditioning is disabled in the dynamics
+            fallback. An explicit Python selection of SCC requires a compatible config.
 
             Args:
                 model: The Newton model from which to parse configurations.
+                **kwargs: Default configuration values for fields the model does not set.
             """
             # Import here to avoid module-level imports and circular dependencies
             from . import config  # noqa: PLC0415
 
-            # Create a base config with default values and
-            # user-provided provided kwarg overrides
+            # Select the solver before constructing Config so its solver-specific defaults apply.
+            scene_solver = config._scene_dynamics_solver(
+                model, use_schema_fallback=kwargs.get("dynamics_solver") is None
+            )
+            if scene_solver is not None:
+                kwargs["dynamics_solver"] = scene_solver
+            dynamics = kwargs.get("dynamics")
+            if scene_solver == "scc" and dynamics is not None and dynamics.preconditioning:
+                kwargs["dynamics"] = replace(dynamics, preconditioning=False)
             cfg = SolverKamino.Config(**kwargs)
 
             # Parse solver-specific attributes imported from USD
@@ -459,13 +466,18 @@ class SolverKamino(SolverBase, CouplingInterface):
                 nested_config = kwargs.get(attr_name, None)
                 if nested_config is not None:
                     nested_kwargs = nested_config.__dict__
-                elif cfg.dynamics_solver == "scc" and attr_name in {"dynamics", "scc"}:
+                elif cfg.dynamics_solver == "scc" and attr_name == "dynamics":
                     nested_kwargs = getattr(cfg, attr_name).__dict__
                 else:
                     nested_kwargs = {}
-                setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
+                if attr_name == "scc":
+                    cfg.scc = config.SCCSolverConfig.from_model(
+                        model, use_scene_settings=cfg.dynamics_solver == "scc", **nested_kwargs
+                    )
+                else:
+                    setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
 
-            if cfg.dynamics_solver == "scc" and "dynamics" not in kwargs:
+            if cfg.dynamics_solver == "scc":
                 cfg.dynamics.preconditioning = False
 
             cfg.validate()
@@ -894,9 +906,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Validate solver-specific model compatibility after resolving the selected backend.
         self._validate_model_compatibility(model, self._config)
-        self._rod_joints = (
-            np.flatnonzero(model.joint_type.numpy() == JointType.ROD) if model.joint_count > 0 else np.empty(0, int)
-        )
+        joint_types = model.joint_type.numpy() if model.joint_count > 0 else np.empty(0, int)
+        self._rod_joints = np.flatnonzero(joint_types == JointType.ROD)
+        self._has_d6_joints = bool(np.any(joint_types == JointType.D6))
 
         # Create a Kamino model from the Newton model
         collision_config = config.collision_detector
@@ -911,6 +923,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             include_shape_contact_pairs=include_shape_contact_pairs,
             kinematic_only_immovable=config.dynamics_solver == "lox",
         )
+        if config.use_fk_solver and self._model_kamino.joints.d6_axes.size:
+            raise ValueError("General D6 joints require use_fk_solver=False.")
+
         geom_friction_mode = self._model_kamino.geoms.friction_mode
         if legacy_spatial_friction and geom_friction_mode is not None:
             # The deprecated option enables spatial friction on every contact with friction.
@@ -1146,17 +1161,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._model_kamino.size, self.model, state, convert_to_com_frame=False
         )
 
-        # Convert Newton origin-frame body poses to Kamino CoM frame before reset.
-        has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
-        self._kamino.convert_body_origin_to_com(
-            body_com=self._model_kamino.bodies.i_r_com_i,
-            body_q_com=state_kamino.q_i,
-            body_q=state_kamino.q_i,
-            world_mask=local_world_mask if not has_callbacks else None,
-            body_wid=self._model_kamino.bodies.wid,
-        )
-        # Note: we convert all worlds if callbacks are set, so they see the full state correctly
-
         # Convert base pose from origin to CoM if needed
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
             base_q_com = wp.zeros_like(config.base_pose.base_q)
@@ -1167,8 +1171,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 base_q=config.base_pose.base_q,
                 base_q_com=base_q_com,
             )
-            config_cache = config.base_pose
-            config.base_pose = SolverKamino.ResetConfig.FromBaseQ(base_q_com)
+            config = replace(config, base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_com))
 
         # Cache fields excluded from the reset op, to restore them afterwards
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
@@ -1183,31 +1186,33 @@ class SolverKamino(SolverBase, CouplingInterface):
         _preserve_if_unset(state_kamino.q_i, StateFlags.BODY_Q)
         _preserve_if_unset(state_kamino.u_i, StateFlags.BODY_QD)
 
-        # Execute the reset operation of the Kamino solver,
-        # to write the reset state to `state_kamino`.
-        self._solver_kamino.reset(
-            state=state_kamino,
-            world_mask=local_world_mask,
-            config=config,
-            success_mask=success_mask,
-        )
-
-        # Restore fields excluded from the reset op
-        for array, snapshot in restore_after_reset:
-            wp.copy(array, snapshot)
-
-        # Convert back body poses from COM-frame (Kamino) to body-origin frame (Newton)
-        self._kamino.convert_body_com_to_origin(
+        # Reset callbacks see CoM-frame poses for all worlds.
+        has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
+        pose_world_mask = None if has_callbacks else local_world_mask
+        self._kamino.convert_body_origin_to_com(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_kamino.q_i,
             body_q=state_kamino.q_i,
-            world_mask=local_world_mask if not has_callbacks else None,
+            world_mask=pose_world_mask,
             body_wid=self._model_kamino.bodies.wid,
         )
-
-        # Revert changes to config
-        if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
-            config.base_pose = config_cache
+        try:
+            self._solver_kamino.reset(
+                state=state_kamino,
+                world_mask=local_world_mask,
+                config=config,
+                success_mask=success_mask,
+            )
+        finally:
+            self._kamino.convert_body_com_to_origin(
+                body_com=self._model_kamino.bodies.i_r_com_i,
+                body_q_com=state_kamino.q_i,
+                body_q=state_kamino.q_i,
+                world_mask=pose_world_mask,
+                body_wid=self._model_kamino.bodies.wid,
+            )
+            for array, snapshot in restore_after_reset:
+                wp.copy(array, snapshot)
 
     def observables(
         self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
@@ -1471,6 +1476,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
             | ModelFlags.ACTUATOR_PROPERTIES
         )
+        if self._has_d6_joints:
+            flags |= ModelFlags.JOINT_PROPERTIES
         if self._collision_detector_kamino is not None:
             # Material updates check for conflicting shared materials on the host.
             flags |= ModelFlags.SHAPE_PROPERTIES
@@ -1820,8 +1827,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             flags
             & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
         )
-        # Keep transform-only notifications free of host validation, as before.
-        check_axes = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
+        # JOINT_PROPERTIES includes axis edits. Only D6 layouts need this host check.
+        check_axes = bool(
+            flags & ModelFlags.JOINT_DOF_PROPERTIES or (self._has_d6_joints and flags & ModelFlags.JOINT_PROPERTIES)
+        )
         check_body_immovability = bool(flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES))
         if not (check_dof or check_actuation or check_axes or check_body_immovability):
             return
@@ -1846,6 +1855,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
         cartesian_handedness_joint = violations[self._kamino.StructuralUpdateViolation.CARTESIAN_HANDEDNESS]
+        cylindrical_axes_joint = violations[self._kamino.StructuralUpdateViolation.CYLINDRICAL_AXES]
+        d6_axis_frame_joint = violations[self._kamino.StructuralUpdateViolation.D6_AXIS_FRAME]
         immovability_flip_body = violations[self._kamino.StructuralUpdateViolation.IMMOVABILITY_FLIP]
         friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
         effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
@@ -1897,7 +1908,16 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise ValueError(
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
-                "universal, Cartesian, and gimbal axes must be unit length and orthogonal"
+                "universal, Cartesian, and gimbal axes must be unit length and orthogonal. "
+                "D6 linear and angular bases must each be orthonormal."
+            )
+
+        if d6_axis_frame_joint != sentinel:
+            joint = int(d6_axis_frame_joint)
+            raise ValueError(
+                f"Invalid joint configuration for SolverKamino:\n"
+                f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
+                "D6 linear and angular axes must use the same orthonormal frame."
             )
 
         if gimbal_handedness_joint != sentinel:
@@ -1913,8 +1933,15 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise ValueError(
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
-                "three translational axes must form a right-handed set, unlike those of a USD D6 joint "
-                "whose physics:body1 is the world"
+                "Changing the handedness of this Cartesian basis requires recreating SolverKamino."
+            )
+
+        if cylindrical_axes_joint != sentinel:
+            joint = int(cylindrical_axes_joint)
+            raise ValueError(
+                f"Changing the common axis of cylindrical joint {joint} "
+                f"({self.model.joint_label[joint]!r}) into distinct linear and angular axes "
+                "requires recreating SolverKamino."
             )
 
         if immovability_flip_body != sentinel:

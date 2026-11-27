@@ -331,13 +331,23 @@ def make_read_joint_coords_map_and_limits(dof_type: JointDoFType):
 @wp.func
 def read_joint_coords_map_and_limits(
     dof_type: wp.int32,
+    dof_count: wp.int32,
     dofs_offset: wp.int32,
     coords_offset: wp.int32,
     model_joint_q_j_min: wp.array[wp.float32],
     model_joint_q_j_max: wp.array[wp.float32],
     state_joints_q_j: wp.array[wp.float32],
 ) -> tuple[wp.int32, vec6f, vec6f, vec6f]:
-    if dof_type == JointDoFType.REVOLUTE:
+    if dof_type == JointDoFType.D6:
+        d_j = dof_count
+        q_j_min = vec6f(0.0)
+        q_j_max = vec6f(0.0)
+        q_j_map = vec6f(0.0)
+        for i in range(dof_count):
+            q_j_min[i] = model_joint_q_j_min[dofs_offset + i]
+            q_j_max[i] = model_joint_q_j_max[dofs_offset + i]
+            q_j_map[i] = state_joints_q_j[coords_offset + i]
+    elif dof_type == JointDoFType.REVOLUTE:
         d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.REVOLUTE))(
             dofs_offset,
             coords_offset,
@@ -551,6 +561,7 @@ def _detect_active_joint_configuration_limits(
     # the joint has non-minimal coordinates (e.g. spherical, free, etc.)
     d_j, q_j_min, q_j_max, q_j_map = read_joint_coords_map_and_limits(
         dof_type_j,
+        model_joint_dofs_offset[jid + 1] - dofs_offset_j,
         dofs_offset_total,
         coords_offset_total,
         model_joint_q_j_min,

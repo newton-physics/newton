@@ -370,8 +370,8 @@ def _validate_solve_mode(solve_mode, articulated_contact_response) -> None:
 def _validate_supported_model(model: Model) -> None:
     """Reject model features this solver does not simulate instead of ignoring them.
 
-    Joint-owned and legacy mimic relationships and loop-closing joints are validated
-    when the solver builds their constraint rows.
+    Joint-owned mimic relationships and loop-closing joints are validated when the
+    solver builds their constraint rows.
     """
     if model.particle_count:
         raise NotImplementedError("SolverSteel does not simulate particles.")
@@ -401,11 +401,11 @@ def _model_has_bilateral_constraints(model: Model) -> bool:
     These become dense bilateral rows wherever the solver supports them. Disabled joints
     count too, because a released closure can be re-enabled without rebuilding the solver.
     """
-    if int(getattr(model, "constraint_mimic_count", 0)):
-        return True
     if not model.joint_count:
         return False
     if model.joint_mimic_joint is not None and np.any(model.joint_mimic_joint.numpy() >= 0):
+        return True
+    if _joint_equality_rows(model).size:
         return True
     if model.joint_articulation is None or not model.body_count:
         return False
@@ -418,19 +418,50 @@ def _model_has_bilateral_constraints(model: Model) -> bool:
     return bool(np.any(owned[joint_child[closure]]))
 
 
-def _unprojected_equality_constraints(model: Model) -> np.ndarray:
-    """Return the enabled MuJoCo equality rows that no Newton loop joint or mimic enforces.
+def _joint_equality_rows(model: Model) -> np.ndarray:
+    """Return the MuJoCo JOINT equality rows that SolverSteel enforces as mimic rows.
 
-    The MJCF and USD importers convert MuJoCo equalities to Newton loop joints or mimic
-    constraints by default and keep the original row in ``model.mujoco.equality_constraint_*``
-    with a ``target_kind`` / ``target`` link to the projected entity. Such a row is enforced
-    (or rejected) through that entity. A row without a valid link is MuJoCo-only physics.
+    These couple two whole REVOLUTE or PRISMATIC joints of one articulation; the rows'
+    enabled flags are not considered.
+    """
+    from ..mujoco.enums import EqType  # noqa: PLC0415
+
+    mujoco = getattr(model, "mujoco", None)
+    count = int(getattr(mujoco, "equality_constraint_count", 0) or 0) if mujoco is not None else 0
+    if not count or not model.joint_count or model.joint_articulation is None:
+        return np.zeros(0, dtype=np.int32)
+
+    def field(name: str) -> np.ndarray:
+        values = getattr(mujoco, f"equality_constraint_{name}", None)
+        return values.numpy() if values is not None else np.full(count, -1, dtype=np.int32)
+
+    joint1, joint2 = field("joint1"), field("joint2")
+    rows = (field("type") == int(EqType.JOINT)) & (joint1 >= 0) & (joint2 >= 0) & (joint1 != joint2)
+    scalar = np.isin(model.joint_type.numpy(), (int(JointType.REVOLUTE), int(JointType.PRISMATIC)))
+    articulation = model.joint_articulation.numpy()
+    follower, leader = np.where(rows, joint1, 0), np.where(rows, joint2, 0)
+    rows &= scalar[follower] & scalar[leader]
+    # A DoF selector may only name the scalar joint's own DoF.
+    joint_qd_start = model.joint_qd_start.numpy()
+    for selector, joint in ((field("joint1_dof"), follower), (field("joint2_dof"), leader)):
+        rows &= (selector < 0) | (selector == joint_qd_start[joint])
+    rows &= (articulation[follower] >= 0) & (articulation[follower] == articulation[leader])
+    return np.flatnonzero(rows).astype(np.int32)
+
+
+def _unprojected_equality_constraints(model: Model) -> np.ndarray:
+    """Return the enabled MuJoCo equality rows that SolverSteel does not enforce.
+
+    A JOINT row is enforced directly when :func:`_joint_equality_rows` accepts it. The MJCF and
+    USD importers convert CONNECT and WELD equalities to Newton loop joints by default and keep
+    the original row in ``model.mujoco.equality_constraint_*`` with a ``target_kind`` /
+    ``target`` link to the joint. Such a row is enforced (or rejected) through that joint. Any
+    other row is MuJoCo-only physics.
 
     A link is valid only when the target is structurally the row's projection, as the importers
     build it: a CONNECT row links a ball joint and a WELD row a fixed joint (a ball joint when its
     torquescale is 0) outside any articulation that joins the row's two bodies (or its body and the
-    world), and a JOINT row links a mimic constraint between the row's two joints. Anchors and
-    coefficients are not compared.
+    world). Anchors are not compared.
     """
     from ..mujoco.enums import EqType  # noqa: PLC0415
     from ..mujoco.equality import MjcEqualityTargetKind  # noqa: PLC0415
@@ -444,6 +475,7 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
     target_kind = getattr(mujoco, "equality_constraint_target_kind", None)
     target = getattr(mujoco, "equality_constraint_target", None)
     projected = np.zeros(count, dtype=bool)
+    projected[_joint_equality_rows(model)] = True
     if target_kind is not None and target is not None:
         target_kind = target_kind.numpy()
         target = target.numpy()
@@ -455,7 +487,6 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
         eq_type = field("type")
         body1, body2 = field("body1"), field("body2")
         torquescale = field("torquescale")
-        joint1, joint2 = field("joint1"), field("joint2")
         joint_count = int(model.joint_count)
         joint_type = model.joint_type.numpy() if joint_count else None
         joint_parent = model.joint_parent.numpy() if joint_count else None
@@ -463,9 +494,6 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
         joint_articulation = (
             model.joint_articulation.numpy() if joint_count and model.joint_articulation is not None else None
         )
-        mimic_count = int(getattr(model, "constraint_mimic_count", 0) or 0)
-        mimic_joint0 = model.constraint_mimic_joint0.numpy() if mimic_count else None
-        mimic_joint1 = model.constraint_mimic_joint1.numpy() if mimic_count else None
         loop_joint_types = {int(EqType.CONNECT): {int(JointType.BALL)}, int(EqType.WELD): {int(JointType.FIXED)}}
         for row in range(count):
             kind, index = int(target_kind[row]), int(target[row])
@@ -484,12 +512,6 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
                     and int(joint_child[index]) >= 0
                     and joint_bodies == rows_bodies
                 )
-            elif kind == int(MjcEqualityTargetKind.MIMIC) and 0 <= index < mimic_count:
-                projected[row] = (
-                    int(eq_type[row]) == int(EqType.JOINT)
-                    and int(mimic_joint0[index]) == int(joint1[row])
-                    and int(mimic_joint1[index]) == int(joint2[row])
-                )
     return np.flatnonzero(enabled & ~projected).astype(np.int32)
 
 
@@ -499,10 +521,10 @@ def _validate_equality_constraints(model: Model) -> None:
     if rows.size:
         raise NotImplementedError(
             f"SolverSteel does not enforce MuJoCo equality constraints: model.mujoco.equality_constraint "
-            f"rows {rows[:16].tolist()} are enabled and not converted to a Newton loop joint or mimic "
-            "constraint. Import with convert_mjc_equality_constraints=True (joint equalities that omit joint2 or "
-            "target a multi-DoF joint, such as joints sharing a body, stay MuJoCo rows even then), model the "
-            "constraint with Newton joints, or disable the rows (equality_constraint_enabled)."
+            f"rows {rows[:16].tolist()} are enabled, and they are neither converted to a Newton loop joint nor "
+            "joint equalities between two REVOLUTE or PRISMATIC joints of one articulation. Import with "
+            "convert_mjc_equality_constraints=True, model the constraint with Newton joints, or disable the "
+            "rows (equality_constraint_enabled)."
         )
 
 
@@ -1439,10 +1461,14 @@ class SolverSteel(SolverBase, CouplingInterface):
     - Experimental dry joint friction: with ``enable_joint_friction=True``,
       :attr:`~newton.Model.joint_friction` of PRISMATIC, REVOLUTE, BALL and D6 DOFs bounds one
       row per DOF.
-    - Mimic joints (:meth:`~newton.ModelBuilder.set_joint_mimic`, and the deprecated
-      mimic constraints) within one articulation: one bilateral row per follower
-      coordinate enforces ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The
-      coefficients are read every step.
+    - Mimic joints (:meth:`~newton.ModelBuilder.set_joint_mimic`) within one articulation:
+      one bilateral row per follower coordinate enforces
+      ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The coefficients are read every step.
+    - MuJoCo joint equalities (``model.mujoco.equality_constraint_*`` rows of type ``JOINT``)
+      between two REVOLUTE or PRISMATIC joints of one articulation: one bilateral row
+      enforces ``q_joint1 = polycoef[0] + polycoef[1] * q_joint2``. The coefficients and the
+      row's enabled flag are read every step; higher-order ``polycoef`` terms are not
+      enforced.
     - Loop-closing BALL, REVOLUTE and FIXED joints (joints outside the articulation tree whose
       child belongs to an articulation): three bilateral rows pin the joint's parent and
       child anchors together, a REVOLUTE closure adds two rows that keep the child's
@@ -1499,14 +1525,15 @@ class SolverSteel(SolverBase, CouplingInterface):
       loop closures between two dynamic articulations raise
       :class:`NotImplementedError`. :attr:`~newton.Model.joint_enabled` is supported only
       for loop-closing joints: construction raises for a disabled tree joint, and a tree
-      joint disabled later is reported by :meth:`check_constraint_capacity`. Enabled MuJoCo equality constraints
-      (``model.mujoco.equality_constraint_*``) are enforced through the loop joint or mimic
-      constraint the importer converted them to; an enabled row without such a conversion
-      raises :class:`NotImplementedError`, also when it is enabled later and
+      joint disabled later is reported by :meth:`check_constraint_capacity`. Enabled MuJoCo
+      CONNECT and WELD equality constraints (``model.mujoco.equality_constraint_*``) are enforced
+      through the loop joint the importer converted them to; an enabled row without such a
+      conversion, or a joint equality other than the supported ones above, raises
+      :class:`NotImplementedError`, also when it is enabled later and
       :meth:`notify_model_changed` is called with
       :attr:`~newton.ModelFlags.CONSTRAINT_PROPERTIES`. A row counts as converted only
-      when its ``target_kind`` / ``target`` link names a loop joint or mimic constraint
-      between the row's own bodies or joints. Particles are not simulated.
+      when its ``target_kind`` / ``target`` link names a loop joint between the row's own
+      bodies. Particles are not simulated.
     - Gradients are not supported.
 
     On CUDA, branched articulations use sparse mass factors when
@@ -2429,8 +2456,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ``None`` (default) to inherit ``wp.config.deterministic``, which defaults to
                 ``NOT_GUARANTEED``. With ``RUN_TO_RUN`` the solver reserves its constraint rows in a fixed
                 order instead of the order in which GPU threads reach the per-world row counters: joint
-                rows in articulation order, contact rows in contact-buffer order within each world. Given
-                identical inputs,
+                rows in articulation order, contact rows in contact-buffer order within each world. Mimic and
+                loop-closure rows take element order in either mode, since they couple the DOFs of one
+                articulation and a serial sweep visits rows in slot order. Given identical inputs,
                 including identically ordered contacts, repeated runs are then bitwise identical on the
                 same GPU model, driver and Warp build, eagerly and under CUDA graph replay; combine it with
                 ``CollisionPipeline(deterministic=True)`` for a reproducible contact order (see
@@ -3281,8 +3309,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         carried bias wrench one step later unless ``MODEL_PROPERTIES`` is notified. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
-        equality rows: enabling one that is not converted to a Newton loop joint or mimic
-        constraint raises :class:`NotImplementedError`. Capacity status in
+        equality rows: enabling one that the solver does not enforce raises
+        :class:`NotImplementedError`. Capacity status in
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
         Body, inertial, joint DOF, DOF inertial and shape changes discard the warm-start
@@ -3318,6 +3346,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
+            if self._mimic_reads_equality:
+                # The mimic rows read these every step; follow arrays replaced on the model.
+                self._equality_enabled = self.model.mujoco.equality_constraint_enabled
+                self._equality_polycoef = self.model.mujoco.equality_constraint_polycoef
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         if self._sleeping is not None:
@@ -4080,29 +4112,29 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _build_mimic_plan(self, model) -> None:
         """Build the static lookup tables of the mimic rows.
 
-        Rows come from joint-owned mimics (:attr:`~newton.Model.joint_mimic_joint`, one row
-        per follower coordinate) and from the deprecated ``Model.constraint_mimic_*``
-        entries, which take precedence for their follower joint as in
-        :class:`~newton.solvers.SolverMuJoCo`. Both joints of a row must belong to the same
-        articulation and have distinct DOFs; legacy entries must couple REVOLUTE or
-        PRISMATIC joints. Unsupported relationships raise :class:`NotImplementedError`.
-        Coefficients and ``constraint_mimic_enabled`` are read every step. All buffers are
-        allocated here, so the per-step launches are compatible with CUDA graph capture.
+        Rows come from the MuJoCo joint equalities that :func:`_joint_equality_rows` accepts
+        and from joint-owned mimics (:attr:`~newton.Model.joint_mimic_joint`, one row per
+        follower coordinate). Both joints of a row must belong to the same articulation and
+        have distinct DOFs. Unsupported joint-owned mimics raise :class:`NotImplementedError`.
+        Coefficients and the equalities' enabled flags are read every step; an equality
+        contributes its constant and linear ``polycoef`` terms. All buffers are allocated
+        here, so the per-step launches are compatible with CUDA graph capture.
         """
         self._mimic_count = 0
+        self._mimic_reads_equality = False
         self._mimic_art_start_np = None
         self._mimic_sizes = frozenset()
         self._mimic_slot = None
         if not model.articulation_count or not model.joint_count:
             return
 
-        legacy_count = int(getattr(model, "constraint_mimic_count", 0) or 0)
         joint_mimic = (
             model.joint_mimic_joint.numpy().astype(np.int32, copy=False)
             if model.joint_mimic_joint is not None
             else np.full(model.joint_count, -1, dtype=np.int32)
         )
-        if legacy_count == 0 and not np.any(joint_mimic >= 0):
+        equality_rows = _joint_equality_rows(model)
+        if equality_rows.size == 0 and not np.any(joint_mimic >= 0):
             return
 
         joint_type = model.joint_type.numpy()
@@ -4113,8 +4145,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         articulation_world = self._model_plan.articulation_world
 
         # Per row: follower/leader DOF and coordinate, articulation, and the coefficient
-        # source (legacy constraint index, or the follower joint for joint-owned rows).
-        dof0, dof1, q0, q1, row_art, legacy, owner = [], [], [], [], [], [], []
+        # source (equality row, or the follower joint for joint-owned rows).
+        dof0, dof1, q0, q1, row_art, equality, owner = [], [], [], [], [], [], []
 
         def add_row(name: str, follower_dof: int, leader_dof: int, follower_q: int, leader_q: int, joints, source):
             a0, a1 = (int(joint_articulation[j]) for j in joints)
@@ -4132,38 +4164,36 @@ class SolverSteel(SolverBase, CouplingInterface):
             q0.append(follower_q)
             q1.append(leader_q)
             row_art.append(a0)
-            legacy.append(source[0])
+            equality.append(source[0])
             owner.append(source[1])
 
-        legacy_followers = set()
-        if legacy_count:
-            j0 = model.constraint_mimic_joint0.numpy().astype(np.int32, copy=False)
-            j1 = model.constraint_mimic_joint1.numpy().astype(np.int32, copy=False)
-            labels = list(model.constraint_mimic_label or [])
-            one_dof = (int(JointType.REVOLUTE), int(JointType.PRISMATIC))
-            legacy_followers = {int(j) for j in j0}
-            for k in range(legacy_count):
-                name = labels[k] if k < len(labels) and labels[k] else f"constraint_mimic_{k}"
-                follower, leader = int(j0[k]), int(j1[k])
-                if int(joint_type[follower]) not in one_dof or int(joint_type[leader]) not in one_dof:
-                    raise NotImplementedError(
-                        f"SolverSteel: mimic constraint '{name}' must couple REVOLUTE or PRISMATIC joints."
-                    )
+        if equality_rows.size:
+            mujoco = model.mujoco
+            eq_joint1 = mujoco.equality_constraint_joint1.numpy()
+            eq_joint2 = mujoco.equality_constraint_joint2.numpy()
+            higher_order = np.any(mujoco.equality_constraint_polycoef.numpy()[equality_rows, 2:] != 0.0, axis=1)
+            if np.any(higher_order):
+                warnings.warn(
+                    f"SolverSteel: joint equality rows {equality_rows[higher_order][:16].tolist()} use "
+                    "higher-order polycoef terms; only the constant and linear terms are enforced.",
+                    NewtonWarning,
+                    stacklevel=3,
+                )
+            for row in equality_rows.tolist():
+                follower, leader = int(eq_joint1[row]), int(eq_joint2[row])
                 add_row(
-                    name,
+                    f"equality_constraint_{row}",
                     int(joint_qd_start[follower]),
                     int(joint_qd_start[leader]),
                     int(joint_q_start[follower]),
                     int(joint_q_start[leader]),
                     (follower, leader),
-                    (k, -1),
+                    (row, -1),
                 )
 
         joint_qd_end = np.append(joint_qd_start[1:], model.joint_dof_count)
         joint_q_end = np.append(joint_q_start[1:], model.joint_coord_count)
         for follower in np.flatnonzero(joint_mimic >= 0).tolist():
-            if follower in legacy_followers:
-                continue
             leader = int(joint_mimic[follower])
             for joint in (follower, leader):
                 if joint_q_end[joint] - joint_q_start[joint] != joint_qd_end[joint] - joint_qd_start[joint]:
@@ -4202,16 +4232,15 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mimic_dof1 = wp.array(dof1, dtype=wp.int32, device=device)
         self._mimic_q0 = wp.array(q0, dtype=wp.int32, device=device)
         self._mimic_q1 = wp.array(q1, dtype=wp.int32, device=device)
-        self._mimic_legacy = wp.array(legacy, dtype=wp.int32, device=device)
+        self._mimic_equality = wp.array(equality, dtype=wp.int32, device=device)
         self._mimic_owner = wp.array(owner, dtype=wp.int32, device=device)
-        if legacy_count:
-            self._mimic_enabled = model.constraint_mimic_enabled
-            self._mimic_coef0 = model.constraint_mimic_coef0
-            self._mimic_coef1 = model.constraint_mimic_coef1
+        self._mimic_reads_equality = bool(equality_rows.size)
+        if self._mimic_reads_equality:
+            self._equality_enabled = model.mujoco.equality_constraint_enabled
+            self._equality_polycoef = model.mujoco.equality_constraint_polycoef
         else:
-            self._mimic_enabled = wp.zeros(1, dtype=wp.bool, device=device)
-            self._mimic_coef0 = wp.zeros(1, dtype=wp.float32, device=device)
-            self._mimic_coef1 = wp.zeros(1, dtype=wp.float32, device=device)
+            self._equality_enabled = wp.zeros(1, dtype=wp.bool, device=device)
+            self._equality_polycoef = wp.zeros((1, 5), dtype=wp.float32, device=device)
         self._joint_mimic_coeffs = (
             model.joint_mimic_coeffs
             if model.joint_mimic_coeffs is not None
@@ -4467,7 +4496,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.launch(
                     allocate_mimic_slots,
                     dim=self._mimic_count,
-                    inputs=[self._mimic_legacy, self._mimic_enabled, self._mimic_world, max_constraints],
+                    inputs=[self._mimic_equality, self._equality_enabled, self._mimic_world, max_constraints],
                     outputs=[
                         self._mimic_slot,
                         self._slot_counter,
@@ -4479,7 +4508,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self._reserve_rows(self._mimic_world_index, self._slot_counter, launch_mimic)
+            self._reserve_rows(self._mimic_world_index, self._slot_counter, launch_mimic, ordered=True)
             for size in self._size_groups:
                 if size not in self._mimic_sizes:
                     continue
@@ -4497,10 +4526,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._mimic_dof1,
                         self._mimic_q0,
                         self._mimic_q1,
-                        self._mimic_legacy,
+                        self._mimic_equality,
                         self._mimic_owner,
-                        self._mimic_coef0,
-                        self._mimic_coef1,
+                        self._equality_polycoef,
                         self._joint_mimic_coeffs,
                         state_in.joint_q,
                     ],
@@ -4538,7 +4566,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self._reserve_rows(self._connect_world_index, self._slot_counter, launch_connect)
+            self._reserve_rows(self._connect_world_index, self._slot_counter, launch_connect, ordered=True)
             for size in self._connect_sizes:
                 wp.launch(
                     populate_connect_J_for_size,
@@ -9480,14 +9508,18 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
 
     def _init_ordered_rows(self, model: Model) -> None:
-        """Build the per-world element lists that order row reservations with ``deterministic=RUN_TO_RUN``."""
+        """Build the per-world element lists that order row reservations.
+
+        Mimic and loop-closure rows are always reserved in element order; the other families only with
+        ``deterministic=RUN_TO_RUN``.
+        """
         device = model.device
         self._row_cursor = wp.zeros(1, dtype=wp.int32, device=device)
         self._articulation_world_index = None
         self._mimic_world_index = None
         self._connect_world_index = None
         self._rigid_velocity_limit_world_index = None
-        if not self._ordered_rows or self._art_to_world is None:
+        if self._art_to_world is None:
             return
 
         def world_index(element_world):
@@ -9510,13 +9542,19 @@ class SolverSteel(SolverBase, CouplingInterface):
                 launches,
             )
 
-        art_world = self._art_to_world.numpy()
-        self._articulation_world_index = world_index(art_world)
-        cursor_size = max(len(art_world), self._mimic_count, self._connect_count, 1)
+        # A serial sweep visits a world's rows in slot order, and the mimic and closure rows of one
+        # articulation are coupled, so an atomic reservation would reorder their sweep every step.
+        cursor_size = max(self._mimic_count, self._connect_count, 1)
         if self._mimic_count:
             self._mimic_world_index = world_index(self._mimic_world.numpy())
         if self._connect_count:
             self._connect_world_index = world_index(self._connect_world.numpy())
+        if not self._ordered_rows:
+            self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
+            return
+        art_world = self._art_to_world.numpy()
+        self._articulation_world_index = world_index(art_world)
+        cursor_size = max(len(art_world), cursor_size)
         if self._free_rigid_body_count:
             body_art = self._body_to_articulation.numpy()[self._free_rigid_body_indices.numpy()]
             self._rigid_velocity_limit_world_index = world_index(
@@ -9540,9 +9578,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._ordered_scan_total = wp.zeros(1, dtype=wp.int32, device=device)
         self._contact_slot_scan_length = wp.ones(1, dtype=wp.int32, device=device)
 
-    def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
+    def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch, ordered: bool = False) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
-        if not self._ordered_rows:
+        if not (self._ordered_rows or ordered):
             launch(ROW_SLOTS_ATOMIC)
             return
         device = self.model.device

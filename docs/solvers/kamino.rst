@@ -79,8 +79,8 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTBRCM"`` for its bilateral joint solve. Select ``"LDL"``
-explicitly to use the block-sparse backend, which factors the reordered matrix
+Python SCC configurations default to ``"LLTBRCM"`` for the bilateral joint
+solve. Select ``"LDL"`` explicitly to use the block-sparse factorization of the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
 blocks and symbolic fill, supports CPU and CUDA execution, and reuses its
@@ -210,6 +210,27 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
+Configuring Kamino from USD
+---------------------------
+
+SCC scene settings require ``newton-usd-schemas`` 0.8.0 or newer.
+
+Call :meth:`~newton.solvers.SolverKamino.register_custom_attributes` on the
+:class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
+the ``NewtonKaminoSceneAPI`` and ``NewtonKaminoSccSceneAPI`` settings from a USD
+``PhysicsScene``. ``SolverKamino(model)`` and ``SolverKamino.Config.from_model()``
+apply them: an authored value takes precedence over the keyword fallbacks passed
+to ``from_model()``, and a config passed to the solver is used unchanged. SCC
+tuning is read only when SCC is selected. SCC ignores the scene's
+preconditioning setting.
+
+Applying ``NewtonKaminoSccSceneAPI`` alone selects SCC and supplies the
+``"lltb"`` bilateral factorization fallback. An authored bilateral solver
+token takes precedence, followed by the factorization in any Python ``scc``
+configuration passed to ``from_model()``. Author
+``newton:kamino:scc:bilateral:numericalSolver = "lltbrcm"`` to select the
+same factorization as the Python default.
+
 Constraint recovery and material compliance
 -------------------------------------------
 
@@ -314,9 +335,6 @@ cap to zero.
 This conversion preserves rigid-row recovery. Enabling finite stiffness can
 introduce elastic deflection or bounce, so material gains must suit the intended
 motion rather than reproduce rigid-contact trajectories exactly.
-
-The new settings are configured through Python. USD schema and importer
-extensions for these settings are deferred to a separate change.
 
 The shared recovery/compliance settings currently support PADMM and SCC.
 LOX rejects non-default values for these new settings and retains its existing
@@ -454,6 +472,40 @@ matrix to about 23,000 constraints. Larger worlds raise an error during
 solver construction; for these, consider sparse Jacobians and dynamics
 (``sparse_jacobian=True`` and ``sparse_dynamics=True``).
 
+.. _kamino-d6-joints:
+
+D6 joints
+---------
+
+SCC, LOX, and PADMM support D6 joints authored with
+:meth:`newton.ModelBuilder.add_joint_d6` or imported from USD. A D6 joint
+has zero to three linear axes and zero to three angular axes. Each family
+must consist of unit-length, mutually orthogonal axes. Both families must
+use the same orthonormal frame, so every linear axis must be parallel or
+perpendicular to every angular axis. Either direction along a frame axis
+is allowed. Omitted degrees of freedom are locked.
+On models with D6 joints, issue ``ModelFlags.JOINT_PROPERTIES`` notifications
+outside CUDA graph capture so Kamino can validate axis updates.
+
+Coordinates and rates follow the authored order, with linear components
+first (meters and meters per second), then angular components (radians and
+radians per second). Angular coordinates are intrinsic angles applied in
+order about successive rotated axes. Two angular axes give universal-joint
+rotation and three give gimbal rotation.
+
+Each active axis supports position limits, direct effort, implicit drives,
+effort limits, armature, damping, and Coulomb friction. With three angular
+axes, individual Euler rates become indeterminate at gimbal lock. Kamino
+uses the minimum-norm rate split at float32 rank loss and the exact coordinate
+derivative at regular poses.
+
+Use ``use_fk_solver=False`` (the default) for general D6 layouts. The
+optional Kamino forward-kinematics solver supports D6 layouts that map to
+its specialized joints: fixed, prismatic, revolute, same-axis cylindrical,
+universal, right-handed Cartesian, and three-axis gimbal. Newton's
+:func:`newton.eval_fk` can initialize articulated D6 body states for any
+supported D6 layout.
+
 .. _kamino-rod-joints:
 
 Rod joints
@@ -546,8 +598,7 @@ passive armature, damping, and Coulomb friction are likewise configured per
 DoF. Implicit-PD target modes require a non-zero applicable gain: velocity
 mode requires derivative gain, while position-based modes require proportional
 or derivative gain. Coulomb friction supports all non-free joint types, while
-joint dynamics and implicit PD currently support revolute, prismatic, and
-gimbal joint types only.
+joint dynamics and implicit PD support revolute, prismatic, and D6 joints.
 
 The forward-kinematics solver still partitions each joint as entirely passive
 or entirely actuated. Different non-passive target modes are allowed within a

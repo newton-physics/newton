@@ -5343,7 +5343,6 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
 
                 model = builder.finalize()
                 self.assertEqual(model.mujoco.equality_constraint_count, 3)
-                self.assertEqual(model.constraint_mimic_count, int(convert_equalities))
                 self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), int(register_mujoco))
 
                 if register_mujoco:
@@ -9016,7 +9015,6 @@ def Xform "Articulation" (
         path_joint_map = result["path_joint_map"]
         joint1_idx = path_joint_map["/World/Articulation/Joint1"]
         joint2_idx = path_joint_map["/World/Articulation/Joint2"]
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[joint2_idx], joint1_idx)
         # newton:mimicCoef0 is authored in degrees for an angular follower; Newton
         # mimic metadata uses joint coordinates, so it arrives in radians.
@@ -9188,7 +9186,6 @@ def Xform "Articulation" (
         follower_idx = result["path_joint_map"]["/World/Root/Follower"]
         self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
         self.assertEqual(builder.joint_dof_dim[follower_idx], (1, 1))
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
         self.assertTrue(
@@ -9426,8 +9423,7 @@ def Xform "Articulation" (
         self.assertEqual(model.mujoco.equality_constraint_count, 1)
         self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
 
-        # The default path additionally lowers a generic mimic constraint, which would
-        # otherwise enforce the coupling for every solver rather than only SolverMuJoCo.
+        # The default path authors the same row.
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(build_stage(), convert_mjc_equality_constraints=True)
@@ -9435,8 +9431,6 @@ def Xform "Articulation" (
 
         self.assertEqual(model.mujoco.equality_constraint_count, 1)
         self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
-        self.assertEqual(model.constraint_mimic_count, 1)
-        self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
 
     @requires("pxr.Usd")
     def test_mjc_equality_connect_site_parsing(self):
@@ -9940,7 +9934,7 @@ def Xform "Articulation" (
             joint2_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.6, 0.7, 0.004, 0.5, 1.5])
 
             connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/EqualityConnect")
-            connect.CreateBody0Rel().SetTargets([link1.GetPath()])
+            connect.CreateBody0Rel().SetTargets([root.GetPath()])
             connect.CreateBody1Rel().SetTargets([link2.GetPath()])
             connect.CreateLocalPos0Attr().Set(Gf.Vec3f(0.1, 0.2, 0.3))
             connect.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
@@ -9980,22 +9974,19 @@ def Xform "Articulation" (
 
         converted_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(converted_builder)
-        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
-            converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
+        converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
         self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
-        self.assertEqual(converted_model.constraint_mimic_count, 1)
         eq_types = converted_model.mujoco.equality_constraint_type.numpy()
         target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.CONNECT)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.WELD)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.JOINT)), 1)
         self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.JOINT)), 2)
-        self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.MIMIC)), 1)
         joint_eq = int(np.flatnonzero(eq_types == int(newton.solvers.SolverMuJoCo.EqType.JOINT))[0])
-        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
+        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.NONE))
         np.testing.assert_allclose(
             converted_model.mujoco.equality_constraint_polycoef.numpy()[joint_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
@@ -10132,6 +10123,28 @@ def Xform "Articulation" (
         load_physics_mock.assert_called_once()
         self.assertEqual(result["physics_scene_path"], "/Scene")
         self.assertEqual(result["scene_attributes"]["physics:gravityMagnitude"], 2.0)
+
+    @requires("pxr.Usd")
+    def test_scene_honors_ignore_paths(self):
+        """Skip an ignored scene, whether or not the pattern is a plain path."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/Ignored/Scene").CreateGravityMagnitudeAttr(2.0)
+        UsdPhysics.Scene.Define(stage, "/Kept").CreateGravityMagnitudeAttr(3.0)
+
+        for ignore_paths in (["/Ignored"], ["/Ignored.*"], [".*/Scene$"]):
+            with self.subTest(ignore_paths=ignore_paths):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, ignore_paths=ignore_paths)
+                self.assertEqual(result["physics_scene_path"], "/Kept")
+                self.assertAlmostEqual(float(wp.length(builder.gravity)), 3.0, places=5)
+
+        builder = newton.ModelBuilder()
+        default_gravity = builder.gravity
+        result = builder.add_usd(stage, ignore_paths=[".*Scene", "/Kept.*"])
+        self.assertIsNone(result["physics_scene_path"])
+        self.assertEqual(builder.gravity, default_gravity)
 
     @requires("pxr.Usd")
     def test_scene_gravity_enabled_parsing(self):
@@ -12831,10 +12844,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
-
         model = builder.finalize()
-        self.assertEqual(model.constraint_mimic_count, 0)
 
         follower_idx = model.joint_label.index("/Root/Robot/Joints/follower")
         leader_idx = model.joint_label.index("/Root/Robot/Joints/leader")
@@ -12882,7 +12892,6 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
         self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 

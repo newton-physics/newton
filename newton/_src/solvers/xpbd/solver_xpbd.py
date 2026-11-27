@@ -101,7 +101,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
-          Equality constraints and the deprecated sparse mimic constraints are not supported.
+          Equality constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -1125,10 +1125,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 model.tendon_guide_offset,
                                 model.tendon_guide_axis,
                                 self.tendon_segment_rest_length,
+                                self.tendon_segment_length,
                                 self.tendon_segment_attachment_l,
                                 self.tendon_segment_attachment_r,
-                                self.tendon_segment_attachment_l_local,
-                                self.tendon_segment_attachment_r_local,
                                 self.tendon_segment_active_compliance,
                                 self.tendon_segment_active_damping,
                                 self.tendon_segment_lambda,

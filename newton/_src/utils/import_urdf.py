@@ -643,8 +643,10 @@ def parse_urdf(
             joint_data["friction"] = float(el_dynamics.get("friction", default_joint_friction))
         el_limit = joint.find("limit")
         if el_limit is not None:
-            joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
-            joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
+            # URDF continuous joints have no position limits; only effort and velocity are read
+            if joint_data["type"] != "continuous":
+                joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
+                joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
             joint_data["limit_effort"] = float(el_limit.get("effort", default_joint_limit_effort))
             if (velocity := el_limit.get("velocity")) is not None:
                 joint_data["limit_velocity"] = float(velocity)
