@@ -167,7 +167,7 @@ dynamics at zero joint acceleration instead.
 contact force; the torque part is zero. Contacts whose rows were dropped for capacity
 report zero. Contacts of sleeping islands whose rows are skipped report the force from the
 previous solver step on the same contacts buffer, when every step requests ``CONTACT_F``
-and each collision pass matches to the contact set the solver last solved; otherwise they
+and each collision pass matches to the preceding step's recorded contact set; otherwise they
 report zero until their island wakes. See :ref:`steel_sleep_observable`.
 
 Kamino exports contact points in the step's input body frames and world-frame
@@ -372,11 +372,14 @@ last solved support force while it sleeps. The force carries from one solver ste
 next when all of these hold:
 
 - both steps request ``CONTACT_F`` and receive the same :class:`~newton.Contacts` buffer;
-- the contact set is the one the previous step solved, or comes from a single collision
+- the contact set is the one the previous step recorded, or comes from a single collision
   pass whose :attr:`~newton.Contacts.rigid_contact_match_index` refers to that set
-  (:attr:`~newton.Contacts.rigid_contact_match_generation` equals the solved generation),
+  (:attr:`~newton.Contacts.rigid_contact_match_generation` equals the recorded generation),
   which needs a :class:`~newton.CollisionPipeline` created with
   ``contact_matching="latest"`` (or ``"sticky"``).
+
+Each step records the forces it reports, carried ones included, so a sleeping contact
+keeps its force across any number of consecutive steps.
 
 A step that does not request ``CONTACT_F``, a second collision pass between two solver
 steps, a collision pass without matching, or a different contacts buffer breaks the

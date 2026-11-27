@@ -1556,21 +1556,32 @@ def test_sleeping_contact_f_keeps_the_last_force(test, device):
     scene = _SleepingContactForces(device)
     reference = _SleepingContactForces(device, skip_constraints=False)
     asleep_steps = 0
-    last = None
+    last_f, last_net = None, None
     for _ in range(SLEEP_SETTLE_STEPS + 10):
         scene.step()
         reference.step()
         if scene.awake().any():
             continue
         asleep_steps += 1
-        net = scene.net()
-        _check_rows(test, scene.contacts, scene.observables.contact_f.numpy())
+        # Copy: on the CPU, numpy() aliases the buffer the next step overwrites.
+        contact_f = scene.observables.contact_f.numpy().copy()
+        count = int(scene.contacts.rigid_contact_count.numpy()[0])
+        net = _net_body_forces(scene.model, scene.contacts, contact_f)
+        _check_rows(test, scene.contacts, contact_f)
         scene.assert_resting(net)
         np.testing.assert_allclose(net, reference.net(), rtol=0.0, atol=0.01 * scene.weight)
-        # The step an island falls asleep still solves its rows; later steps carry that force bit for bit.
-        if asleep_steps > 1:
-            np.testing.assert_array_equal(net, last)
-        last = net
+        # The step an island falls asleep still solves its rows; later steps carry each row's force bit for bit.
+        if asleep_steps == 1:
+            # Loaded rows differ from each other, so a contact matched to the wrong row changes its force.
+            loaded = contact_f[:count][np.any(contact_f[:count, :3] != 0.0, axis=1)]
+            test.assertGreaterEqual(len(loaded), 8)
+            test.assertEqual(len(np.unique(loaded, axis=0)), len(loaded))
+        else:
+            match = scene.contacts.rigid_contact_match_index.numpy()[:count]
+            test.assertTrue((match >= 0).all())
+            np.testing.assert_array_equal(contact_f[:count], last_f[match])
+            np.testing.assert_array_equal(net, last_net)
+        last_f, last_net = contact_f, net
         if asleep_steps == 10:
             break
     test.assertEqual(asleep_steps, 10)
@@ -1636,7 +1647,7 @@ def test_sleeping_contact_f_needs_the_solved_contact_set(test, device, interrupt
     np.testing.assert_array_equal(scene.awake(), [0, 0])
     scene.assert_resting(scene.net())
     if interruption == "collision_pass":
-        # The next pass matches to this unsolved set, not to the one the solver last solved.
+        # The next pass matches to this unsolved set, not to the one the solver last recorded.
         scene.pipeline.collide(scene.states[0], scene.contacts)
     else:
         scene.contacts = scene.pipeline.contacts()

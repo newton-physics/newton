@@ -2037,9 +2037,11 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    the rows of sleeping islands and reports each of their contacts' force from the
    previous solver step. The force carries only on the same contacts buffer, when every
    solver step requests ``CONTACT_F`` and the contact set is either unchanged since the
-   last solved step or comes from one collision pass matched to it
-   (``contact_matching="latest"``). A second collision pass between solver steps or a new
-   contacts buffer drops those contacts to zero until their island wakes. With ``sleep_skip_constraints=False``
+   preceding solver step or comes from one collision pass matched to that step's recorded
+   contact set (``contact_matching="latest"``). Each step records the forces it reports,
+   carried ones included, so the force carries across consecutive sleeping steps. A second
+   collision pass between solver steps or a new contacts buffer drops those contacts to zero
+   until their island wakes. With ``sleep_skip_constraints=False``
    the rows are solved and the forces are reported directly. See
    :ref:`steel_sleep_observable`.
 

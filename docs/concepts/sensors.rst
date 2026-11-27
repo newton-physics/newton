@@ -193,7 +193,7 @@ linear part of each ``CONTACT_F`` wrench (force [N]); the torque part is ignored
 With :class:`~newton.solvers.SolverSteel` sleeping and ``sleep_skip_constraints=True``,
 ``SensorContact`` keeps reading the last support force of a sleeping body when every
 solver step requests ``CONTACT_F`` on the same contacts buffer and each collision pass
-matches to the contact set the solver last solved (``contact_matching="latest"``, one
+matches to the preceding step's recorded contact set (``contact_matching="latest"``, one
 pass per solver step); otherwise the force drops to zero until the body wakes. With ``sleep_skip_constraints=False`` the forces of sleeping bodies are
 solved and reported directly (see :ref:`steel_sleep_observable`).
 Each sensor's ``solver_observable_kinds`` property provides its requirements
