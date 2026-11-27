@@ -862,6 +862,100 @@ add_function_test(
 )
 
 
+def test_squat_cylinder_side_contact(test, device, *, split=False):
+    """Touch squat upright cylinders on their sides, not through their caps.
+
+    Their enclosing boxes overlap least along the axis, so that bound must
+    not replace the side normal of a shallow overlap with a cap normal. The
+    last pair is a recorded pair of standing bottles that was launched apart.
+    """
+    radius, half_height = 0.0305, 0.008
+    poses = []
+    for i, (gap, yaw, heading, tilt) in enumerate(
+        product((-1.0e-4, 0.0, 1.0e-3), np.radians((0.0, 20.65, 45.0)), np.radians((0.0, 32.0, 60.0)), (0.0, 0.0035))
+    ):
+        origin = wp.vec3(0.0, float(i), 0.0)
+        offset = (2.0 * radius + gap) * wp.vec3(float(np.cos(heading)), float(np.sin(heading)), 0.0)
+        rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(yaw)) * wp.quat_from_axis_angle(
+            wp.vec3(1.0, 0.0, 0.0), float(tilt)
+        )
+        poses.append((wp.transform(origin), wp.transform(origin + offset, rotation)))
+    poses.append(
+        (
+            wp.transform((9.600569, -0.0588529, 0.9499933), (-1.4556537e-05, -1.9978555e-05, -0.05258074, 0.9986168)),
+            wp.transform((9.655416, -0.03215848, 0.9499909), (-3.155017e-05, 4.4591347e-06, -0.2307867, 0.9730044)),
+        )
+    )
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(gap=0.002)
+    # Bodies stand on their bottom caps, like bottles.
+    shape_xform = wp.transform((0.0, 0.0, half_height), wp.quat_identity())
+    pairs = []
+    for pose_pair in poses:
+        pairs.append(
+            tuple(
+                builder.add_shape_cylinder(
+                    builder.add_body(xform=pose), xform=shape_xform, radius=radius, half_height=half_height, cfg=cfg
+                )
+                for pose in pose_pair
+            )
+        )
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
+    state, contacts = model.state(), pipeline.contacts()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    points = (contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count])
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+
+    def to_world(shape, point):
+        return np.asarray(wp.transform_point(wp.transform(*np.split(body_q[shape_body[shape]], [3])), wp.vec3(*point)))
+
+    for i, (a, b) in enumerate(pairs):
+        with test.subTest(pair=i):
+            rows = np.flatnonzero((shape0 == a) | (shape0 == b))
+            test.assertGreater(len(rows), 0)
+            centers = [to_world(s, (0.0, 0.0, half_height)) for s in (a, b)]
+            lateral = (centers[1] - centers[0])[:2]
+            expected = np.append(lateral / np.linalg.norm(lateral), 0.0)
+            gap = np.linalg.norm(lateral) - 2.0 * radius
+            for k in rows:
+                other = a + b - shape0[k]
+                sign = 1.0 if shape0[k] == a else -1.0
+                # Curved sides converge slowly in the normal, but not in depth.
+                np.testing.assert_allclose(sign * normals[k], expected, atol=0.02)
+                distance = np.dot(to_world(other, points[1][k]) - to_world(shape0[k], points[0][k]), normals[k])
+                test.assertAlmostEqual(float(distance), gap, delta=5.0e-5)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_squat_cylinder_side_contact",
+    test_squat_cylinder_side_contact,
+    devices=get_test_devices(),
+)
+
+
+def test_squat_cylinder_side_contact_split(test, device):
+    """Touch squat cylinder sides through the split CUDA kernels."""
+    if not device.is_cuda:
+        test.skipTest("Split collision kernels run only on CUDA")
+    with patch("newton._src.sim.collide._SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD", 0):
+        test_squat_cylinder_side_contact(test, device, split=True)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_squat_cylinder_side_contact_split",
+    test_squat_cylinder_side_contact_split,
+    devices=get_test_devices(),
+)
+
+
 def test_crossed_plank_sliver_contact(test, device, *, split=False):
     """Collapse the sliver left by crossed planks to a line contact.
 
