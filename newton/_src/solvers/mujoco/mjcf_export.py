@@ -113,10 +113,27 @@ def _publish_native_world_parameters(
             attrs = model.mujoco
             valid = actuator_rows >= 0
             rows = np.maximum(actuator_rows, 0)
-            for name in ("actuator_trntype", "ctrl_source", "ctrl_type"):
+            for name in (
+                "actuator_trntype",
+                "ctrl_source",
+                "ctrl_type",
+                "actuator_dyntype",
+                "actuator_gaintype",
+                "actuator_biastype",
+                "actuator_actdim",
+                "actuator_actearly",
+                "actuator_ctrllimited",
+                "actuator_forcelimited",
+                "actuator_actlimited",
+            ):
                 values = getattr(attrs, name).numpy()[rows]
+                if name.endswith("limited"):
+                    ranges = getattr(attrs, name.removesuffix("limited") + "range").numpy()[rows]
+                    values = np.where(
+                        values == mujoco.mjtLimited.mjLIMITED_AUTO, np.any(ranges != 0, axis=-1), values != 0
+                    )
                 if np.any(valid & (values != values[0])):
-                    raise ValueError("SolverMuJoCo requires matching actuator declarations across worlds.")
+                    raise ValueError(f"SolverMuJoCo requires matching actuator declarations ({name}) across worlds.")
             transmissions = attrs.actuator_trntype.numpy()[rows]
             targets = attrs.actuator_trnid.numpy()[rows].copy()
             for kinds, frequency, columns in (
@@ -157,6 +174,10 @@ def _publish_native_world_parameters(
         limited = np.where(flags == mujoco.mjtLimited.mjLIMITED_AUTO, np.any(ranges != 0, axis=-1), flags != 0)
         if np.any((tendon_rows >= 0) & (limited != native.tendon_limited)):
             raise ValueError("SolverMuJoCo requires matching tendon limit flags across worlds.")
+        spatial = (tendon_rows >= 0) & ~model.mujoco.native_tendon_fixed.numpy()[rows]
+        lengths = model.mujoco.tendon_springlength.numpy()[rows]
+        if np.any(spatial[..., None] & (lengths != lengths[0])):
+            raise ValueError("SolverMuJoCo requires matching spatial tendon spring lengths across worlds.")
     if np.any(joint_dofs >= 0):
         lower = model.joint_limit_lower.numpy()[np.maximum(joint_dofs, 0)]
         upper = model.joint_limit_upper.numpy()[np.maximum(joint_dofs, 0)]

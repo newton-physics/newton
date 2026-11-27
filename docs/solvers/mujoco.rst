@@ -51,7 +51,8 @@ Choose the importer explicitly:
    builder.add_mjcf_native("robot.xml")  # Native MuJoCo parser and compiler
 
 The native method requires MuJoCo (``uv sync --extra sim``) and accepts the
-same keyword arguments. The existing method has no new dependency.
+same keyword arguments except ``parse_cameras``; cameras are omitted with a
+warning. The existing method has no new dependency.
 MuJoCo resolves defaults, includes, frames, replication, meshes, and inertia;
 the importer copies the result into Newton and retains no ``MjSpec`` or
 ``MjModel``. Each source must compile independently before attachment.
@@ -292,9 +293,10 @@ Batched worlds
 In multi-world models, joint/tendon polynomials, geom surface velocity
 and adhesion, and actuator delay/interpolation retain per-world values at
 solver construction. Fluid coefficients, actuator groups, and history sample
-counts must match across corresponding entities. Joint/tendon limit flags must
-match, though enabled bounds may differ. Actuator targets and control kinds
-must appear in the same order. Mismatches raise ``ValueError``.
+counts must match across corresponding entities. Joint, tendon, and actuator
+limit flags must match, though enabled bounds may differ. Actuator targets,
+dynamics, activation layouts, and gain/bias types must match in the same order.
+Explicit spatial-tendon spring lengths must also match. Mismatches raise ``ValueError``.
 Rebuild the solver after editing these native attributes.
 
 Joint ``springdamper`` and fixed-tendon spring lengths resolve independently

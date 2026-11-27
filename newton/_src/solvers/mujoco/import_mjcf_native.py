@@ -649,7 +649,7 @@ def _import_actuators(
             actuator_dyntype=int(model.actuator_dyntype[i]),
             actuator_gaintype=int(model.actuator_gaintype[i]),
             actuator_biastype=int(model.actuator_biastype[i]),
-            actuator_actdim=int(actuator.actdim),
+            actuator_actdim=int(model.actuator_actnum[i]),
             actuator_actearly=bool(model.actuator_actearly[i]),
             actuator_lengthrange=model.actuator_lengthrange[i]
             if actuator.lengthrange[0] < actuator.lengthrange[1]
@@ -1320,7 +1320,18 @@ def parse_mjcf(
             for j in range(model.body_jntadr[i], model.body_jntadr[i] + model.body_jntnum[i])
             if not matches(model.joint(j).name, ignore_names) and not matches(joint_classes[j], ignore_classes)
         ]
-        if native_parent == 0 and (floating is not None or base_joint is not None or parent_body != -1):
+        keep_free = (
+            floating is True
+            and base_joint is None
+            and parent_body == -1
+            and len(selected) == 1
+            and model.jnt_type[selected[0]] == mujoco.mjtJoint.mjJNT_FREE
+        )
+        if (
+            native_parent == 0
+            and not keep_free
+            and (floating is not None or base_joint is not None or parent_body != -1)
+        ):
             parent_xform, child_xform = local, wp.transform_identity()
             if base_joint is not None and not override_root_xform:
                 parent_xform = wp.transform(local.p, wp.quat_identity())

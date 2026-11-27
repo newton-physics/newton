@@ -1962,7 +1962,7 @@ class TestMenagerieNativeMJCF(TestMenagerieMJCF):
     def _create_newton_model(self) -> newton.Model:
         """Allow omitted scene metadata while retaining all physics diagnostics."""
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=r"Native MJCF import omits lights(?:, keys)?;")
+            warnings.filterwarnings("ignore", message=r"Native MJCF import omits lights(?:, keys)?\.")
             return super()._create_newton_model()
 
     def _align_models(self, newton_solver: SolverMuJoCo, native_mjw_model: Any, mj_model: Any) -> None:
@@ -2019,7 +2019,7 @@ class TestMenagerieNativeMJCF_UR5eAllegro(TestMenagerieNativeMJCF):
         robot = newton.ModelBuilder()
         robot.default_shape_cfg.gap = 0.0
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=r"Native MJCF import omits lights, keys;")
+            warnings.filterwarnings("ignore", message=r"Native MJCF import omits lights, keys\.")
             robot.add_mjcf_native(str(self.mjcf_path), parse_visuals=False, ctrl_direct=True)
         wrist = next(i for i, name in enumerate(robot.body_label) if name.endswith("/wrist_3_link"))
         robot.add_mjcf_native(

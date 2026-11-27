@@ -394,14 +394,19 @@ class TestImportMjcfNative(unittest.TestCase):
 
     def test_free_ball_and_compound_joints(self):
         """Import free, ball, and co-located scalar joint groups."""
-        for joints in (
-            "<freejoint/>",
-            '<joint type="ball" damping=".3" armature=".1"/>',
-            '<joint name="slide" type="slide"/><joint name="hinge" axis="0 1 0"/>',
+        for joints, floating in (
+            ("<freejoint/>", None),
+            ('<joint type="free" damping=".3" armature=".1" stiffness="2"/>', True),
+            ('<joint type="ball" damping=".3" armature=".1"/>', None),
+            ('<joint name="slide" type="slide"/><joint name="hinge" axis="0 1 0"/>', None),
         ):
             with self.subTest(joints=joints):
                 xml = f'<mujoco><worldbody><body pos=".1 .2 .3">{joints}<geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody></mujoco>'
-                self.assert_roundtrip(xml, ("jnt_type", "dof_armature", "dof_damping", "body_mass", "qpos0"))
+                self.assert_roundtrip(
+                    xml,
+                    ("jnt_type", "jnt_stiffness", "dof_armature", "dof_damping", "body_mass", "qpos0"),
+                    floating=floating,
+                )
 
     def test_compound_joint_anchors(self):
         """Match legacy compound anchors and moving poses, including representable MuJoCo kinematics."""
@@ -615,6 +620,10 @@ class TestImportMjcfNative(unittest.TestCase):
             quat="{" ".join(map(str, [shape_pose.q[3], *shape_pose.q[:3]]))}"/>
             </body></worldbody></mujoco>"""
 
+        probe = newton.Mesh.create_box(0.1)
+        probe_sdf = newton.Mesh.create_box(0.1)
+        with wp.ScopedDevice("cuda:0"):
+            probe_sdf.build_sdf(max_resolution=32, margin=0.02)
         for sdf_options in (
             {},
             {"max_resolution": 64, "margin": 0.02},
@@ -647,14 +656,11 @@ class TestImportMjcfNative(unittest.TestCase):
                     cfg = newton.ModelBuilder.ShapeConfig(
                         density=0, margin=0, gap=0.02, mu=0, mu_torsional=0, mu_rolling=0
                     )
-                    probe = newton.Mesh.create_box(0.1)
-                    if sdf_options:
-                        probe.build_sdf(max_resolution=32, margin=0.02)
                     # The first probe lies inside the hull but outside the concave surface.
                     for point in ((0.8, 0.8, 0), (1.2, 0.58, 0)):
                         builder.add_shape_mesh(
                             body=-1,
-                            mesh=probe,
+                            mesh=probe_sdf if sdf_options else probe,
                             xform=wp.transform(wp.transform_point(world_pose, wp.vec3(point)), world_pose.q),
                             cfg=cfg,
                         )
@@ -1583,6 +1589,11 @@ class TestImportMjcfNative(unittest.TestCase):
             ("native_geom_fluid_coefs", (2.0, 3.0, 4.0, 5.0, 6.0)),
             ("native_actuator_group", 2),
             ("native_actuator_nsample", 5),
+            ("actuator_gaintype", 1),
+            ("actuator_biastype", 1),
+            ("actuator_actearly", True),
+            ("actuator_ctrllimited", 1),
+            ("actuator_forcelimited", 1),
         ):
             with self.subTest(field=name):
                 builder = newton.ModelBuilder()
@@ -1590,6 +1601,23 @@ class TestImportMjcfNative(unittest.TestCase):
                 builder.custom_attributes[f"mujoco:{name}"].values[1] = value
                 with self.assertRaisesRegex(ValueError, name):
                     SolverMuJoCo(builder.finalize())
+
+        declarations = ('actdim="-1" ctrllimited="auto"', 'actdim="1" ctrllimited="true"')
+        for reverse in (False, True):
+            builder = newton.ModelBuilder()
+            for settings in declarations[:: -1 if reverse else 1]:
+                builder.begin_world()
+                builder.add_mjcf_native(
+                    xml.replace(
+                        '<motor joint="j" nsample="4"/>',
+                        f'<general joint="j" dyntype="filterexact" ctrlrange="-1 1" {settings}/>',
+                    ),
+                    ctrl_direct=True,
+                )
+                builder.end_world()
+            solver = SolverMuJoCo(builder.finalize())
+            np.testing.assert_array_equal(solver.mj_model.actuator_actnum, [1])
+            np.testing.assert_array_equal(solver.mj_model.actuator_ctrllimited, [True])
 
     def test_native_actuator_history_and_dcmotor(self):
         """Preserve actuator history, passive properties, and DC-motor inputs."""
@@ -2006,7 +2034,7 @@ class TestImportMjcfNative(unittest.TestCase):
         self.assertTrue(np.all(solver.mj_model.geom_contype | solver.mj_model.geom_conaffinity))
 
     def test_native_world_topology(self):
-        """Reject topology differences that a shared MuJoCo template cannot represent."""
+        """Reject world differences that a shared MuJoCo template cannot represent."""
         cases = (
             (
                 "contact pairs",
@@ -2023,6 +2051,29 @@ class TestImportMjcfNative(unittest.TestCase):
                 "tendon",
                 '<body><joint name="x" type="slide"/><joint name="y"/><geom size=".1"/></body>',
                 tuple(f'<tendon><fixed><joint joint="{joint}" coef="1"/></fixed></tendon>' for joint in ("x", "y")),
+            ),
+            (
+                "spatial tendon spring lengths",
+                '<site name="a"/><body pos="0 0 1"><joint/><geom size=".1"/><site name="b"/></body>',
+                tuple(
+                    f'<tendon><spatial springlength="{length}" stiffness="10"><site site="a"/><site site="b"/></spatial></tendon>'
+                    for length in (0.2, 0.4)
+                ),
+            ),
+            (
+                "actuator_dyntype",
+                '<body><joint name="j"/><geom size=".1"/></body>',
+                tuple(
+                    f'<actuator><general joint="j" dyntype="{kind}"/></actuator>' for kind in ("none", "filterexact")
+                ),
+            ),
+            (
+                "actuator_actlimited",
+                '<body><joint name="j"/><geom size=".1"/></body>',
+                tuple(
+                    f'<actuator><general joint="j" dyntype="filterexact" actrange="-1 1" actlimited="{flag}"/></actuator>'
+                    for flag in ("false", "auto")
+                ),
             ),
         )
         for message, worldbody, variants in cases:

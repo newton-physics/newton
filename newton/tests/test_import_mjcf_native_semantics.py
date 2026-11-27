@@ -1191,7 +1191,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                 np.testing.assert_allclose(getattr(solver.mj_model, f"actuator_{field}"), [[-0.1, 0.2]], atol=1e-7)
 
     def test_authored_auto_flags(self):
-        """Keep tri-state limits and automatic activation dimensions in builder data."""
+        """Keep tri-state limits while resolving composition-independent activation dimensions."""
         xml = """<mujoco><worldbody><body><joint name="j" range="-20 40"/><geom size=".1"/></body></worldbody>
             <tendon><fixed name="t" range="-1 2"><joint joint="j" coef="1"/></fixed></tendon>
             <actuator><general joint="j" dyntype="filter" actrange="-.1 .2" ctrlrange="-1 2"/></actuator></mujoco>"""
@@ -1207,7 +1207,7 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
             "actuator_actlimited",
         ):
             self.assertEqual(int(builder.custom_attributes[f"mujoco:{name}"].values[0]), 2, name)
-        self.assertEqual(builder.custom_attributes["mujoco:actuator_actdim"].values[0], -1)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_actdim"].values[0], 1)
 
     def test_limit_range_matrix(self):
         """Distinguish disabled, inferred, and explicit limits, including zero ranges."""
