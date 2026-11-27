@@ -3311,7 +3311,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
         Steel spring, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
-        Steel ignores. A captured notification skips all three checks.
+        Steel ignores. With ``enable_bilateral_preelimination`` and loop closures, an eager joint notification
+        also reads :attr:`~newton.Model.joint_enabled` on the host to decide whether requesting
+        ``BODY_PARENT_F`` warns. A captured notification skips these host reads.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
