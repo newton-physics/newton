@@ -4348,6 +4348,22 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [1.0, 0.5])
         np.testing.assert_allclose(self.model.particle_mass.numpy(), [2.0, 2.0])
 
+    def test_particle_properties_keep_view_particle_masses(self):
+        """Particle property updates keep scaled proxy masses and zero masses of particles another entry owns."""
+        _ParticleForceRecordingSolver.instances.clear()
+        coupled = self._make_coupled()
+        src_view = coupled.view("src")
+        dst_view = coupled.view("dst")
+
+        self.model.particle_mass.assign([4.0, 2.0])
+        self.model.particle_inv_mass.assign([0.25, 0.5])
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+
+        np.testing.assert_allclose(src_view.particle_mass.numpy(), [4.0, 0.0])
+        np.testing.assert_allclose(src_view.particle_inv_mass.numpy(), [0.25, 0.0])
+        np.testing.assert_allclose(dst_view.particle_mass.numpy(), [2.0, 2.0])
+        np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [0.5, 0.5])
+
     def test_particle_proxy_feedback_is_applied_on_next_step(self):
         _ParticleForceRecordingSolver.instances.clear()
         coupled = self._make_coupled()

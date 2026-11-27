@@ -3869,7 +3869,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
 
             if flags & int(ModelFlags.PARTICLE_PROPERTIES):
-                self._refresh_particle_flag_view_overrides(entry)
+                self._refresh_particle_view_overrides(entry)
 
             if flags & int(ModelFlags.SHAPE_PROPERTIES):
                 cfg = self._entry_configs_by_name[entry.name]
@@ -3920,13 +3920,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if entry.body_dynamics_disabled_local_indices.shape[0] > 0:
             entry.view.disable_body_dynamics(entry.body_dynamics_disabled_local_indices)
 
-    def _refresh_particle_flag_view_overrides(self, entry: SolverEntry) -> None:
-        """Re-derive a view-local ``particle_flags`` copy from the parent model.
+    def _refresh_particle_view_overrides(self, entry: SolverEntry) -> None:
+        """Re-apply the entry's particle overrides after the parent particle attributes were projected.
 
-        Gathers the parent flags into the existing view array, then re-applies
-        the entry's disabled and proxy particle marks. Only kernels are
-        launched, so the refresh can be recorded in a CUDA graph.
+        Zeroes the masses of particles the entry does not own, gathers the
+        parent flags into the view-local ``particle_flags`` copy, then
+        re-applies the entry's disabled and proxy particle marks.
         """
+        entry.view.zero_particle_mass(entry.particle_dynamics_disabled_local_indices)
         view_flags = object.__getattribute__(entry.view, "_overrides").get("particle_flags")
         if view_flags is None or view_flags.shape[0] == 0:
             # Views without an override read the parent flags directly.
