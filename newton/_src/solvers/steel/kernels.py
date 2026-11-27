@@ -7106,14 +7106,15 @@ def build_mf_contact_rows(
 def clamp_free_rigid_angular_coefficients(
     shape_mu_torsional: wp.array[float],
     shape_mu_rolling: wp.array[float],
+    scale: float,
     # outputs
     free_rigid_mu_torsional: wp.array[float],
     free_rigid_mu_rolling: wp.array[float],
 ):
-    """Copy each shape's torsional and rolling coefficients [m], with a negative or non-finite value as zero."""
+    """Write each shape's torsional and rolling coefficients [m] times ``scale``, zero if negative or non-finite."""
     shape = wp.tid()
-    torsional = shape_mu_torsional[shape]
-    rolling = shape_mu_rolling[shape]
+    torsional = shape_mu_torsional[shape] * scale
+    rolling = shape_mu_rolling[shape] * scale
     if not wp.isfinite(torsional) or torsional < 0.0:
         torsional = 0.0
     if not wp.isfinite(rolling) or rolling < 0.0:

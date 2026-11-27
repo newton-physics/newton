@@ -301,7 +301,10 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 self.assertAlmostEqual(twist[5], 6.0 - rate * 0.2, delta=0.1 * rate * 0.2)
 
     def test_rows_never_add_energy(self):
-        """End a contact step with no more kinetic energy than it started with, for anisotropic inertias."""
+        """End a contact step with no more kinetic energy than it started with, for anisotropic inertias.
+
+        The angular rows carry an impulse and leave less energy than sliding friction alone.
+        """
         rng = np.random.default_rng(3)
         cases = [(_ANISOTROPIC * 4.0e-5, (1.0, 0.0, -3.0), rolling) for rolling in (1.0, 1.0e-3, 1.0e-4)]
         for _ in range(6):
@@ -315,10 +318,25 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             def energy(twist, inertia=inertia):
                 return 0.5 * _MASS * float(twist[:3] @ twist[:3]) + 0.5 * float(twist[3:6] @ inertia @ twist[3:6])
 
+            seen = {}
+
+            def observe(solver, contacts, observables, seen=seen):
+                count = int(solver._mf_constraint_count.numpy()[0])
+                row_type = solver._mf_row_type.numpy()[0, :count]
+                angular = (row_type == PGS_CONSTRAINT_TYPE_CONTACT_ROLLING) | (
+                    row_type == PGS_CONSTRAINT_TYPE_CONTACT_SPIN
+                )
+                seen["angular"] = solver._mf_impulses.numpy()[0, :count][angular]
+
             with self.subTest(case=index, rolling=rolling):
                 kwargs = {"angular": omega, "inertia": inertia, "steps": 1}
                 _, twist_free, _ = _simulate("sphere", 0.0, **kwargs)
-                _, twist, _ = _simulate("sphere", 0.0, **_rows(rolling=rolling, torsional=rolling), **kwargs)
+                _, twist, _ = _simulate(
+                    "sphere", 0.0, observe=observe, **_rows(rolling=rolling, torsional=rolling), **kwargs
+                )
+                self.assertEqual(seen["angular"].size, 3)
+                self.assertTrue(np.any(seen["angular"] != 0.0))
+                self.assertLess(energy(twist), energy(twist_free))
                 start = 0.5 * float(np.asarray(omega) @ inertia @ np.asarray(omega))
                 # Gravity does at most m g |v_z| dt of work in one step.
                 self.assertLessEqual(energy(twist), start + _MASS * _GRAVITY * 1.0e-3 * _DT)
@@ -339,18 +357,32 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
     def test_rows_act_in_world_frame_under_a_rotated_free_root_anchor(self):
         """Match the identity-anchor result with a FREE root parent anchor rotated by 45 degrees about y.
 
-        A sphere spinning about the contact normal keeps its spin under rolling rows, rolls about the same world axis
-        to the same stop, and slows its spin at the same rate under the spin row; the spin row also in a captured graph.
+        Under rolling rows a rolling sphere that also spins about the contact normal stops rolling and keeps its spin,
+        a rolling sphere stops at the Coulomb distance, and the spin row slows a spin at the Coulomb rate; the spin row
+        also in a captured graph.
         """
+        rate = 5.0e-4 * _GRAVITY / (0.4 * _RADIUS**2)
         cases = {
-            "normal spin, rolling rows": {"seconds": 0.25, "angular": (0.0, 0.0, 6.0), **_rows(rolling=0.01)},
+            "normal spin, rolling rows": {
+                "seconds": 0.25,
+                "linear": (0.0, -0.3, 0.0),
+                "angular": (10.0, 0.0, 6.0),
+                **_rows(rolling=0.01),
+            },
             "rolling stop": {"seconds": 0.8, **_rows(rolling=0.004), **_ROLLING},
             "spin row": {"seconds": 0.2, "angular": (0.0, 0.0, 6.0), **_rows(torsional=5.0e-4)},
         }
         for name, kwargs in cases.items():
             _, reference, travel = _simulate("sphere", anchor_deg=0.0, **kwargs)
+            # The rows act on the identity-anchor reference before the rotated runs are compared with it.
             if name == "normal spin, rolling rows":
                 np.testing.assert_allclose(reference[3:6], (0.0, 0.0, 6.0 * (1.0 - 0.05 * _DT) ** 120), atol=1.0e-3)
+            elif name == "rolling stop":
+                self.assertLess(np.linalg.norm(reference[3:6]), 1.0e-3)
+                expected = _coulomb_stopping_distance(0.3, 0.004)
+                self.assertAlmostEqual(travel, expected, delta=0.05 * expected)
+            else:
+                self.assertAlmostEqual(reference[5], 6.0 - rate * 0.2, delta=0.1)
             for graph in (False, True) if name == "spin row" else (False,):
                 with self.subTest(case=name, graph=graph):
                     _, twist, rotated_travel = _simulate("sphere", anchor_deg=45.0, graph=graph, **kwargs)
@@ -475,13 +507,26 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertEqual(seen[True], seen[False])
 
     def test_toppling_and_sliding_cube_are_unchanged(self):
-        """Leave a toppling or sliding cube within 2 mm of the sliding-mode pose; the spinning cube slows at most."""
+        """Leave a toppling or sliding cube within 2 mm of the sliding-mode pose; the spinning cube slows at most.
+
+        The cube's contacts carry the rolling pair throughout.
+        """
         for kwargs in ({"tilt_deg": 40.0}, {"linear": (0.5, 0.0, 0.0)}, {"angular": (0.0, 0.0, 6.0)}):
+            seen = {}
+
+            def observe(solver, contacts, observables, seen=seen):
+                count = int(solver._mf_constraint_count.numpy()[0])
+                seen["rolling"] = int(
+                    np.count_nonzero(solver._mf_row_type.numpy()[0, :count] == PGS_CONSTRAINT_TYPE_CONTACT_ROLLING)
+                )
+
             with self.subTest(**kwargs):
-                pose_free, _, _ = _simulate("box", 0.5, **kwargs)
-                pose, _, _ = _simulate("box", 0.5, **_rows(rolling=0.002), **kwargs)
+                pose_free, twist_free, _ = _simulate("box", 0.5, **kwargs)
+                pose, twist, _ = _simulate("box", 0.5, observe=observe, **_rows(rolling=0.002), **kwargs)
+                self.assertGreater(seen["rolling"], 0)
                 np.testing.assert_allclose(pose[:3], pose_free[:3], atol=2.0e-3)
                 self.assertGreater(abs(float(np.dot(pose[3:7], pose_free[3:7]))), 0.999)
+                self.assertLessEqual(abs(twist[5]), abs(twist_free[5]) + 1.0e-4)
 
     def test_composes_with_sleeping_anchors_torsion_warm_start_and_velocity_iterations(self):
         """Keep the Coulomb stopping distance with each option that touches contact rows."""
@@ -533,11 +578,16 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             **_rows(rolling=0.001, torsional=0.001),
             **_ROLLING,
         }
-        first, _, _ = _simulate("sphere", 0.3, **kwargs)
-        second, _, _ = _simulate("sphere", 0.3, **kwargs)
-        captured, _, _ = _simulate("sphere", 0.3, graph=True, **kwargs)
+        first, first_twist, _ = _simulate("sphere", 0.3, **kwargs)
+        # The rolling pair slows the roll from 10 to about 7.7 rad/s in 0.3 s.
+        deceleration = 0.3**2 / (2.0 * _coulomb_stopping_distance(0.3, 0.001))
+        self.assertAlmostEqual(first_twist[3], (0.3 - deceleration * 0.3) / _RADIUS, delta=0.3)
+        second, second_twist, _ = _simulate("sphere", 0.3, **kwargs)
+        captured, captured_twist, _ = _simulate("sphere", 0.3, graph=True, **kwargs)
         np.testing.assert_array_equal(first, second)
+        np.testing.assert_array_equal(first_twist, second_twist)
         np.testing.assert_array_equal(first, captured)
+        np.testing.assert_array_equal(first_twist, captured_twist)
 
     def test_rows_take_the_larger_coefficient_of_the_pair(self):
         """Average sliding friction as before while the angular rows take the larger coefficient of the two shapes."""
@@ -818,6 +868,129 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             model.shape_material_friction_mode.fill_(mode)
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         self.assertFalse(solver._free_rigid_angular_rows)
+
+    def test_contact_friction_scale_scales_both_angular_coefficients(self):
+        """Scale both angular coefficients by contact_friction_scale, at construction and after a shape notify.
+
+        The spin row slows a spinning sphere at the scaled Coulomb rate, and a zero scale leaves the spin.
+        """
+        torsional, rolling = 5.0e-4, 2.0e-3
+        rate = torsional * _GRAVITY / (0.4 * _RADIUS**2)
+        free_spin = 6.0 * (1.0 - 0.05 * _DT) ** 96
+        for scale in (0.0, 0.5, 1.0, 2.0):
+            for notify in (False, True):
+                seen = {}
+
+                def on_solver(solver, notify=notify):
+                    if notify:
+                        solver.model.shape_material_mu_torsional.fill_(torsional)
+                        solver.model.shape_material_mu_rolling.fill_(rolling)
+                        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+                def observe(solver, contacts, observables, seen=seen):
+                    count = solver.model.shape_count
+                    seen["torsional"] = solver._free_rigid_mu_torsional.numpy()[:count]
+                    seen["rolling"] = solver._free_rigid_mu_rolling.numpy()[:count]
+
+                # The notify case builds the solver with other coefficients and notifies the tested ones.
+                built = 3.0 if notify else 1.0
+                with self.subTest(scale=scale, notify=notify):
+                    _, twist, _ = _simulate(
+                        "sphere",
+                        0.2,
+                        angular=(0.0, 0.0, 6.0),
+                        friction_mode=_ROLLING_MODE,
+                        torsional_material=built * torsional,
+                        rolling_material=built * rolling,
+                        contact_friction_scale=scale,
+                        on_solver=on_solver,
+                        observe=observe,
+                    )
+                    np.testing.assert_array_equal(seen["torsional"], np.float32(torsional) * np.float32(scale))
+                    np.testing.assert_array_equal(seen["rolling"], np.float32(rolling) * np.float32(scale))
+                    self.assertAlmostEqual(twist[5], free_spin - scale * rate * 0.2, delta=0.1)
+
+    def test_scaled_angular_coefficient_outside_float32_raises(self):
+        """Reject an enabled angular coefficient whose product with contact_friction_scale overflows float32."""
+        model, _ = _scene("sphere")
+        model.shape_material_friction_mode.fill_(int(_ROLLING_MODE))
+        for name in ("shape_material_mu_torsional", "shape_material_mu_rolling"):
+            array = getattr(model, name)
+            array.fill_(1.0e30)
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, f"{name} \\* contact_friction_scale"):
+                SolverSteel(model, contact_friction_scale=1.0e10)
+            array.fill_(1.0e-3)
+            solver = SolverSteel(model, contact_friction_scale=1.0e10)
+            array.fill_(1.0e30)
+            with self.subTest(name=name, notify=True), self.assertRaisesRegex(ValueError, name):
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+            array.fill_(1.0e-3)
+        # The unscaled coefficient is in range.
+        model.shape_material_mu_rolling.fill_(1.0e30)
+        SolverSteel(model)
+
+    def test_articulated_rolling_warns_whatever_the_free_body_shapes(self):
+        """Warn about rolling friction on an articulated sphere, which keeps three rows, with or without a free sphere.
+
+        A torsional free sphere elsewhere turns the free-body rows on; the articulated sphere's contact stays sliding.
+        """
+        for free_sphere in (False, True):
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            builder.add_ground_plane()
+            inertia = wp.mat33(*(np.eye(3) * 0.4 * _MASS * _RADIUS**2).astype(np.float32).ravel())
+            root = builder.add_link(
+                xform=wp.transform((0.0, 0.0, _RADIUS), wp.quat_identity()),
+                mass=_MASS,
+                inertia=inertia,
+                lock_inertia=True,
+            )
+            child = builder.add_link(
+                xform=wp.transform((0.0, 0.0, 2.0 * _RADIUS), wp.quat_identity()),
+                mass=_MASS,
+                inertia=inertia,
+                lock_inertia=True,
+            )
+            joints = [
+                builder.add_joint_free(root),
+                builder.add_joint_fixed(
+                    root, child, parent_xform=wp.transform((0.0, 0.0, _RADIUS), wp.quat_identity())
+                ),
+            ]
+            builder.add_articulation(joints)
+            rolling_sphere = builder.add_shape_sphere(
+                root,
+                radius=_RADIUS,
+                cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu_rolling=0.002, friction_mode=_ROLLING_ONLY),
+            )
+            if free_sphere:
+                free = builder.add_body(
+                    xform=wp.transform((0.5, 0.0, _RADIUS), wp.quat_identity()),
+                    mass=_MASS,
+                    inertia=inertia,
+                    lock_inertia=True,
+                )
+                builder.add_shape_sphere(
+                    free,
+                    radius=_RADIUS,
+                    cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu_torsional=5.0e-4, friction_mode=_TORSIONAL),
+                )
+            model = builder.finalize()
+            with self.subTest(free_sphere=free_sphere):
+                with self.assertWarnsRegex(NewtonWarning, "does not support rolling friction on articulated contacts"):
+                    solver = SolverSteel(model)
+                self.assertEqual(solver._free_rigid_angular_rows, free_sphere)
+                pipeline = newton.CollisionPipeline(model, deterministic=True)
+                contacts = pipeline.contacts()
+                state_0, state_1 = model.state(), model.state()
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, model.control(), contacts, _DT)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                on_sphere = (contacts.rigid_contact_shape0.numpy()[:count] == rolling_sphere) | (
+                    contacts.rigid_contact_shape1.numpy()[:count] == rolling_sphere
+                )
+                slots = solver._contact_slots_needed.numpy()[:count]
+                self.assertTrue(np.any(on_sphere))
+                np.testing.assert_array_equal(slots[on_sphere], 3)
 
 
 def test_linear_row_builder_leaves_the_angular_rows(test, device):

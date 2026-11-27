@@ -41,6 +41,7 @@ from .contact_angular_friction import (
     accumulate_free_rigid_angular_wrenches,
     configure_free_rigid_angular_friction,
     free_rigid_angular_friction_gs_sources,
+    free_rigid_angular_rows_supported,
     launch_free_rigid_angular_friction_rows,
     refresh_free_rigid_angular_friction,
     validate_free_rigid_angular_friction,
@@ -1521,16 +1522,19 @@ class SolverSteel(SolverBase, CouplingInterface):
       enables its component: torsional friction adds a spin row about the normal bounded by
       :attr:`~newton.Model.shape_material_mu_torsional` [m] times the normal load, and rolling friction
       a rolling pair bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is
-      the larger of the two shapes' values. Under friction patches, contacts share a patch only if their
-      angular coefficients match. A contact with angular rows takes up to 6 free-body rows instead of 3;
-      raise ``free_body_constraint_max`` if :attr:`constraint_overflow` reports dropped rows. The rows
-      need a CUDA device, ``solve_mode="serial"`` with ``articulated_contact_response="immediate"``,
+      the larger of the two shapes' values, times ``contact_friction_scale``. Under friction patches,
+      contacts share a patch only if their angular coefficients match. A contact with angular rows takes
+      up to 6 free-body rows instead of 3; raise ``free_body_constraint_max`` if
+      :attr:`constraint_overflow` reports dropped rows. The rows need a CUDA device,
+      ``solve_mode="serial"`` with ``articulated_contact_response="immediate"``,
       ``row_schedule="interleaved"``, ``friction_mode="fixed_normal"`` and no contact compliance; otherwise
-      free-body contacts keep sliding friction, and shapes with rolling friction warn that it is
-      unsupported. The solver decides at construction whether to build the rows, so a solver built without them
-      must be rebuilt to gain them. On a solver with the rows, construction
-      and an eager ``SHAPE_PROPERTIES`` notification raise :class:`ValueError` for a mode outside
-      :class:`~newton.ShapeFrictionMode` or a negative or non-finite coefficient that a mode enables.
+      free-body contacts keep sliding friction. Construction warns about rolling friction on shapes that
+      get no rolling pair: all of them under unsupported options, else those on articulated bodies. The
+      solver decides at construction whether to build the rows, so a solver built without them must be
+      rebuilt to gain them. On a solver with the rows, construction and an eager ``SHAPE_PROPERTIES``
+      notification raise :class:`ValueError` for a mode outside :class:`~newton.ShapeFrictionMode`, or for
+      a coefficient that a mode enables if it is negative or non-finite, or not finite in float32 once
+      scaled.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds. A body
       outside every articulation, such as a link without a joint, enters contacts, including
       the friction-patch slide check, with its pose and zero velocity; :meth:`step` passes its
@@ -3351,12 +3355,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         raises :class:`ValueError` for invalid values, after applying every other update. Likewise, on a
         solver constructed with free-body angular rows, an eager shape notification reads the friction modes and the
         torsional and rolling coefficients they enable on the host and raises :class:`ValueError` for a mode outside
-        :class:`~newton.ShapeFrictionMode` or a negative or non-finite coefficient. With loop-closing
+        :class:`~newton.ShapeFrictionMode` or an invalid coefficient, as construction does; a captured one skips
+        this check. With loop-closing
         REVOLUTE joints, an eager joint, joint DOF, DOF force or DOF inertial notification also reads their
         DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
         Steel spring, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
-        Steel ignores. A captured notification skips these checks.
+        Steel ignores. A captured notification skips all three checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3443,16 +3448,15 @@ class SolverSteel(SolverBase, CouplingInterface):
             | ModelFlags.SHAPE_PROPERTIES
         ):
             self._clear_warmstart_history(world_mask)
-        capturing = self.model.device.is_capturing
-        if self._enable_joint_friction and flags & dof_force and not capturing:
+        if self._enable_joint_friction and flags & dof_force and not wp.get_stream(self.model.device).is_capturing:
             self._validate_joint_friction()
-        if flags & ModelFlags.SHAPE_PROPERTIES and not capturing:
-            validate_free_rigid_angular_friction(self)
         joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
         if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
             if flags & dof_force:
                 self._warn_ignored_spring_stiffness(stacklevel=3)
+        if flags & ModelFlags.SHAPE_PROPERTIES and not self.model.device.is_capturing:
+            validate_free_rigid_angular_friction(self)
 
     @override
     def _non_graphable_model_flags(self) -> int:
@@ -3484,14 +3488,18 @@ class SolverSteel(SolverBase, CouplingInterface):
         torsion_radius = self._contact_torsion_shape_radius
         radii = torsion_radius.numpy() if torsion_radius is not None else np.zeros(model.shape_count)
         missing = ((modes & FRICTION_TORSIONAL_BIT) != 0) & (radii <= 0.0)
+        rolling = (modes & FRICTION_ROLLING_BIT) != 0
         if rows:
             # The free-body angular rows cover the shapes whose contacts take the free-body route.
             shape_body = model.shape_body.numpy()
             route = self._free_rigid_route_body.numpy()
-            missing &= (shape_body >= 0) & (route[np.maximum(shape_body, 0)] == 0)
+            articulated = (shape_body >= 0) & (route[np.maximum(shape_body, 0)] == 0)
+            missing &= articulated
+            rolling &= articulated
         limits = []
-        if not rows and np.any(modes & FRICTION_ROLLING_BIT):
-            limits.append("does not support rolling friction in this configuration")
+        if np.any(rolling):
+            where = "on articulated contacts" if free_rigid_angular_rows_supported(self) else "in this configuration"
+            limits.append(f"does not support rolling friction {where}")
         if np.any(missing):
             limits.append(
                 "applies torsional friction to articulated contacts only for shapes with a positive "

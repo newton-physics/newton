@@ -6,10 +6,10 @@ A contact gets a row when either of its shapes' :attr:`~newton.Model.shape_mater
 component: torsional friction adds a spin row about the contact normal bounded by
 :attr:`~newton.Model.shape_material_mu_torsional` [m], rolling friction a rolling pair about the contact tangents
 bounded by :attr:`~newton.Model.shape_material_mu_rolling` [m]. Each coefficient is the larger of the
-two shapes' values. The rows follow the contact's sliding pair, ``[normal, t1, t2, roll1, roll2, spin]``,
-and are bounded by their coefficient times the pooled normal load of the contact's patch: the
-rolling pair on a disk, the spin row on a box. Only contacts on the free-body route (free bodies
-against free bodies or static and kinematic geometry) receive them.
+two shapes' values, times the solver's ``contact_friction_scale``. The rows follow the contact's sliding pair,
+``[normal, t1, t2, roll1, roll2, spin]``, and are bounded by their coefficient times the pooled normal load
+of the contact's patch: the rolling pair on a disk, the spin row on a box. Only contacts on the free-body
+route (free bodies against free bodies or static and kinematic geometry) receive them.
 """
 
 import numpy as np
@@ -44,22 +44,27 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
     route_shape = (shape_body < 0) | (route_body[np.maximum(shape_body, 0)] != 0)
     if not np.any(route_shape & ((values & (FRICTION_TORSIONAL_BIT | FRICTION_ROLLING_BIT)) != 0)):
         return
-    if (
-        not model.device.is_cuda
-        or solver._solve_mode != "serial"
-        or solver._articulated_contact_response != "immediate"
-        or solver._row_schedule != "interleaved"
-        or solver._friction_mode != "fixed_normal"
-        or solver._contact_compliance
-    ):
+    if not free_rigid_angular_rows_supported(solver):
         return
-    _check_coefficients(model, values)
+    _check_coefficients(model, values, solver._contact_friction_scale)
     solver._free_rigid_angular_rows = True
     solver._free_rigid_route_body = wp.array(route_body, dtype=wp.int32, device=model.device)
 
 
+def free_rigid_angular_rows_supported(solver) -> bool:
+    """Return whether the solver's device and options support the free-body angular rows."""
+    return (
+        solver.model.device.is_cuda
+        and solver._solve_mode == "serial"
+        and solver._articulated_contact_response == "immediate"
+        and solver._row_schedule == "interleaved"
+        and solver._friction_mode == "fixed_normal"
+        and not solver._contact_compliance
+    )
+
+
 def refresh_free_rigid_angular_friction(solver) -> None:
-    """Copy each shape's torsional and rolling coefficients [m] to the rows' buffers on the device; capturable."""
+    """Write each shape's scaled torsional and rolling coefficients [m] to the rows' device buffers; capturable."""
     if not solver._free_rigid_angular_rows:
         return
     model = solver.model
@@ -69,6 +74,7 @@ def refresh_free_rigid_angular_friction(solver) -> None:
         inputs=[
             model.shape_material_mu_torsional,
             model.shape_material_mu_rolling,
+            solver._contact_friction_scale,
         ],
         outputs=[solver._free_rigid_mu_torsional, solver._free_rigid_mu_rolling],
         device=model.device,
@@ -80,7 +86,7 @@ def validate_free_rigid_angular_friction(solver) -> None:
     if solver._free_rigid_angular_rows:
         values = solver.model.shape_material_friction_mode.numpy()
         _check_mode_values(values)
-        _check_coefficients(solver.model, values)
+        _check_coefficients(solver.model, values, solver._contact_friction_scale)
 
 
 def launch_free_rigid_angular_friction_rows(solver, state_aug, contacts, threads: int) -> None:
@@ -243,8 +249,8 @@ def _check_mode_values(values: np.ndarray) -> None:
         raise ValueError(f"shape_material_friction_mode must be a ShapeFrictionMode value, got {int(invalid[0])}")
 
 
-def _check_coefficients(model, modes: np.ndarray) -> None:
-    """Reject a negative or non-finite coefficient that a contact's friction mode can enable.
+def _check_coefficients(model, modes: np.ndarray, scale: float) -> None:
+    """Reject a coefficient a friction mode can enable that is negative, non-finite, or out of float32 range scaled.
 
     A contact gets a component when either shape enables it, so then every shape's coefficient counts.
     """
@@ -257,3 +263,7 @@ def _check_coefficients(model, modes: np.ndarray) -> None:
         values = array.numpy()
         if not np.all(np.isfinite(values)) or np.any(values < 0.0):
             raise ValueError(f"{name} must be finite and non-negative when a shape's friction mode enables it")
+        with np.errstate(over="ignore"):
+            scaled = values.astype(np.float32) * np.float32(scale)
+        if not np.all(np.isfinite(scaled)):
+            raise ValueError(f"{name} * contact_friction_scale must be finite in float32 when a mode enables it")
