@@ -8156,6 +8156,7 @@ def build_distance_limit_rows(
     articulation_active: wp.array[int],
     distance_start: wp.array[int],
     distance_joint: wp.array[int],
+    kinematic_joint_mask: wp.array[int],
     joint_child: wp.array[int],
     joint_X_c: wp.array[wp.transform],
     joint_q_start: wp.array[int],
@@ -8194,7 +8195,7 @@ def build_distance_limit_rows(
     different directions and the anchor can pass the upper bound. With an offset COM, the impulse also changes the
     anchor's transverse velocity and rotation adds integration error, so the anchor can pass a bound. A zero maximum
     distance bounds each axis of ``p`` at zero with two opposing rows, which are always active; with an offset COM the
-    anchor drifts from zero the same way.
+    anchor drifts from zero the same way. A kinematic root follows its prescribed motion and gets no rows.
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
@@ -8204,6 +8205,8 @@ def build_distance_limit_rows(
     dof_start = articulation_dof_start[art]
     for k in range(distance_start[art], distance_start[art + 1]):
         joint = distance_joint[k]
+        if kinematic_joint_mask[joint] != 0:
+            continue
         dof = joint_qd_start[joint]
         lower = joint_limit_lower[dof]
         upper = joint_limit_upper[dof]

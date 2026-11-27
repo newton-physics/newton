@@ -3124,6 +3124,43 @@ def test_zero_max_distance_drift_with_an_offset_com(test, device):
     test.assertLess(peak_distance(1920, 80), 0.25 * peak_distance(480, 20))
 
 
+def test_kinematic_distance_root_gets_no_limit_rows(test, device):
+    """Leave a kinematic DISTANCE root's dynamic child untouched, and bound the root once it turns dynamic."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    root = builder.add_link(is_kinematic=True, mass=1.0, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    child = builder.add_link(mass=0.5, com=wp.vec3(0.1, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    joints = [
+        builder.add_joint_distance(-1, root, max_distance=0.005),
+        builder.add_joint_revolute(root, child, axis=newton.Axis.Z),
+    ]
+    builder.add_articulation(joints)
+    # The root sits on the cap and its prescribed velocity is tangent to it.
+    builder.joint_q[0:3] = [0.005, 0.0, 0.0]
+    builder.joint_qd[0:3] = [0.0, 4.0, 0.0]
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, enable_joint_limits=True)
+    observables = solver.observables({SolverBase.ObservableKind.BODY_PARENT_F})
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    def distance_row_count():
+        # The hinge's default limits are 1e10 away; only the DISTANCE row has a millimeter gap.
+        phi = solver._phi.numpy()[0, : int(solver._constraint_count.numpy()[0])]
+        return int(np.count_nonzero(np.abs(phi) < 1.0))
+
+    solver.step(state_0, state_1, control, None, _TETHER_DT, observables=observables)
+    test.assertEqual(distance_row_count(), 0)
+    test.assertEqual(float(state_1.joint_qd.numpy()[6]), 0.0)
+    np.testing.assert_array_equal(observables.body_parent_f.numpy()[child], 0.0)
+    # The kinematic mask is read every step, so a root made dynamic gets its limit row.
+    flags = model.body_flags.numpy()
+    flags[root] = int(BodyFlags.DYNAMIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    solver.step(state_0, state_1, control, None, _TETHER_DT)
+    test.assertEqual(distance_row_count(), 1)
+
+
 def test_distance_rows_count_toward_the_capacity_warning(test, device):
     """Warn at construction when a bounded DISTANCE joint's rows alone exceed ``articulation_constraint_max``."""
     model, _ = _build_tether(device, start=(0.3, 0.0, 1.0), lower=0.1, upper=0.5)
@@ -3198,6 +3235,7 @@ for _name, _func in (
         test_equal_distance_bounds_on_a_step_through_the_anchor,
     ),
     ("test_zero_max_distance_drift_with_an_offset_com", test_zero_max_distance_drift_with_an_offset_com),
+    ("test_kinematic_distance_root_gets_no_limit_rows", test_kinematic_distance_root_gets_no_limit_rows),
     ("test_distance_rows_count_toward_the_capacity_warning", test_distance_rows_count_toward_the_capacity_warning),
     ("test_multi_world_distance_limits_match_single_worlds", test_multi_world_distance_limits_match_single_worlds),
 ):

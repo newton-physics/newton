@@ -1467,7 +1467,7 @@ class SolverSteel(SolverBase, CouplingInterface):
       rotation adds integration error, so the anchor can pass a bound and drift from a zero
       ``max_distance``. A step that would cross the parent anchor with both bounds active can
       also pass ``max_distance``. A shorter timestep reduces these errors; more iterations of the
-      same rows do not remove them. Any other
+      same rows do not remove them. A kinematic root gets no rows. Any other
       DISTANCE joint raises :class:`NotImplementedError` when
       limits are enabled. Joint limits are not enforced by default. Joint velocity limits
       (:attr:`~newton.Model.joint_velocity_limit`) are enforced as rows when
@@ -10025,6 +10025,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                         distance_active,
                         self._distance_limit_start,
                         self._distance_limit_joint,
+                        self._kinematic_joint_mask,
                         model.joint_child,
                         model.joint_X_c,
                         model.joint_q_start,
