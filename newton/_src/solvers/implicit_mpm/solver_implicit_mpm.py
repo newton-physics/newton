@@ -5552,7 +5552,7 @@ def _rewind_mpm_proxy_bodies_kernel(
     local_body = wp.tid()
     proxy_global = body_local_to_proxy_global[local_body]
     # Rigid (zero-mass) colliders, such as kinematic proxies, keep their prescribed velocity.
-    if proxy_global < 0 or collider_body_mass[local_body] <= 0.0:
+    if proxy_global < 0 or _mpm_collider_body_mass(local_body, collider_body_mass) <= 0.0:
         return
 
     f = coupling_forces[proxy_global]
@@ -5568,6 +5568,14 @@ def _rewind_mpm_proxy_bodies_kernel(
 
 
 @wp.func
+def _mpm_collider_body_mass(body: int, collider_body_mass: wp.array[float]):
+    # Bodies missing from an external collider model act as rigid colliders.
+    if body >= collider_body_mass.shape[0]:
+        return 0.0
+    return collider_body_mass[body]
+
+
+@wp.func
 def _mpm_proxy_body_gravity(
     body: int,
     proxy_flag: int,
@@ -5576,7 +5584,7 @@ def _mpm_proxy_body_gravity(
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
 ):
-    if (body_flags[body] & proxy_flag) == 0 or collider_body_mass[body] <= 0.0:
+    if (body_flags[body] & proxy_flag) == 0 or _mpm_collider_body_mass(body, collider_body_mass) <= 0.0:
         return wp.vec3(0.0)
     return gravity[body_world[body]]
 
@@ -5624,7 +5632,7 @@ def _select_mpm_backward_collider_motion_kernel(
     out_body_q_prev: wp.array[wp.transform],
 ):
     body = wp.tid()
-    if (body_flags[body] & proxy_flag) != 0 and collider_body_mass[body] > 0.0:
+    if (body_flags[body] & proxy_flag) != 0 and _mpm_collider_body_mass(body, collider_body_mass) > 0.0:
         out_body_qd[body] = collider_body_qd[body]
         out_body_q_prev[body] = body_q[body]
     else:
@@ -5655,7 +5663,7 @@ def _sum_mpm_proxy_body_impulses_kernel(
         return
 
     body = collider_body_ids[cid]
-    if body < 0 or body >= body_impulse.shape[0] or (body_flags[body] & proxy_flag) == 0:
+    if body < 0 or body >= body_impulse.shape[0] or body >= body_com.shape[0] or (body_flags[body] & proxy_flag) == 0:
         return
 
     impulse = impulse_scale * collider_impulses[i]
@@ -5683,7 +5691,7 @@ def _apply_mpm_proxy_body_impulses_kernel(
     accumulated_impulse[body] = accumulated_impulse[body] + impulse
 
     qd = body_qd_in[body]
-    mass = collider_body_mass[body]
+    mass = _mpm_collider_body_mass(body, collider_body_mass)
     if mass > 0.0:
         # Matches the collider compliance of the solve.
         rot = wp.transform_get_rotation(body_q[body])
@@ -5712,7 +5720,9 @@ def _harvest_mpm_proxy_wrenches_kernel(
     # Impulses are summed about the collider COM; body_f is referenced to the model COM.
     impulse = body_impulse[body]
     linear = wp.spatial_top(impulse)
-    offset = wp.transform_vector(body_q[body], collider_body_com[body] - body_com[body])
+    offset = wp.vec3(0.0)
+    if body < collider_body_com.shape[0]:
+        offset = wp.transform_vector(body_q[body], collider_body_com[body] - body_com[body])
     torque = wp.spatial_bottom(impulse) + wp.cross(offset, linear)
     wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(linear, torque) / dt)
     body_impulse[body] = wp.spatial_vector()
