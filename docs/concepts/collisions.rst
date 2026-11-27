@@ -1375,7 +1375,7 @@ over all its contacts and up to six more over its touching contacts only, so
 speculative contacts cannot displace the support polygon. Mesh and
 heightfield contacts keep their per-shape-pair reduction. Only the kept
 contacts are written, and if a group cannot be registered in the table, the
-frame keeps every primitive and convex contact. It is an
+frame writes its primitive and convex contacts unreduced. It is an
 approximation: support is sampled, not exact, and keeping
 rim points can strengthen torsional friction. Selection is memoryless, so on
 curved or mesh supports the kept set can change between steps.
@@ -1415,8 +1415,14 @@ Body-pair reduction doesn't support ``contact_matching="sticky"`` or
 hydroelastic contacts. Keep it off when it doesn't reduce the end-to-end step time.
 To check, compare the step time and :attr:`~Contacts.rigid_contact_count` with it
 on and off: a count that stays near its unreduced value means little was reduced,
-or the group table was too small and frames kept every contact (raise
-``BodyPairReductionConfig.hashtable_size_factor``).
+or the group table was too small and frames skipped reduction. Such a pass sets
+:attr:`~Contacts.body_pair_reduction_fallback` and prints a warning once; raise
+``BodyPairReductionConfig.hashtable_size_factor`` to fit the table, and read
+:meth:`~CollisionPipeline.body_pair_reduction_stats` for how close it runs to full.
+With automatic coverage the table reserves several entries per body pair (one
+per budgeted normal bin, voxel and depth layer); lower ``hashtable_size_factor``
+when :meth:`~CollisionPipeline.body_pair_reduction_stats` shows a table far
+larger than ``max_hashtable_entries``.
 
 This body-pair reduction API is experimental and may change without prior notice.
 

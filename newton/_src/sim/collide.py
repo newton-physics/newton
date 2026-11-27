@@ -440,6 +440,13 @@ def _record_reduction_overflow(
         overflow[0] = 1
 
 
+@wp.kernel(enable_backward=False)
+def _record_body_pair_fallback(group_fallback: wp.array[wp.int32], fallback: wp.array[wp.int32]):
+    """Raise the contact stream's fallback flag if body-pair reduction fell back this pass."""
+    if group_fallback[0] != 0:
+        fallback[0] = 1
+
+
 _EMPTY_AABB_EXTENT = wp.constant(1.0e30)
 _TETRAHEDRON_AABB_MIN_SHAPE_COUNT = 128
 
@@ -1784,8 +1791,9 @@ class CollisionPipeline:
         """
         hashtable_size_factor: float = 1.0
         """Multiplier on the group-table capacity, which is derived from the model's contact-pair topology
-        rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames keep every
-        primitive and convex contact, so ``rigid_contact_count`` stays near its unreduced value."""
+        rather than from ``max_triangle_pairs``.  If the table is too small, the affected frames write their
+        primitive and convex contacts unreduced, so ``rigid_contact_count`` stays near its unreduced value; such a
+        frame sets :attr:`newton.Contacts.body_pair_reduction_fallback` and prints a warning once."""
         material_attributes: tuple[str, ...] | None = None
         """Per-shape custom attributes, by full name such as ``"steel:min_torsional_patch_radius"``, that
         must also match for shapes on one body to share a group.  ``None`` uses every per-shape custom
@@ -2837,6 +2845,44 @@ class CollisionPipeline:
         """
         return self._body_pair_reduction
 
+    def body_pair_reduction_stats(self) -> dict | None:
+        """Whole-run body-pair reduction telemetry, or ``None`` when body-pair reduction is disabled.
+
+        Forces a device sync; call it outside CUDA graph capture. Counters accumulate over every collision
+        pass of this pipeline.
+
+        Returns:
+            A dict with the keys below. Every value is an int except ``hashtable_load``, a float.
+
+            - ``total_frames``: collision passes that ran body-pair reduction.
+            - ``fallback_frames``: passes that skipped reduction because the group table saturated. Such a
+              pass writes its staged contacts unreduced, still bounded by the staging and
+              ``rigid_contact_max`` capacities.
+            - ``probe_failures``: group-table insertions that ran out of probes; any one makes its pass a
+              fallback frame.
+            - ``max_hashtable_entries``: peak distinct (group pair, normal bin, cell) entries in one pass.
+            - ``hashtable_capacity``: group-table capacity.
+            - ``hashtable_load``: ``max_hashtable_entries / hashtable_capacity``, the peak load, not the
+              current one.
+            - ``max_contacts_in``, ``max_contacts_kept``: peak contacts staged for and kept by one pass.
+              ``max_contacts_in`` is bounded by the staging capacity, so after a staging overflow it
+              does not measure the capacity the scene needs.
+            - ``sum_contacts_in``, ``sum_contacts_kept``: whole-run totals;
+              ``sum_contacts_kept / sum_contacts_in`` is the achieved reduction ratio.
+            - ``input_overflow_frames``: passes whose contacts overflowed the staging buffer; the excess
+              contacts are dropped.
+            - ``coverage_fallback_contacts``: automatic-coverage contacts kept because their cell holds
+              materially different separations (includes slot winners).
+            - ``cell_clamp_events``: contacts whose spatial cell hit the packed +/-31 range.
+            - ``invariant_violations``: discarded contacts that out-rank a kept one; counted only in
+              verify mode, used by tests.
+
+        .. experimental::
+        """
+        if self._body_pair_reducer is None:
+            return None
+        return self._body_pair_reducer.stats()
+
     def refresh_body_pair_reduction_groups(self):
         """Rebuild body-pair material groups and fixed local coverage bounds.
 
@@ -3506,6 +3552,14 @@ class CollisionPipeline:
                     device=self.device,
                     record_tape=False,
                 )
+        if self.narrow_phase.group_contact_reducer is not None:
+            wp.launch(
+                _record_body_pair_fallback,
+                dim=1,
+                inputs=[self.narrow_phase.group_contact_reducer.group_fallback, contacts._body_pair_reduction_fallback],
+                device=self.device,
+                record_tape=False,
+            )
 
         if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
             raise ValueError(

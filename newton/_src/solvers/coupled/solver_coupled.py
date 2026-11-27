@@ -4521,6 +4521,9 @@ def _prepare_filtered_contact_update_kernel(
         # entry lost contacts, so every filtered buffer mirrors the source flag, refreshed or cached.
         if counter_count > 2:
             dst_counters[2] = src_counters[2]
+        # Slot 4 flags a body-pair reduction fallback, also a whole-pass property.
+        if counter_count > 4:
+            dst_counters[4] = src_counters[4]
         # Packing truncates the source count to its stored prefix. Preserve overflow
         # provenance (including an upstream coupled copy) for the force consumer.
         if soft_update != 0 and counter_count > 3:
