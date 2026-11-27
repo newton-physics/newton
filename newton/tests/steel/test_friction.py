@@ -43,7 +43,7 @@ from newton.tests.steel._fixtures import (
     select_colored_variant,
     set_torsion_radius,
 )
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _response_options(response):
@@ -2530,46 +2530,6 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
         valid = patches.previous.valid.numpy()[:2]
         np.testing.assert_array_equal(valid, (worlds != 0).astype(np.int32))
 
-    def test_separated_region_leaves_touching_anchor_history(self):
-        """Carry a touching anchor's displacement past a separated region of the same pair that is seeded first."""
-        builder = newton.ModelBuilder()
-        ground = builder.add_ground_plane()
-        body = builder.add_body()
-        box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        model = builder.finalize(device=_DEVICE)
-        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2)
-        contacts = newton.CollisionPipeline(model, rigid_contact_max=2).contacts()
-        contacts.rigid_contact_shape0.assign([box] * 2)
-        contacts.rigid_contact_shape1.assign([ground] * 2)
-        contacts.rigid_contact_normal.assign([[0, 0, -1]] * 2)
-        contacts.rigid_contact_count.assign([1])
-        contacts.rigid_contact_point0.zero_()
-        contacts.rigid_contact_point1.zero_()
-        s0, s1 = model.state(), model.state()
-        solver.step(s0, s1, model.control(), contacts, 0.005)
-        patches = solver._friction_patches
-        anchor = int(np.flatnonzero(patches.previous.valid.numpy())[0])
-        displacement = patches.previous.displacement.numpy()
-        displacement[anchor] = [1.0e-3, 0.0, 0.0]
-        patches.previous.displacement.assign(displacement)
-
-        # Contact 0 is 10 mm off the ground: a region of its own, seeded before the touching contact 1,
-        # with friction rows inside the friction gap limit and without them beyond it.
-        contacts.rigid_contact_count.assign([2])
-        contacts.rigid_contact_point0.assign([[0.05, 0, 0.01], [0, 0, 0]])
-        contacts.rigid_contact_point1.assign([[0.05, 0, 0], [0, 0, 0]])
-        for friction_gap_limit in (math.inf, 0.005):
-            with self.subTest(friction_gap_limit=friction_gap_limit):
-                patches.build(
-                    model,
-                    s1,
-                    contacts,
-                    shape_material_mu=model.shape_material_mu,
-                    friction_gap_limit=friction_gap_limit,
-                )
-                np.testing.assert_array_equal(patches.current.source.numpy()[:2], [-1, anchor])
-                np.testing.assert_allclose(patches.current.displacement.numpy()[1, :2], [1.0e-3, 0.0], atol=1.0e-6)
-
     def test_shape_updates_refresh_geometry_and_keep_history(self):
         """Refresh broadphase bounds without discarding anchors on unchanged geometry."""
         builder = newton.ModelBuilder()
@@ -2637,48 +2597,6 @@ class TestSteelFrictionAnchorSelection(unittest.TestCase):
                 rows = solver._mf_row_type.numpy()[0, : solver._mf_constraint_count.numpy()[0]]
                 self.assertEqual(np.count_nonzero(rows == PGS_CONSTRAINT_TYPE_FRICTION), 2)
                 np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], [0, 1, 0])
-
-    def test_separated_contacts_of_a_touching_pair_hold_no_anchors(self):
-        """Place friction only on the touching contact when its neighbours are separated inside the gap limit."""
-        with wp.ScopedDevice(_DEVICE):
-            builder = newton.ModelBuilder()
-            ground = builder.add_ground_plane()
-            body = builder.add_body()
-            box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-            model = builder.finalize()
-            solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, contact_friction_gap_max=0.005)
-            contacts = newton.CollisionPipeline(model, rigid_contact_max=3).contacts()
-            contacts.rigid_contact_count.assign([3])
-            contacts.rigid_contact_shape0.assign([box] * 3)
-            contacts.rigid_contact_shape1.assign([ground] * 3)
-            contacts.rigid_contact_point0.assign([[-0.08, 0, 0.004], [0, 0, 0], [0.08, 0, 0.004]])
-            contacts.rigid_contact_point1.assign([[-0.08, 0, 0], [0, 0, 0], [0.08, 0, 0]])
-            contacts.rigid_contact_normal.assign([[0, 0, -1]] * 3)
-            solver.step(model.state(), model.state(), model.control(), contacts, 0.005)
-            np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], [0, 1, 0])
-
-    def test_separated_contacts_without_touch_keep_nearest_anchors(self):
-        """Keep friction on the nearest contacts of a region that is only speculatively in contact."""
-        with wp.ScopedDevice(_DEVICE):
-            builder = newton.ModelBuilder()
-            ground = builder.add_ground_plane()
-            body = builder.add_body()
-            box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-            model = builder.finalize()
-            solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, contact_friction_gap_max=0.005)
-            contacts = newton.CollisionPipeline(model, rigid_contact_max=3).contacts()
-            contacts.rigid_contact_count.assign([3])
-            contacts.rigid_contact_shape0.assign([box] * 3)
-            contacts.rigid_contact_shape1.assign([ground] * 3)
-            contacts.rigid_contact_point1.assign([[-0.08, 0, 0], [0, 0, 0], [0.08, 0, 0]])
-            contacts.rigid_contact_normal.assign([[0, 0, -1]] * 3)
-            # The touching tolerance of this box is about 1.7 mm: the nearest contacts lie beyond
-            # it and keep friction, and contacts beyond it from the nearest lose it.
-            for gaps, weights in (([0.0003, 0.004, 0.0003], [0.5, 0, 0.5]), ([0.0049, 0.003, 0.0049], [0, 1, 0])):
-                with self.subTest(gaps=gaps):
-                    contacts.rigid_contact_point0.assign([[-0.08, 0, gaps[0]], [0, 0, gaps[1]], [0.08, 0, gaps[2]]])
-                    solver.step(model.state(), model.state(), model.control(), contacts, 0.005)
-                    np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], weights)
 
     def test_cuda_planar_patch_reduces_friction_rows(self):
         """Retain a box face's four normals while using only two friction anchors."""
@@ -2758,6 +2676,103 @@ class TestSteelFrictionAnchorSelection(unittest.TestCase):
         self.assertGreaterEqual(count, 3)
         self.assertAlmostEqual(float(abs(forces[:, 2].sum())), weight, delta=0.05 * weight)
         self.assertLess(float(np.abs(forces[:, 2]).max()), weight)
+
+
+def test_separated_contacts_of_a_touching_pair_hold_no_anchors(test, device):
+    """Place friction only on the touching contact when its neighbours are separated inside the gap limit."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        ground = builder.add_ground_plane()
+        body = builder.add_body()
+        box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, contact_friction_gap_max=0.005)
+        contacts = newton.CollisionPipeline(model, rigid_contact_max=3).contacts()
+        contacts.rigid_contact_count.assign([3])
+        contacts.rigid_contact_shape0.assign([box] * 3)
+        contacts.rigid_contact_shape1.assign([ground] * 3)
+        contacts.rigid_contact_point0.assign([[-0.08, 0, 0.004], [0, 0, 0], [0.08, 0, 0.004]])
+        contacts.rigid_contact_point1.assign([[-0.08, 0, 0], [0, 0, 0], [0.08, 0, 0]])
+        contacts.rigid_contact_normal.assign([[0, 0, -1]] * 3)
+        solver.step(model.state(), model.state(), model.control(), contacts, 0.005)
+        np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], [0, 1, 0])
+
+
+def test_separated_contacts_without_touch_keep_nearest_anchors(test, device):
+    """Keep friction on the nearest contacts of a region that is only speculatively in contact."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        ground = builder.add_ground_plane()
+        body = builder.add_body()
+        box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+        solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2, contact_friction_gap_max=0.005)
+        contacts = newton.CollisionPipeline(model, rigid_contact_max=3).contacts()
+        contacts.rigid_contact_count.assign([3])
+        contacts.rigid_contact_shape0.assign([box] * 3)
+        contacts.rigid_contact_shape1.assign([ground] * 3)
+        contacts.rigid_contact_point1.assign([[-0.08, 0, 0], [0, 0, 0], [0.08, 0, 0]])
+        contacts.rigid_contact_normal.assign([[0, 0, -1]] * 3)
+        # The touching tolerance of this box is about 1.7 mm: the nearest contacts lie beyond
+        # it and keep friction, and contacts beyond it from the nearest lose it.
+        for gaps, weights in (([0.0003, 0.004, 0.0003], [0.5, 0, 0.5]), ([0.0049, 0.003, 0.0049], [0, 1, 0])):
+            with test.subTest(gaps=gaps):
+                contacts.rigid_contact_point0.assign([[-0.08, 0, gaps[0]], [0, 0, gaps[1]], [0.08, 0, gaps[2]]])
+                solver.step(model.state(), model.state(), model.control(), contacts, 0.005)
+                np.testing.assert_allclose(solver._friction_patches.view.weight.numpy()[:3], weights)
+
+
+def test_separated_region_leaves_touching_anchor_history(test, device):
+    """Carry a touching anchor's displacement past a separated region of the same pair that is seeded first."""
+    builder = newton.ModelBuilder()
+    ground = builder.add_ground_plane()
+    body = builder.add_body()
+    box = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverSteel(model, friction_anchor_beta=0.2)
+    contacts = newton.CollisionPipeline(model, rigid_contact_max=2).contacts()
+    contacts.rigid_contact_shape0.assign([box] * 2)
+    contacts.rigid_contact_shape1.assign([ground] * 2)
+    contacts.rigid_contact_normal.assign([[0, 0, -1]] * 2)
+    contacts.rigid_contact_count.assign([1])
+    contacts.rigid_contact_point0.zero_()
+    contacts.rigid_contact_point1.zero_()
+    s0, s1 = model.state(), model.state()
+    solver.step(s0, s1, model.control(), contacts, 0.005)
+    patches = solver._friction_patches
+    anchor = int(np.flatnonzero(patches.previous.valid.numpy())[0])
+    displacement = patches.previous.displacement.numpy()
+    displacement[anchor] = [1.0e-3, 0.0, 0.0]
+    patches.previous.displacement.assign(displacement)
+
+    # Contact 0 is 10 mm off the ground: a region of its own, seeded before the touching contact 1,
+    # with friction rows inside the friction gap limit and without them beyond it.
+    contacts.rigid_contact_count.assign([2])
+    contacts.rigid_contact_point0.assign([[0.05, 0, 0.01], [0, 0, 0]])
+    contacts.rigid_contact_point1.assign([[0.05, 0, 0], [0, 0, 0]])
+    for friction_gap_limit in (math.inf, 0.005):
+        with test.subTest(friction_gap_limit=friction_gap_limit):
+            patches.build(
+                model,
+                s1,
+                contacts,
+                shape_material_mu=model.shape_material_mu,
+                friction_gap_limit=friction_gap_limit,
+            )
+            np.testing.assert_array_equal(patches.current.source.numpy()[:2], [-1, anchor])
+            np.testing.assert_allclose(patches.current.displacement.numpy()[1, :2], [1.0e-3, 0.0], atol=1.0e-6)
+
+
+class TestSteelFrictionAnchorGaps(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_separated_contacts_of_a_touching_pair_hold_no_anchors,
+    test_separated_contacts_without_touch_keep_nearest_anchors,
+    test_separated_region_leaves_touching_anchor_history,
+):
+    add_function_test(TestSteelFrictionAnchorGaps, _fn.__name__, _fn, devices=get_test_devices())
 
 
 def _check_notified_friction_edit(test, device, replace, capture):
