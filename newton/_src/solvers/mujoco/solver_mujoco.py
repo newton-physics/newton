@@ -4694,6 +4694,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         deterministic: wp.DeterministicMode | None = None,
         strict_capacity: bool = False,
         kinematic_switchable_roots: bool = True,
+        run_qacc_smooth: bool = False,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -4807,6 +4808,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 weld so it can be switched to kinematic at runtime. If ``False``, only roots
                 that are kinematic in some world at construction get one, which keeps the
                 compiled MuJoCo model free of unused welds.
+            run_qacc_smooth: If ``False`` (default), MuJoCo Warp starts its Newton solver from the
+                previous step's acceleration and skips the unconstrained acceleration ``qacc_smooth``
+                and the factorization of the inertia matrix, which makes the step faster. Both are
+                then stale after a step: pass ``True`` to read ``mjw_data.qacc_smooth``, and call
+                ``mujoco_warp.factor_m`` before ``mujoco_warp.solve_m``. MuJoCo Warp computes both
+                regardless with the CG solver, noslip iterations, warmstart disabled, no solver
+                iterations, or ``njmax=0``, and native MuJoCo (``use_mujoco_cpu=True``) always does.
 
         """
         if update_data_interval is not None:
@@ -5239,6 +5247,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
+            self.mjw_model.opt.run_qacc_smooth = run_qacc_smooth
         if use_speculative_contacts:
             if self.mjw_model.opt.integrator not in (
                 mujoco.mjtIntegrator.mjINT_EULER,
