@@ -7384,14 +7384,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._option_world = self._resolve_option_world(model, separate_worlds, flex_particle_world)
 
         if not separate_worlds and self._option_world == 0:
-            # The single MuJoCo world uses world 0's gravity, which kinematic bodies ignore.
+            # The single MuJoCo world uses world 0's gravity, which kinematic bodies and static flex particles ignore.
             kinematic = (model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+            global_dynamic = np.any((model.body_world.numpy() == -1) & ~kinematic)
+            if len(particle_world):
+                active = model.particle_flags.numpy() & int(ParticleFlags.ACTIVE) != 0
+                simulated = self._flex_particles & active & (model.particle_mass.numpy() > 0.0)
+                global_dynamic |= np.any(particle_world[simulated] == -1)
             gravity = model.gravity.numpy()
-            if np.any((model.body_world.numpy() == -1) & ~kinematic) and not np.array_equal(gravity[0], gravity[-1]):
+            if global_dynamic and not np.array_equal(gravity[0], gravity[-1]):
                 raise ValueError(
-                    "SolverMuJoCo simulates the bodies of global world -1 and world 0 in one MuJoCo world, which "
-                    f"has one gravity, but got {gravity[-1]} for global world -1 and {gravity[0]} for world 0. "
-                    "Set both to the same value, or move the dynamic global bodies into world 0."
+                    "SolverMuJoCo simulates the bodies and flex particles of global world -1 and world 0 in one "
+                    f"MuJoCo world, which has one gravity, but got {gravity[-1]} for global world -1 and "
+                    f"{gravity[0]} for world 0. Set both to the same value, or move the dynamic global bodies and "
+                    "flex particles into world 0."
                 )
 
         # Validate model compatibility with separate_worlds mode

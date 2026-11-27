@@ -212,6 +212,25 @@ class TestMuJoCoFlex(unittest.TestCase):
                     state_1.particle_qd.numpy(), [[0.0, 0.0, 0.0]] + [[0.0, 0.0, -2.0 * dt]] * 2, atol=1.0e-6
                 )
 
+    def test_global_flex_gravity_mismatch_fails(self):
+        """Reject different gravity for dynamic global flex particles and world 0 in one MuJoCo world."""
+
+        def make_model(world_gravity, pinned=False):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+            _add_rope(builder, 0.0)
+            if pinned:
+                builder.particle_mass[:] = [0.0] * builder.particle_count
+            builder.begin_world(gravity=world_gravity)
+            _add_rope(builder, 1.0)
+            builder.end_world()
+            return builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "one gravity"):
+            SolverMuJoCo(make_model((0.0, 0.0, -5.0)), use_mujoco_cpu=True)
+        # Equal gravity, and a global world without dynamic flex particles, stay supported.
+        SolverMuJoCo(make_model((0.0, 0.0, -2.0)), use_mujoco_cpu=True)
+        SolverMuJoCo(make_model((0.0, 0.0, -5.0), pinned=True), use_mujoco_cpu=True)
+
     def test_authored_flexes_keep_settings_in_each_world(self):
         """Authored flexes keep their settings per world, and the remaining elements are grouped automatically."""
         world = _builder()
