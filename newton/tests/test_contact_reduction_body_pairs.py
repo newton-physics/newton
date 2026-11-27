@@ -27,10 +27,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.contact_reduction_body_pairs import (
-    BodyPairReduction,
-    build_reduction_group_pair_bound,
-)
+from newton._src.geometry.contact_reduction_body_pairs import build_reduction_group_pair_bound
 from newton._src.geometry.contact_reduction_global import (
     GROUP_CELL_COORD_MAX,
     _group_pos_key,
@@ -529,7 +526,7 @@ class TestBodyPairReductionCounts(unittest.TestCase):
 
     def test_stats_doc_tracks_packed_cell_range(self):
         """Keep the public clamp telemetry contract aligned with its bit layout."""
-        self.assertIn(f"+/-{GROUP_CELL_COORD_MAX} range", BodyPairReduction.stats.__doc__)
+        self.assertIn(f"+/-{GROUP_CELL_COORD_MAX} range", newton.CollisionPipeline.body_pair_reduction_stats.__doc__)
 
     def _grid_on_plane(self, reduce_body_pairs):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
