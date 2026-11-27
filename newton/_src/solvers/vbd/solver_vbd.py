@@ -311,7 +311,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Attachments are compliant-ALM rows with a limit-row penalty: a finite
           ``stiffness`` keeps its physical spring offset under load, while infinite
           stiffness is the hard limit of the same row and ignores ``damping``.
-          Multipliers are retained across steps, scaled by 0.999 per step. Finite
+          Multipliers are retained across steps, scaled by 0.999 per step by default. Finite
           iterations can leave residual error, especially for conflicting constraints.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.

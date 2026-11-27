@@ -2279,6 +2279,10 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
         warnings.simplefilter("error", DeprecationWarning)
         solver = newton.solvers.SolverVBD(model)
         test.assertTrue(solver.rigid_compliant_alm)
+        test.assertEqual(
+            (solver.rigid_joint_alpha, solver.rigid_contact_alpha, solver.rigid_avbd_gamma),
+            (0.0, 0.0, 0.999),
+        )
     with test.assertWarnsRegex(NewtonDeprecationWarning, "rigid_compliant_alm=True") as warning:
         solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     test.assertEqual(warning.filename, __file__)
@@ -2292,18 +2296,28 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
         # Other invalid inputs are not masked by the deprecation warning, even when validated late.
         with test.assertRaisesRegex(ValueError, "rigid_joint_linear_kd"):
             newton.solvers.SolverVBD(model, rigid_compliant_alm=True, rigid_joint_linear_kd=np.nan)
+        for parameter in (
+            "rigid_avbd_alpha",
+            "rigid_avbd_joint_alpha",
+            "rigid_avbd_contact_alpha",
+            "rigid_avbd_gamma",
+        ):
+            with test.subTest(parameter=parameter):
+                with test.assertRaisesRegex(ValueError, parameter):
+                    newton.solvers.SolverVBD(model, **{parameter: 1.5})
     # Deprecated stabilization and retention options still apply their explicit values.
-    for parameter, attribute in (
-        ("rigid_avbd_alpha", "rigid_joint_alpha"),
-        ("rigid_avbd_joint_alpha", "rigid_joint_alpha"),
-        ("rigid_avbd_contact_alpha", "rigid_contact_alpha"),
-        ("rigid_avbd_gamma", "rigid_avbd_gamma"),
+    for parameter, attributes in (
+        ("rigid_avbd_alpha", ("rigid_joint_alpha", "rigid_contact_alpha")),
+        ("rigid_avbd_joint_alpha", ("rigid_joint_alpha",)),
+        ("rigid_avbd_contact_alpha", ("rigid_contact_alpha",)),
+        ("rigid_avbd_gamma", ("rigid_avbd_gamma",)),
     ):
         with test.subTest(parameter=parameter):
             with test.assertWarnsRegex(NewtonDeprecationWarning, parameter) as warning:
                 solver = newton.solvers.SolverVBD(model, **{parameter: 0.5})
             test.assertEqual(warning.filename, __file__)
-            test.assertEqual(getattr(solver, attribute), 0.5)
+            for attribute in attributes:
+                test.assertEqual(getattr(solver, attribute), 0.5)
     for parameter, value in (
         ("rigid_avbd_beta", 0.0),
         ("rigid_avbd_beta", 5.0),
