@@ -2852,7 +2852,7 @@ class CollisionPipeline:
         pass of this pipeline.
 
         Returns:
-            A dict of ints, except ``hashtable_load`` (float), with these keys:
+            A dict with the keys below. Every value is an int except ``hashtable_load``, a float.
 
             - ``total_frames``: collision passes that ran body-pair reduction.
             - ``fallback_frames``: passes that skipped reduction because the group table saturated. Such a
