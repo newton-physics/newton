@@ -27,11 +27,12 @@ from .constants import (
     FLOAT64_EPS,
     HINGE_CONNECT_HALF_SPAN,
     MJ_MINMU,
+    MJC_OBJ_SITE,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from .enums import EqType, _JointType
+from .enums import CtrlSource, CtrlType, EqType, _JointType
 
 
 def _import_contact_force_fn():
@@ -1491,6 +1492,7 @@ def update_connect_constraint_anchors_kernel(
     mjc_eq_to_newton_eq: wp.array2d[wp.int32],
     mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
     eq_constraint_type: wp.array[wp.int32],
+    eq_objtype: wp.array[int],
     jnt_connect_hinge_side: wp.array2d[wp.int32],
     joint_X_p: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
@@ -1518,6 +1520,8 @@ def update_connect_constraint_anchors_kernel(
     newton_eq = src[0]
     newton_jnt = src[1]
 
+    if eq_objtype[mjc_eq] == MJC_OBJ_SITE:
+        return
     data = eq_data_out[world, mjc_eq]
     if newton_eq < 0 and newton_jnt < 0:
         return
@@ -1665,9 +1669,9 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
 # Import control source/type enums and create warp constants
 
-CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
-CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
-CTRL_TYPE_DCMOTOR = wp.constant(3)
+CTRL_SOURCE_JOINT_TARGET = wp.constant(int(CtrlSource.JOINT_TARGET))
+CTRL_SOURCE_CTRL_DIRECT = wp.constant(int(CtrlSource.CTRL_DIRECT))
+CTRL_TYPE_DCMOTOR = wp.constant(int(CtrlType.DCMOTOR))
 
 
 @wp.func
@@ -2266,7 +2270,6 @@ def update_actuator_properties_kernel(
 
     world_newton_idx = world * actuators_per_world + newton_actuator_idx
     actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
-
     if source != CTRL_SOURCE_CTRL_DIRECT:
         if newton_actuator_has_forcerange and newton_actuator_has_forcerange[world_newton_idx]:
             actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
@@ -2454,6 +2457,8 @@ def update_jnt_properties_kernel(
     jnt_type: wp.array[int],
     jnt_qposadr: wp.array[int],
     qpos0: wp.array2d[float],
+    native_joint_type: wp.array[int],
+    native_joint_range: wp.array[wp.vec2],
     # outputs
     jnt_solimp: wp.array2d[vec5],
     jnt_stiffness: wp.array2d[float],
@@ -2491,10 +2496,63 @@ def update_jnt_properties_kernel(
     ref = float(0.0)
     if jnt_type[mjc_jnt] >= _JointType.SLIDE:
         ref = qpos0[world, jnt_qposadr[mjc_jnt]]
-    jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof] + ref, joint_limit_upper[newton_dof] + ref)
+    lower = joint_limit_lower[newton_dof]
+    upper = joint_limit_upper[newton_dof]
+    jnt_range[world, mjc_jnt] = wp.vec2(lower + ref, upper + ref)
     # update joint actuator force range (effort limit)
     effort_limit = joint_effort_limit[newton_dof]
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)
+
+    if native_joint_type and native_joint_type[newton_dof] == jnt_type[mjc_jnt]:
+        if jnt_type[mjc_jnt] < _JointType.SLIDE:
+            jnt_range[world, mjc_jnt] = native_joint_range[newton_dof]
+
+
+@wp.kernel
+def update_native_joint_effort_limits_kernel(
+    mjc_jnt_to_newton_dof: wp.array2d[int],
+    jnt_type: wp.array[int],
+    joint_effort_limit: wp.array[float],
+    native_joint_type: wp.array[int],
+    native_joint_effort_baseline: wp.array[float],
+    native_joint_effort_limited: wp.array[wp.bool],
+    native_joint_actfrcrange: wp.array[wp.vec2],
+    jnt_actfrclimited: wp.array[wp.bool],
+    jnt_actfrcrange: wp.array2d[wp.vec2],
+):
+    """Preserve source limits until core effort values change, independently per world."""
+    joint = wp.tid()
+    native = bool(False)
+    limited = bool(False)
+    for world in range(mjc_jnt_to_newton_dof.shape[0]):
+        dof = mjc_jnt_to_newton_dof[world, joint]
+        if dof < 0:
+            continue
+        if native_joint_type[dof] == jnt_type[joint]:
+            native = True
+            limited = (
+                limited
+                or native_joint_effort_limited[dof]
+                or joint_effort_limit[dof] != native_joint_effort_baseline[dof]
+            )
+        else:
+            limited = True
+    if not native:
+        return
+    # MuJoCo shares this flag across worlds; unlimited worlds need unbounded ranges.
+    if jnt_type[joint] >= _JointType.SLIDE:
+        jnt_actfrclimited[joint] = limited
+    for world in range(mjc_jnt_to_newton_dof.shape[0]):
+        dof = mjc_jnt_to_newton_dof[world, joint]
+        if dof < 0 or native_joint_type[dof] != jnt_type[joint]:
+            continue
+        if jnt_type[joint] < _JointType.SLIDE:
+            jnt_actfrcrange[world, joint] = native_joint_actfrcrange[dof]
+        elif joint_effort_limit[dof] == native_joint_effort_baseline[dof]:
+            if native_joint_effort_limited[dof] or not limited:
+                jnt_actfrcrange[world, joint] = native_joint_actfrcrange[dof]
+            else:
+                jnt_actfrcrange[world, joint] = wp.vec2(-wp.inf, wp.inf)
 
 
 @wp.kernel
@@ -3161,6 +3219,20 @@ def update_eq_properties_kernel(
 
 
 @wp.kernel
+def restore_native_tendon_springlength_kernel(
+    mapping: wp.array2d[wp.int32],
+    fixed: wp.array[wp.bool],
+    lengths: wp.array[wp.vec2],
+    output: wp.array2d[wp.vec2],
+):
+    world, tendon = wp.tid()
+    row = mapping[world, tendon]
+    if row >= 0 and fixed[row]:
+        length = lengths[row]
+        output[world, tendon] = wp.vec2(length[0], wp.max(length[0], length[1]))
+
+
+@wp.kernel
 def update_tendon_properties_kernel(
     mjc_tendon_to_newton_tendon: wp.array2d[wp.int32],
     # Newton tendon properties (inputs)
@@ -3230,6 +3302,7 @@ def update_eq_data_and_active_kernel(
     mjc_eq_to_newton_eq: wp.array2d[wp.int32],
     # Newton equality constraint data
     eq_constraint_type: wp.array[wp.int32],
+    eq_objtype: wp.array[int],
     eq_constraint_anchor: wp.array[wp.vec3],
     eq_constraint_relpose: wp.array[wp.transform],
     eq_constraint_polycoef: wp.array2d[wp.float32],
@@ -3259,7 +3332,10 @@ def update_eq_data_and_active_kernel(
     # Read existing data to preserve fields we don't update
     data = eq_data_out[world, mjc_eq]
 
-    if constraint_type == EqType.CONNECT:
+    if eq_objtype[mjc_eq] == MJC_OBJ_SITE:
+        if constraint_type == EqType.WELD:
+            data[10] = eq_constraint_torquescale[newton_eq]
+    elif constraint_type == EqType.CONNECT:
         # CONNECT: data[0:3] = anchor
         anchor = eq_constraint_anchor[newton_eq]
         data[0] = anchor[0]
@@ -3624,6 +3700,24 @@ def reset_world_buffers_kernel(
         act[worldid, i] = 0.0
     if i < xfrc_applied.shape[1]:
         xfrc_applied[worldid, i] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def shift_actuator_history_time_kernel(
+    world_mask: wp.array[wp.bool],
+    actuator_history: wp.array2d[wp.vec2i],
+    actuator_historyadr: wp.array2d[int],
+    time: wp.array[float],
+    history: wp.array2d[float],
+):
+    # MuJoCo Warp resets history at time zero; Newton reset preserves simulation time.
+    world, actuator = wp.tid()
+    if world_mask and not world_mask[world]:
+        return
+    nsample = actuator_history[world % actuator_history.shape[0], actuator][0]
+    start = actuator_historyadr[world % actuator_historyadr.shape[0], actuator] + 2
+    for sample in range(nsample):
+        history[world, start + sample] += time[world]
 
 
 @wp.kernel(enable_backward=False)

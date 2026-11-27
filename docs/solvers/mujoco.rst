@@ -33,6 +33,341 @@ section at the bottom collects the most useful anchor points.
    GPU-resident analogues.
 
 
+.. _native-mjcf-import:
+
+Native MJCF import
+------------------
+
+.. experimental::
+
+   :meth:`ModelBuilder.add_mjcf_native` is an independent, opt-in importer.
+   Its coverage and mapping to Newton may change.
+
+Choose the importer explicitly:
+
+.. code-block:: python
+
+   builder.add_mjcf("robot.xml")         # Existing Python importer
+   builder.add_mjcf_native("robot.xml")  # Native MuJoCo parser and compiler
+
+The native method requires MuJoCo (``uv sync --extra sim``) and accepts the
+same keyword arguments except ``parse_cameras``; cameras are omitted with a
+warning. The existing method has no new dependency.
+MuJoCo resolves defaults, includes, frames, replication, meshes, and inertia;
+the importer copies the result into Newton and retains no ``MjSpec`` or
+``MjModel``. Each source must compile independently before attachment.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Area
+     - Supported features
+   * - Bodies and geometry
+     - Mass and inertia, mocap, gravity compensation, primitives, meshes,
+       heightfields, materials, textures, sites, fluid coefficients,
+       surface velocity, and adhesion.
+   * - Joints
+     - Free, ball, scalar, and compound joints; references, limits,
+       asymmetric effort bounds, friction, armature, polynomial passive
+       forces, and ``springdamper``.
+   * - Tendons and equalities
+     - Fixed and spatial tendons, wrapping, pulleys, polynomial passive
+       forces, body/site connect and weld constraints, and joint/tendon
+       polynomial equalities, including compound-joint axis references.
+   * - Actuators
+     - Scalar-control transmissions, general and shortcut parameters,
+       activation dynamics, ranges, gear, muscle placeholders, DC motors,
+       groups, and delay/history.
+   * - Contacts and options
+     - Pairs, exclusions, masks, raw constraint parameters, registered
+       solver options, native flags, and actuator-length compiler settings,
+       subject to the selected backend's support.
+
+Unsupported features raise errors: ball joints combined with other joints on
+one body, flexes, plugins, SDF geoms, actuator callbacks, PID dynamics,
+multi-input actuators, and joint/tendon spring plasticity (positive
+``springyield``). Sensors, cameras, lights, keyframes, skins, custom elements,
+and unhandled MuJoCo user data are omitted with a warning.
+
+Defaults and composition
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+For joint damping and armature and geom gap and friction, precedence is:
+explicit MJCF values, inherited MJCF defaults, then builder defaults.
+Explicit zeros take precedence. Authored sliding friction sets both Newton
+friction coefficients; omitted friction keeps the builder's static/dynamic
+pair. Authored ``condim`` sets the shape's friction mode; otherwise the builder's
+``friction_mode`` applies. The fallback gap is ``default_shape_cfg.gap`` when set, otherwise
+``rigid_gap``. Builder gaps are in meters and do not scale with the import;
+file-authored gaps do. ``armature_scale`` applies to both sources.
+The ``<freejoint>`` shortcut ignores joint defaults. Other mapped physical
+fields use MuJoCo's built-in defaults; Newton-only settings keep builder defaults.
+
+Passive stiffness and rest positions populate ``joint_stiffness`` and
+``joint_rest_q``; authored values override builder defaults, including zeros.
+Scalar rest positions use ``springref - ref`` when either
+is authored, otherwise ``default_joint_cfg.rest_q`` in Newton units.
+Authored or inherited ``solreflimit`` overrides builder limit gains;
+when omitted, customized ``limit_ke`` / ``limit_kd`` use the assembled model's
+effective inertia, otherwise MuJoCo's default applies. Raw contact ``solref``
+is retained for ``SolverMuJoCo`` and also approximated as Newton contact gains.
+
+Attachment, copying, fixed-joint collapsing, and replication use Newton's
+builder. Automatic parameters resolve against the assembled model:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Resolution stage
+     - Parameters
+   * - Builder finalization
+     - Inherited control/activation ranges, fixed-tendon spring lengths,
+       automatic weld poses, and supported passive ``springdamper`` and
+       joint-target ``dampratio`` gains.
+   * - ``SolverMuJoCo`` construction
+     - Muscle placeholders, automatic actuator length ranges, spatial-tendon
+       spring lengths, and gains requiring MuJoCo-specific inertia resolution.
+
+Fixed-tendon lengths use assembled ``joint_rest_q`` plus ``dof_ref``; weld poses
+use the reference configuration, including anchors and converted loop-joint
+frames. Initial joint state does not determine these values. Finalization
+publishes concrete model values and leaves the builder's automatic declarations
+available for further composition. Explicit edits to the resolved ranges,
+lengths, and poses survive solver rebuilding.
+Fixed-tendon lengths, including signed lengths equal to ``-1``, stay fixed during
+constant refreshes; rebuild after editing them. See :ref:`gain resolution <mujoco-imported-gains>`
+for gain overrides, deferred cases, and behavior after inertia changes.
+Editing either imported passive spring coefficient before finalization,
+including to zero, overrides that coefficient.
+
+MuJoCo-only parameters live in typed ``mujoco`` custom attributes whose references
+survive composition. Explicit zero remains distinct from automatic values, and
+limit flags retain ``auto`` / ``true`` / ``false``. Finite Newton joint bounds
+supersede inactive source bounds during ``inheritrange`` resolution. Inactive
+scalar ranges are not preserved in solver models or MJCF export; ball limits
+remain solver-specific. Other solvers consume the Newton core fields.
+
+Model-wide options are shared; per-world options belong to the current builder
+world. Use ``parse_mujoco_options=False`` when attaching an asset that should not
+replace the assembled model's settings. Gravity and timestep remain controlled
+by Newton and the solver. After model edits, notify ``ACTUATOR_PROPERTIES`` for
+actuator ranges or ``JOINT_DOF_FORCE_PROPERTIES`` for joint gains.
+
+Actuator controls
+~~~~~~~~~~~~~~~~~
+
+With ``ctrl_direct=False``, representable position/velocity servos use Newton
+joint targets. Other actuators use ``control.mujoco.ctrl``. Set
+``ctrl_direct=True`` to preserve native scalar actuator controls throughout.
+
+* **Scalar servos:** a nonzero scalar gear ``g`` on a hinge or slide is folded
+  into gains, explicit damping, and armature by ``g**2``. Force ranges multiply
+  by ``g`` and control ranges divide by ``g``, sorting endpoints for negative
+  gears. Commands use ``target = ctrl / g``; position targets also subtract
+  the joint reference. Zero or vector gears retain direct control.
+* **Ball servos:** without activation dynamics, position and velocity servos
+  map to three angular target axes, replacing the authored gear. Position
+  targets are quaternions; velocity targets are three-component angular
+  velocities. Gains, history, groups, and control/force bounds apply to each
+  axis. A compatible position/velocity pair produces six MuJoCo actuators,
+  matching legacy import. With ``ctrl_direct=True``, each authored actuator
+  keeps its original gear and one scalar control slot.
+* **Paired scalar servos:** one position and one velocity servo without
+  activation dynamics share ``POSITION_VELOCITY`` targets only when the
+  position servo has no damping of its own. With position ``kv`` or
+  ``dampratio``, the first servo uses joint targets and the second reads its
+  MJCF-order slot in ``control.mujoco.ctrl``. Newton's two target gains cannot
+  represent independent position damping and velocity gain; legacy import
+  instead shares their damping.
+* **Groups and history:** ``group``, ``inheritrange``, ``delay``, ``nsample``,
+  and ``interp`` preserve joint-target control. Control limits apply to either
+  source. MuJoCo-Warp warns instead of honoring ``actuatorgroupdisable``;
+  use ``use_mujoco_cpu=True`` for group disabling. Imported timestep initializes
+  history timestamps; ``step(..., dt=...)`` sets the simulation timestep.
+* **DC motors:** single-input ``voltage``, ``pos``, and ``vel`` motors use
+  direct controls and the solver's existing construction and replication
+  restrictions. Linear position/velocity control ranges scale with import;
+  voltage ranges do not. Actuator damping and armature remain separate from
+  joint/tendon passive parameters on both backends.
+
+Other Newton solvers do not evaluate ``control.mujoco.ctrl``. For unit-gear
+hinge/slide servos with independent controls, import with ``ctrl_direct=True``
+and evaluate each servo separately with :class:`~newton.actuators.Actuator`
+and :class:`~newton.actuators.DrivePD`. Apply control limits before evaluation,
+keep each servo's effort limits, and accumulate into ``control.joint_f``, clearing
+it before every evaluation pass. The position servo's velocity target is zero;
+the velocity servo uses the commanded velocity. This requires caller changes
+and does not cover ball, tendon, or other coupled transmissions.
+
+Compilation and asset paths
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Native compilation validates the complete source before filtering. Excluded
+assets must still compile, retained bodies keep their compiled inertia, and
+compiler optimizations such as ``fusestatic`` and ``alignfree`` take effect.
+References use authored MJCF names, not generated Newton hierarchical labels.
+Use ``childclass`` for descendant defaults and author body properties, pair
+endpoints, and mesh reference poses on concrete elements. Unknown XML attributes
+are errors; XML-string custom callbacks require legacy import.
+
+A moving body with zero mass can compile when a fixed descendant supplies
+positive mass and inertia in the same source. A descendant behind another joint,
+or a payload attached by a later import, cannot satisfy that compiler check.
+Assemble the subtree in MJCF or use ``add_mjcf()`` for an incomplete model.
+For a free root, omitting its authored joint and passing ``floating=True`` lets
+Newton add the joint after compilation, allowing later payload attachment.
+This does not resolve massless joints inside the subtree. Zero-mass geoms and
+fixed bodies remain supported.
+
+Native imports use MuJoCo's asset-path rules. Legacy import instead resolves
+``assetdir`` and ``meshdir`` per included file. To migrate, replace per-file
+``assetdir``, ``meshdir``, and ``texturedir`` overrides with paths relative to
+the XML file declaring each asset:
+for example, replace ``assetdir="assets"`` plus ``file="cube.stl"`` with
+``file="assets/cube.stl"``. Keep files in place and retain other compiler
+attributes. MuJoCo checks the main model directory first, so avoid using one
+relative path for different assets in the main file and its includes.
+
+A custom ``path_resolver`` uses Newton's existing include and asset loader
+before native parsing. This preserves per-file directory scoping and supports
+repeated includes that MuJoCo rejects, while still rejecting include cycles:
+
+.. code-block:: python
+
+   from pathlib import Path
+
+   def resolve(base_dir, filename):
+       return str((Path(base_dir or ".") / filename).resolve())
+
+   builder.add_mjcf_native("robot.xml", path_resolver=resolve)
+
+Expanded objects must still have unique MJCF names. Both importers raise
+``FileNotFoundError`` for missing source files. A missing include raises
+``ValueError`` with MuJoCo's diagnostic on the native path, or
+``FileNotFoundError`` through the legacy loader. Custom resolver errors propagate.
+
+Joints and geometry
+~~~~~~~~~~~~~~~~~~~
+
+Compound joints follow Newton's convention: slides precede hinges, preserving
+order within each group. As in legacy import, hinges share a point on their
+axis lines when possible; otherwise they use the first hinge's position and
+log a warning. Slides after nonparallel hinges emit a deprecation warning
+because reordering changes their motion. See :ref:`merged MJCF joints <mjcf-merged-joints>`.
+Properties and actuator targets follow the corresponding DOFs.
+One-ended joint equalities remain MuJoCo rows. Nonlinear joint equalities warn
+when approximated as generic linear mimics, retaining their full polynomial for
+``SolverMuJoCo``. Scaling adjusts slide/linear-tendon polynomial coefficients,
+translational length ranges, and servo controls; force controls and angular
+ranges do not scale.
+
+Compiled meshes preserve world-space triangle surfaces and concavities.
+Their local frames and vertex indexing can differ from USD or legacy MJCF,
+which can change contact reduction, SDF samples, and trajectories.
+Both importers require an explicit ``mesh.build_sdf()`` before ``finalize()``
+to create a Newton SDF; builder resolution defaults do not generate one.
+A geom referencing a mesh still defaults to ``type="sphere"`` in both importers:
+the mesh fits the sphere unless ``type="mesh"`` is authored or inherited.
+
+Native compilation requires at least four mesh vertices and rejects planar
+collision hulls, even with explicit body inertia. Planar visual meshes can
+compile with ``inertia="shell"``, disabled contact masks, and no explicit pairs.
+Legacy import supports planar colliders with
+``SolverMuJoCo(use_mujoco_contacts=False)`` using the original Newton mesh.
+For solid primitives with explicit mass, native import applies MuJoCo's
+``1e-14`` m³ volume cutoff; legacy uses ``1e-12`` for spheres, cylinders,
+capsules, and ellipsoids and no cutoff for boxes. Newton inertia validation
+still applies. Volumes at or below the cutoff contribute no mass or inertia.
+
+Built-in textures use a tinted mean-color approximation; mesh texture images
+are retained, preferring RGB over RGBA layers. Non-negative roughness and
+metallic values are retained; negative sentinels leave them unspecified.
+Opacity follows Newton's clamping convention. Non-finite mesh reference poses
+are rejected before modifying the builder.
+
+Batched worlds
+~~~~~~~~~~~~~~
+
+In multi-world models, joint/tendon polynomials, geom surface velocity
+and adhesion, and actuator delay/interpolation retain per-world values at
+solver construction. Fluid coefficients, actuator groups, and history sample
+counts must match across corresponding entities. Joint, tendon, and actuator
+limit flags must match, though enabled bounds may differ. Actuator targets,
+dynamics, activation layouts, and gain/bias types must match in the same order.
+Explicit spatial-tendon spring lengths must also match. Mismatches raise ``ValueError``.
+Rebuild the solver after editing these native attributes.
+
+Joint ``springdamper`` and fixed-tendon spring lengths resolve independently
+per world. Automatic spatial-tendon spring lengths and muscle length ranges
+depend on the compiled template, so worlds must agree on their determining inputs.
+
+.. _native-mjcf-custom-attributes:
+
+Custom attribute extraction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Register an experimental
+:attr:`ModelBuilder.CustomAttribute.mjcf_native_value_transformer` to extract
+standard MJCF fields or application metadata from ``user`` arrays:
+
+.. code-block:: python
+
+   builder.add_custom_attribute(newton.ModelBuilder.CustomAttribute(
+       name="surface_tag",
+       dtype=wp.float32,
+       frequency=newton.Model.AttributeFrequency.SHAPE,
+       default=-1.0,
+       mjcf_native_value_transformer=lambda element, context:
+           element.userdata[0] if len(element.userdata) else None,
+   ))
+   builder.add_mjcf_native("robot.xml")
+
+Callbacks receive typed ``MjSpec`` elements after defaults and includes resolve,
+but before scaling, compilation, and filtering. The context contains ``spec``,
+the ``CustomAttribute`` as ``attr``, and import ``scale``. Return a compatible
+value or ``None`` to keep the Newton default. Arrays are copied; custom values
+are not scaled automatically. Treat native objects as read-only and do not
+retain them. Typed values cannot distinguish omission from an authored default.
+
+Supported frequencies are:
+
+* ``BODY``: bodies except the world body.
+* ``SHAPE``: geoms and sites.
+* ``JOINT``: the first retained authored joint of each Newton joint.
+* ``JOINT_DOF``: each source joint, broadcast to its DOFs and reordered with them.
+* ``WORLD`` and ``ONCE``: the spec, when ``parse_mujoco_options=True``.
+  ``WORLD`` belongs to the current builder world, including global world ``-1``;
+  ``ONCE`` is model-wide.
+* ``mujoco:actuator``, ``mujoco:tendon``, ``mujoco:pair``, and
+  ``mujoco:equality_constraint``: their native elements. Register these frequencies
+  first with ``SolverMuJoCo.register_custom_attributes(builder)``.
+
+Only elements retained by compilation and conversion receive extracted values.
+Synthetic fixed/base joints keep defaults; replaced root joints do not transfer
+source values. Subsequent composition uses the ordinary custom-attribute rules.
+Unsupported frequencies raise ``ValueError``; callback exceptions propagate
+before bodies, shapes, or joints are added. This hook is independent of
+``mjcf_attribute_name`` and the legacy ``mjcf_value_transformer`` and does not
+allow unknown XML attributes.
+
+Comparing importers
+~~~~~~~~~~~~~~~~~~~
+
+Run the same MJCF, site, and actuator tests against both entry points:
+
+.. code-block:: bash
+
+   uv run --extra dev --extra sim -m newton.tests.compare_mjcf_importers --output /tmp/mjcf-comparison.json
+
+Use ``--importer native`` or ``--importer legacy`` to select one importer and
+``-k`` to filter test names. The JSON report includes failures, tracebacks,
+blocked tests, and import call counts; either importer's failure makes the
+command fail. Differences can reflect unsupported conversion, stricter native
+validation, or Newton conventions. The pass rate does not measure arbitrary
+MJCF equivalence.
+
 .. _mujoco-determinism:
 
 Determinism
@@ -174,6 +509,13 @@ root body whose joints are replaced through ``floating``, ``base_joint`` or
 
 Joint reference values (``ref``)
 --------------------------------
+
+Legacy MJCF import treats disabled hinge and slide ranges like omitted ranges,
+using the builder's default joint limits. It retains inactive ranges locally
+only to resolve actuator ``inheritrange`` during import. Native import uses
+unlimited scalar bounds and resolves ``inheritrange`` at builder finalization.
+Neither importer preserves inactive scalar ranges in ``jnt_range`` or
+``save_to_mjcf`` output; their values do not affect joint-limit forces.
 
 MuJoCo scalar joints (hinge and slide) may carry a reference value
 (MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the
@@ -618,13 +960,49 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
-For MJCF position-only drives with ``dampratio`` and the default joint-target
-control mapping, solver construction resolves damping using each world's
-initial physical inertia, authored armature, and position gain. It replaces the imported
-damping-ratio placeholder with the resulting coefficient and initializes zero entries in
-:attr:`~newton.Model.joint_target_kd`; nonzero explicit damping is preserved.
-Subsequent gain edits use the joint-target arrays and
-:attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` as usual.
+Native MJCF scalar joints retain their imported asymmetric or disabled force
+limits while ``joint_effort_limit`` equals its imported value. A different value
+selects a symmetric limit, including a zero-force clamp for zero. This applies
+to builder edits, solver construction, and ``JOINT_DOF_FORCE_PROPERTIES``
+notifications. Restoring the imported value restores the source limit. Each
+replicated world retains its own choice; untouched unlimited worlds stay
+unlimited when another world enables a limit.
+
+.. _mujoco-imported-gains:
+
+For native MJCF scalar position-only drives with ``dampratio`` and nonzero scalar gear,
+:meth:`~newton.ModelBuilder.finalize` resolves :attr:`~newton.Model.joint_target_kd`
+from the composed articulation's reference-pose inertia, joint armature, and
+position gain. Ball drives resolve each Newton angular target axis separately.
+Other Newton solvers can use the resulting damping without constructing
+``SolverMuJoCo``. Import stores provisional damping derived from the source model;
+changing it before finalization, including to zero, overrides automatic resolution.
+Assigning the same value leaves it automatic. Ball targets track overrides per
+axis. Finalization leaves the builder unchanged, so it can be copied, composed,
+and finalized again.
+
+Resolution runs after the initial body variant has been selected and shares one
+batched mass-matrix calculation between passive springs and target damping.
+Actuator or tendon armature excludes only its owning articulation; unassigned
+ownership conservatively excludes the whole model. Free-joint armature also
+defers its owning articulation because MuJoCo applies it at the body origin. Those cases, unsupported
+topology, and singular or numerically ill-conditioned inertia retain deferred
+resolution through ``SolverMuJoCo``. Resolved articulations do not have their core
+coefficients rewritten by solver construction. Deferred passive springs resolve
+once from each simulated world's physical inverse inertia after its properties
+are published to MuJoCo, preserving independent stiffness and damping overrides.
+Kinematic constraint locking does not contribute to their effective inertia.
+The CPU backend resolves only the world it simulates; unrepresented worlds retain
+their placeholders. Legacy MJCF joint targets resolve
+at solver construction, initializing zero damping entries and preserving nonzero
+overrides. Native imports track explicit overrides, including zeros, across both
+resolution paths.
+
+Once resolved, spring and target gains are concrete coefficients: later inertia
+edits, including body-variant changes, do not recompute them. Set the core gains
+explicitly, or edit and finalize the builder again. With ``SolverMuJoCo``, notify
+:attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` after model gain edits.
+Direct MuJoCo actuators retain their existing runtime ``dampratio`` resolution.
 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
