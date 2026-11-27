@@ -3527,8 +3527,8 @@ def _reserve_bilateral_rows(
 
 @wp.kernel
 def allocate_mimic_slots(
-    mimic_legacy: wp.array[int],
-    mimic_enabled: wp.array[wp.bool],
+    mimic_equality: wp.array[int],
+    equality_enabled: wp.array[wp.bool],
     mimic_world: wp.array[int],
     max_constraints: int,
     # outputs
@@ -3541,15 +3541,14 @@ def allocate_mimic_slots(
 ):
     """Allocate one dense row per enabled mimic row.
 
-    Launched with one thread per mimic row. A row from a disabled
-    :attr:`~newton.Model.constraint_mimic_enabled` entry gets ``mimic_slot = -1``;
-    joint-owned rows are always enabled.
+    Launched with one thread per mimic row. A row from a disabled MuJoCo joint equality
+    gets ``mimic_slot = -1``; joint-owned rows are always enabled.
     """
     k = wp.tid()
     mimic_slot[k] = -1
-    legacy = mimic_legacy[k]
-    if legacy >= 0:
-        if not mimic_enabled[legacy]:
+    equality = mimic_equality[k]
+    if equality >= 0:
+        if not equality_enabled[equality]:
             return
     mimic_slot[k] = _reserve_bilateral_rows(
         mimic_world[k],
@@ -3576,10 +3575,9 @@ def populate_mimic_J_for_size(
     mimic_dof1: wp.array[int],
     mimic_q0: wp.array[int],
     mimic_q1: wp.array[int],
-    mimic_legacy: wp.array[int],
+    mimic_equality: wp.array[int],
     mimic_owner: wp.array[int],
-    mimic_coef0: wp.array[float],
-    mimic_coef1: wp.array[float],
+    equality_polycoef: wp.array2d[float],
     joint_mimic_coeffs: wp.array[wp.vec2],
     joint_q: wp.array[float],
     # outputs
@@ -3607,12 +3605,12 @@ def populate_mimic_J_for_size(
         if slot < 0:
             continue
 
-        legacy = mimic_legacy[k]
+        equality = mimic_equality[k]
         c0 = float(0.0)
         c1 = float(0.0)
-        if legacy >= 0:
-            c0 = mimic_coef0[legacy]
-            c1 = mimic_coef1[legacy]
+        if equality >= 0:
+            c0 = equality_polycoef[equality, 0]
+            c1 = equality_polycoef[equality, 1]
         else:
             coeffs = joint_mimic_coeffs[mimic_owner[k]]
             c0 = coeffs[0]

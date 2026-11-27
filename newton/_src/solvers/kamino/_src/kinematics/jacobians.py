@@ -14,7 +14,7 @@ import warp as wp
 
 from ....rod_kernels import measure_rod_bend_twist_z, rod_bend_twist_jacobian_z_from_measure
 from ..core.data import DataKamino
-from ..core.joints import JointDoFType
+from ..core.joints import D6JointAxes, JointDoFType
 from ..core.math import (
     FLOAT32_MAX,
     FLOAT32_MIN,
@@ -38,7 +38,14 @@ from ..linalg.blas import zero_dense_blocks
 from ..linalg.core import dense_matrix_layout, validate_dense_matrix_shape
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
-from .joints import gimbal_reciprocal_axes, universal_intermediary_axes
+from .joints import (
+    d6_angular_coordinates,
+    d6_angular_reference,
+    d6_dof_axis,
+    d6_locked_axis,
+    gimbal_reciprocal_axes,
+    universal_intermediary_axes,
+)
 
 ###
 # Module interface
@@ -103,6 +110,8 @@ def build_full_joint_jacobian(
     bid_F: wp.int32,
     model_joints_X_Bj: wp.array[wp.mat33f],
     model_joints_X_Fj: wp.array[wp.mat33f],
+    model_joints_F_r_Fj: wp.array[wp.vec3f],
+    model_joints_d6_axes: wp.array[D6JointAxes],
     model_joints_coords_offset: wp.array[wp.int32],
     state_joints_p: wp.array[wp.transformf],
     state_bodies_q: wp.array[wp.transformf],
@@ -124,7 +133,40 @@ def build_full_joint_jacobian(
     r_B_j = wp.transform_get_translation(T_B_j)
     r_F_j = wp.transform_get_translation(T_F_j)
 
-    if dof_type == JointDoFType.FREE:
+    if dof_type == JointDoFType.D6:
+        axes = model_joints_d6_axes[joint_id]
+        follower_anchor = wp.transform_point(T_F_j, model_joints_F_r_Fj[joint_id])
+        rel_q = compute_joint_relative_quaternion(
+            T_B_j, T_F_j, model_joints_X_Bj[joint_id], model_joints_X_Fj[joint_id]
+        )
+        reference = d6_angular_reference(axes, model_joints_coords_offset[joint_id], state_joints_q)
+        _, angular = d6_angular_coordinates(axes, rel_q, reference, True)
+        linear = R_X_j @ axes.linear
+        angular = R_X_j @ angular
+        count = axes.linear_count + axes.angular_count
+        JT_B_j = mat66f(0.0)
+        JT_F_j = mat66f(0.0)
+        for column in range(6):
+            axis = int(0)
+            if column < count:
+                axis = d6_dof_axis(axes.linear_count, column)
+            else:
+                axis = d6_locked_axis(axes.linear_count, axes.angular_count, column - count)
+            if axis < 3:
+                direction = wp.vec3f(linear[:, axis])
+                torque_B = wp.cross(follower_anchor - r_B_j, direction)
+                torque_F = wp.cross(follower_anchor - r_F_j, direction)
+                for i in range(3):
+                    JT_B_j[i, column] = -direction[i]
+                    JT_F_j[i, column] = direction[i]
+                    JT_B_j[3 + i, column] = -torque_B[i]
+                    JT_F_j[3 + i, column] = torque_F[i]
+            else:
+                for i in range(3):
+                    JT_B_j[3 + i, column] = -angular[i, axis - 3]
+                    JT_F_j[3 + i, column] = angular[i, axis - 3]
+
+    elif dof_type == JointDoFType.FREE:
         # By Newton's convention, a free joint's twist and wrench (specified in `joint_qd` and
         # `joint_f`) are both defined at the child's center of mass, with world-aligned axes. Since
         # Kamino avoids a conversion, the change of reference frame needs to be taken into account
@@ -164,6 +206,20 @@ def build_full_joint_jacobian(
         # Compute the extended jacobians, i.e. without the selection-matrix multiplication
         JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
         JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+
+        if (
+            dof_type == JointDoFType.PRISMATIC
+            or dof_type == JointDoFType.CYLINDRICAL
+            or dof_type == JointDoFType.CARTESIAN
+        ):
+            follower_anchor = wp.transform_point(T_F_j, model_joints_F_r_Fj[joint_id])
+            for k in range(3):
+                direction = wp.vec3f(R_X_j[:, k])
+                torque_B = wp.cross(follower_anchor - r_B_j, direction)
+                torque_F = wp.cross(follower_anchor - r_F_j, direction)
+                for i in range(3):
+                    JT_B_j[3 + i, k] = -torque_B[i]
+                    JT_F_j[3 + i, k] = torque_F[i]
 
         # Rod joint: measure the shear and stretch at the follower anchor, which the anchor separation in
         # the joint coordinates places away from the joint frame, and replace the angular axes with the
@@ -646,6 +702,8 @@ def _build_joint_jacobians_dense(
     model_joints_bid_F: wp.array[wp.int32],
     model_joints_X_Bj: wp.array[wp.mat33f],
     model_joints_X_Fj: wp.array[wp.mat33f],
+    model_joints_F_r_Fj: wp.array[wp.vec3f],
+    model_joints_d6_axes: wp.array[D6JointAxes],
     state_joints_p: wp.array[wp.transformf],
     state_bodies_q: wp.array[wp.transformf],
     state_joints_q: wp.array[wp.float32],
@@ -706,6 +764,8 @@ def _build_joint_jacobians_dense(
         bid_F,
         model_joints_X_Bj,
         model_joints_X_Fj,
+        model_joints_F_r_Fj,
+        model_joints_d6_axes,
         model_joints_coords_offset,
         state_joints_p,
         state_bodies_q,
@@ -723,7 +783,17 @@ def _build_joint_jacobians_dense(
             )
 
     # Store joint kinematic constraint jacobians
-    if num_kin_cts > 0:
+    if dof_type == JointDoFType.D6:
+        count = model_joints_dofs_offset[jid + 1] - dofs_offset
+        for row in range(num_kin_cts):
+            store_joint_dof_jacobian_dense(
+                dof_type, count + row, J_jkc_row_start + nbd * row, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+            )
+        for row in range(count):
+            store_joint_dof_jacobian_dense(
+                dof_type, row, J_jdof_row_start + nbd * row, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_dofs_data
+            )
+    elif num_kin_cts > 0:
         store_joint_cts_jacobian_dense(
             dof_type,
             J_jkc_row_start,
@@ -753,7 +823,10 @@ def _build_joint_jacobians_dense(
             )
 
     # Store the actuation Jacobian block if the joint is actuated
-    store_joint_dofs_jacobian_dense(dof_type, J_jdof_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_dofs_data)
+    if dof_type != JointDoFType.D6:
+        store_joint_dofs_jacobian_dense(
+            dof_type, J_jdof_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_dofs_data
+        )
 
 
 @wp.kernel
@@ -789,6 +862,8 @@ def _build_joint_jacobians_sparse(
     model_joints_bid_F: wp.array[wp.int32],
     model_joints_X_Bj: wp.array[wp.mat33f],
     model_joints_X_Fj: wp.array[wp.mat33f],
+    model_joints_F_r_Fj: wp.array[wp.vec3f],
+    model_joints_d6_axes: wp.array[D6JointAxes],
     model_joints_dynamic_cts_offset: wp.array[wp.int32],
     model_joints_friction_cts_offset: wp.array[wp.int32],
     model_joints_effort_cts_offset: wp.array[wp.int32],
@@ -827,6 +902,8 @@ def _build_joint_jacobians_sparse(
         bid_F,
         model_joints_X_Bj,
         model_joints_X_Fj,
+        model_joints_F_r_Fj,
+        model_joints_d6_axes,
         model_joints_coords_offset,
         state_joints_p,
         state_bodies_q,
@@ -847,7 +924,19 @@ def _build_joint_jacobians_sparse(
             )
         nzb_offset += num_dyn_cts * nzb_advance
 
-    if num_kin_cts > 0:
+    if dof_type == JointDoFType.D6:
+        axes = model_joints_d6_axes[jid]
+        count = axes.linear_count + axes.angular_count
+        for row in range(num_kin_cts):
+            store_joint_dof_jacobian_sparse(
+                dof_type, count + row, is_binary, JT_B_j, JT_F_j, nzb_offset + row, num_kin_cts, jacobian_cts_nzb_values
+            )
+        dofs_start = jacobian_dofs_nzb_offsets[jid]
+        for row in range(count):
+            store_joint_dof_jacobian_sparse(
+                dof_type, row, is_binary, JT_B_j, JT_F_j, dofs_start + row, count, jacobian_dofs_nzb_values
+            )
+    elif num_kin_cts > 0:
         store_joint_cts_jacobian_sparse(
             dof_type,
             is_binary,
@@ -874,14 +963,15 @@ def _build_joint_jacobians_sparse(
             )
 
     # Store the actuation Jacobian block if the joint is actuated
-    store_joint_dofs_jacobian_sparse(
-        dof_type,
-        bid_B > -1,
-        JT_B_j,
-        JT_F_j,
-        jacobian_dofs_nzb_offsets[jid],
-        jacobian_dofs_nzb_values,
-    )
+    if dof_type != JointDoFType.D6:
+        store_joint_dofs_jacobian_sparse(
+            dof_type,
+            is_binary,
+            JT_B_j,
+            JT_F_j,
+            jacobian_dofs_nzb_offsets[jid],
+            jacobian_dofs_nzb_values,
+        )
 
 
 @wp.kernel
@@ -1645,6 +1735,8 @@ class DenseSystemJacobians:
                     model.joints.bid_F,
                     model.joints.X_Bj,
                     model.joints.X_Fj,
+                    model.joints.F_r_Fj,
+                    model.joints.d6_axes,
                     data.joints.p_j,
                     data.bodies.q_i,
                     data.joints.q_j,
@@ -2074,6 +2166,8 @@ class SparseSystemJacobians:
                     model.joints.bid_F,
                     model.joints.X_Bj,
                     model.joints.X_Fj,
+                    model.joints.F_r_Fj,
+                    model.joints.d6_axes,
                     model.joints.dynamic_cts_offset,
                     model.joints.friction_cts_offset,
                     model.joints.effort_cts_offset,

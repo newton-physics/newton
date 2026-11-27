@@ -755,7 +755,9 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Fill/reset remaining state components based on body poses and velocities
-        reset_joints_state_from_bodies_state(self._model, state, world_mask)
+        reset_joints_state_from_bodies_state(
+            self._model, state, world_mask, rotation_correction=self._rotation_correction
+        )
         reset_body_wrenches(self._model, state, world_mask)
 
         # Reset solver internals

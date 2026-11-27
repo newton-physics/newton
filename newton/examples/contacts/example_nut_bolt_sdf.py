@@ -319,19 +319,10 @@ class Example:
             self.nut_body_indices = None
             return
 
-        # Find bolt and nut body indices by key
-        self.bolt_body_indices = []
-        self.nut_body_indices = []
-
-        for i in range(self.grid_x):
-            for j in range(self.grid_y):
-                bolt_key = f"bolt_{i}_{j}"
-                nut_key = f"nut_{i}_{j}"
-
-                if bolt_key in self.model.body_label:
-                    self.bolt_body_indices.append(self.model.body_label.index(bolt_key))
-                if nut_key in self.model.body_label:
-                    self.nut_body_indices.append(self.model.body_label.index(nut_key))
+        # Replication preserves assembly order, so the lists stay paired across worlds.
+        self.bolt_body_indices = [i for i, label in enumerate(self.model.body_label) if label.startswith("bolt_")]
+        self.nut_body_indices = [i for i, label in enumerate(self.model.body_label) if label.startswith("nut_")]
+        assert len(self.bolt_body_indices) == len(self.nut_body_indices) == self.world_count * self.num_per_world
 
         # Store initial transforms
         body_q = self.state_0.body_q.numpy()

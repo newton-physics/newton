@@ -971,12 +971,26 @@ self-collision, edge equality constraints (``edgeequality``), and per-flex
 contact parameters. Settings left as ``None`` are
 derived as in the table above.
 
+Set up an authored flex in this order:
+
+1. Create the Newton elements on the builder.
+2. Call ``add_flex`` with their indices. It registers the MuJoCo custom
+   attributes on the builder automatically, so
+   :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` does not
+   need to be called first.
+3. Finalize the model.
+4. Construct :class:`~newton.solvers.SolverMuJoCo`.
+
 .. code-block:: python
 
-   from newton.solvers import mujoco
+   import newton
+   from newton.solvers import SolverMuJoCo, mujoco
+
+   builder = newton.ModelBuilder()
 
    start = builder.tri_count
    builder.add_cloth_grid(...)
+
    mujoco.add_flex(
        builder,
        triangles=range(start, builder.tri_count),
@@ -984,6 +998,9 @@ derived as in the table above.
        thickness=1.0e-3,
        selfcollide="auto",
    )
+
+   model = builder.finalize()
+   solver = SolverMuJoCo(model)
 
 When flexes are created, an ``"implicit"`` or ``"implicitfast"``
 integrator taken from the model's custom attributes or Newton's default is

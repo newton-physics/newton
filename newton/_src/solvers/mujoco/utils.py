@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -16,7 +15,6 @@ from ...core.types import vec5
 from .enums import EqType
 from .equality import (
     MJC_OBJ_BODY,
-    MJC_OBJ_JOINT,
     MJC_OBJ_UNKNOWN,
     MjcEqualityTargetKind,
     _add_equality_constraint,
@@ -83,11 +81,6 @@ def mjc_parse_polycoef(polycoef: str | Sequence[float]) -> list[float]:
     else:
         values = [float(x) for x in polycoef]
     return (values + [0.0, 1.0, 0.0, 0.0, 0.0][len(values) :])[:5]
-
-
-def mjc_polycoef_has_higher_order(polycoef: Sequence[float]) -> bool:
-    """Return True when a MuJoCo JOINT equality uses quadratic or higher-order terms."""
-    return any(float(value) != 0.0 for value in polycoef[2:5])
 
 
 def mjc_loop_joint_xforms(
@@ -226,45 +219,3 @@ def mjc_add_equality_loop_joint(
         ),
     )
     return eq_idx, joint_idx
-
-
-def mjc_add_equality_mimic(
-    builder: Any,
-    joint1: int,
-    joint2: int,
-    polycoef: Sequence[float],
-    label: str | None,
-    enabled: bool,
-    custom_attrs: dict[str, Any],
-) -> tuple[int, int]:
-    """Add a Newton mimic constraint and its authoritative MuJoCo equality row."""
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"ModelBuilder\.add_constraint_mimic\(\) is deprecated",
-            category=DeprecationWarning,
-        )
-        mimic_idx = builder.add_constraint_mimic(
-            joint0=joint1,
-            joint1=joint2,
-            coef0=polycoef[0],
-            coef1=polycoef[1],
-            label=label,
-            enabled=enabled,
-        )
-    eq_idx = _add_equality_constraint(
-        builder,
-        constraint_type=EqType.JOINT,
-        joint1=joint1,
-        joint2=joint2,
-        polycoef=list(polycoef),
-        label=label,
-        enabled=enabled,
-        custom_attributes=mjc_eq_custom_attrs(
-            custom_attrs,
-            target_kind=MjcEqualityTargetKind.MIMIC,
-            target=mimic_idx,
-            objtype=MJC_OBJ_JOINT,
-        ),
-    )
-    return eq_idx, mimic_idx
