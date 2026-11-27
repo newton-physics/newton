@@ -3,7 +3,15 @@
 
 """Build and edit a physical scene with primitives, deformables, and USD assets.
 
-Command: python -m newton.examples scene_editor
+Success criteria:
+- The editor opens paused with two movable props above a fixed plinth.
+- Placement, viewport manipulation, undo, and reset preserve a finite physical scene.
+- Saving and reopening USD preserves the authored objects and their reset poses.
+
+Runs:
+- `python -m newton.examples scene_editor`
+- `python -m newton.examples scene_editor --solver xpbd --device cpu`
+- `python -m newton.examples scene_editor --solver mujoco --device cpu`
 """
 
 import subprocess

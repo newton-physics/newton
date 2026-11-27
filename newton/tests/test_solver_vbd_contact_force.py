@@ -307,7 +307,6 @@ def test_vbd_soft_contact_force_static_equilibrium(test, device):
 
     pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01)
     contacts = pipeline.contacts()
-    test.assertIsNone(contacts.force)
     solver = newton.solvers.SolverVBD(model, iterations=10)
     observables = solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
     state_in, state_out = model.state(), model.state()
@@ -350,7 +349,6 @@ def test_vbd_soft_contact_force_zero_when_separated(test, device):
     test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0, "gap should produce a soft contact record")
     solver.step(state_in, state_out, None, contacts, 1.0 / 60.0, observables=observables)
 
-    test.assertIsNone(contacts.force)
     test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
     np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
     np.testing.assert_array_equal(state_out.particle_q.numpy(), state_in.particle_q.numpy())
@@ -612,7 +610,7 @@ def _settle_sphere_on_ground(device, *, with_particle, sensor=False, steps=300):
     model, body, sphere_shape = _build_sphere_on_ground(device, with_particle=with_particle)
     contact_sensor = None
     if sensor:
-        contact_sensor = SensorContact(model, sensing_bodies=[body], verbose=False, request_contact_attributes=False)
+        contact_sensor = SensorContact(model, sensing_bodies=[body], verbose=False)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10)
@@ -684,7 +682,6 @@ def test_vbd_rigid_contact_force_feeds_sensor_contact(test, device):
     model, body, _shape, _solver, contacts, state, _prev, _dt, sensor, observables = _settle_sphere_on_ground(
         device, with_particle=False, sensor=True
     )
-    test.assertIsNone(contacts.force)
     sensor.update(state, contacts, observables=observables)
     weight = float(model.body_mass.numpy()[body]) * GRAVITY
     total = sensor.total_force.numpy()[0]
@@ -725,7 +722,6 @@ def test_vbd_soft_contact_force_export_leaves_simulation_unchanged(test, device)
             model = model[0]
         pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
         contacts = pipeline.contacts()
-        test.assertIsNone(contacts.force)
         solver = newton.solvers.SolverVBD(model, iterations=4)
         observables = (
             solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
@@ -814,7 +810,6 @@ def test_vbd_contact_force_selection(test, device):
     test.assertIsNone(unselected.contact_f)
     test.assertTrue(selected.is_requested(SolverBase.ObservableKind.CONTACT_F))
     test.assertFalse(unselected.is_requested(SolverBase.ObservableKind.CONTACT_F))
-    test.assertIsNone(contacts.force)
     force_buffer = observables.contact_f
     force_buffer.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
     state_in, state_out = model.state(), model.state()

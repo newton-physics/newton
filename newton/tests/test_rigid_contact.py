@@ -172,7 +172,7 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = temp_solver
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    if isinstance(solver, newton.solvers.SolverMuJoCo):
+    if isinstance(solver, newton.solvers.SolverMuJoCo) and solver.use_mujoco_cpu:
         collision_pipeline = None
         contacts = None
     else:
@@ -701,8 +701,9 @@ def test_mujoco_warp_newton_contacts(test, device):
         )
 
 
-def test_mujoco_convex_on_convex(test, device, solver_fn):
-    """Test that MuJoCo can handle CONVEX_MESH geometry type by simulating a simple drop."""
+@requires(*MUJOCO_MODULES)
+def test_mujoco_convex_on_convex(test, device, use_mujoco_cpu):
+    """Drop a convex mesh onto another using MuJoCo's native detector."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e5
     builder.default_shape_cfg.kd = 1.0e3
@@ -747,9 +748,9 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
     # Initialize kinematics
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    solver = solver_fn(model)
-
-    # Use MuJoCo contacts internally (contacts=None) and simulate
+    solver = newton.solvers.SolverMuJoCo(
+        model, use_mujoco_cpu=use_mujoco_cpu, use_mujoco_contacts=True, njmax=None if use_mujoco_cpu else 150
+    )
     sim_dt = 1.0 / 60.0
     steps = 120  # 2 seconds to settle
     for _ in range(steps):
@@ -785,8 +786,11 @@ def _make_penalty_friction_model(device, *, requires_grad=False):
     return builder.finalize(device=device, requires_grad=requires_grad)
 
 
-def test_penalty_friction_force_and_gradient(test, device):
-    """Bound rigid friction by Coulomb and differentiate the viscous response at rest."""
+def test_penalty_friction_force_and_gradient(test, device, deterministic):
+    """Bound rigid friction by Coulomb and differentiate the viscous response at rest.
+
+    ``deterministic`` selects the per-body contact gather instead of atomics.
+    """
     model = _make_penalty_friction_model(device, requires_grad=True)
     state = model.state()
     pipeline = newton.CollisionPipeline(model)
@@ -810,7 +814,7 @@ def test_penalty_friction_force_and_gradient(test, device):
             state.body_qd.assign(velocity)
             state.clear_forces()
             with wp.Tape() as tape:
-                eval_body_contact_forces(model, state, contacts)
+                eval_body_contact_forces(model, state, contacts, deterministic=deterministic)
             force = state.body_f.numpy()[0].copy()
             limit = mu * force[2]
             test.assertGreater(force[2], 0.0)
@@ -843,7 +847,7 @@ def test_penalty_friction_force_and_gradient(test, device):
                     perturbed[0, axis] += sign * epsilon
                     state.body_qd.assign(perturbed)
                     state.clear_forces()
-                    eval_body_contact_forces(model, state, contacts)
+                    eval_body_contact_forces(model, state, contacts, deterministic=deterministic)
                     forces.append(float(state.body_f.numpy()[0, 0]))
                 finite_difference[axis] = (forces[1] - forces[0]) / (2.0 * epsilon)
             np.testing.assert_allclose(gradient, finite_difference, atol=0.1, rtol=3.0e-3)
@@ -904,7 +908,7 @@ def test_box_drop(test, device, solver_fn):
     max_frames = 60
     max_observed_vel = 0.0
 
-    generate_contacts = not isinstance(solver, newton.solvers.SolverMuJoCo)
+    generate_contacts = not (isinstance(solver, newton.solvers.SolverMuJoCo) and solver.use_mujoco_cpu)
     collision_pipeline = newton.CollisionPipeline(model) if generate_contacts else None
     contacts = collision_pipeline.contacts() if collision_pipeline is not None else None
 
@@ -940,6 +944,102 @@ def test_box_drop(test, device, solver_fn):
         test.assertLess(vel_magnitude, 1.0, f"Body {i} not at rest (v={vel_magnitude:.3f})")
 
 
+def test_shape_friction_modes(test, device, solver_fn, supports_torsion):
+    """Apply only the friction components that each contact's friction mode enables.
+
+    Spheres slide and spin on a frictionless ground: the frictionless sphere keeps
+    its motion, the sliding sphere starts rolling without losing its spin, and where
+    the solver supports the angular modes, only the torsional spheres stop spinning
+    and only the rolling spheres stop rolling, whatever coefficients the ground stores.
+    A rolling sphere on a torsional box does both.
+    """
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    mode = newton.ShapeFrictionMode
+    ground_cfg = newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE, mu_torsional=0.05, mu_rolling=0.05)
+    builder.add_ground_plane(cfg=ground_cfg)
+    sphere_modes = (
+        mode.NONE,
+        mode.SLIDING,
+        mode.SLIDING_TORSIONAL,
+        mode.SLIDING_ROLLING,
+        mode.SLIDING_TORSIONAL_ROLLING,
+    )
+    for i, sphere_mode in enumerate(sphere_modes):
+        body = builder.add_body(xform=wp.transform((0.5 * i, 0.0, 0.0995), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(friction_mode=sphere_mode, mu=0.5, mu_torsional=0.05, mu_rolling=0.05)
+        builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    x = 0.5 * len(sphere_modes)
+    cfg.friction_mode = mode.SLIDING_TORSIONAL
+    builder.add_shape_box(-1, xform=wp.transform((x, 0.0, 0.05), wp.quat_identity()), hx=0.2, hy=0.2, hz=0.05, cfg=cfg)
+    cfg.friction_mode = mode.SLIDING_ROLLING
+    body = builder.add_body(xform=wp.transform((x, 0.0, 0.1995), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+    builder.color()
+    model = builder.finalize(device=device)
+    if supports_torsion:
+        solver = solver_fn(model)
+    else:
+        with test.assertWarns(newton.NewtonWarning):
+            solver = solver_fn(model)
+
+    state_0, state_1 = model.state(), model.state()
+    joint_qd = state_0.joint_qd.numpy().reshape(model.body_count, 6)
+    joint_qd[:, 0] = 0.5
+    joint_qd[:, 5] = 10.0
+    state_0.joint_qd.assign(joint_qd.reshape(-1))
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    native_contacts = isinstance(solver, newton.solvers.SolverMuJoCo) and (
+        solver.use_mujoco_cpu or solver.mjw_model.opt.run_collision_detection
+    )
+    collision_pipeline = None if native_contacts else newton.CollisionPipeline(model)
+    contacts = None if native_contacts else collision_pipeline.contacts()
+    simulate(solver, model, state_0, state_1, None, collision_pipeline, contacts, 0.2, 100)
+
+    frictionless, sliding, torsional, rolling, torsional_rolling, union = state_0.body_qd.numpy()
+    test.assertAlmostEqual(frictionless[0], 0.5, delta=0.02)
+    test.assertAlmostEqual(frictionless[5], 10.0, delta=0.2)
+    test.assertLess(sliding[0], 0.45)
+    test.assertAlmostEqual(sliding[5], 10.0, delta=0.5)
+    if supports_torsion:
+        for sphere in (torsional, torsional_rolling, union):
+            test.assertLess(abs(sphere[5]), 5.0)
+        for sphere in (rolling, torsional_rolling, union):
+            test.assertLess(sphere[0], 0.7 * torsional[0])
+        if not native_contacts:
+            # MuJoCo resolves its own contacts with the ground's torsional coefficient.
+            test.assertAlmostEqual(rolling[5], 10.0, delta=0.5)
+    else:
+        for sphere in (torsional, rolling, torsional_rolling, union):
+            test.assertAlmostEqual(sphere[5], 10.0, delta=0.5)
+            test.assertAlmostEqual(sphere[0], torsional[0], delta=0.02)
+
+
+def test_particle_friction_modes(test, device, solver_fn):
+    """Keep particles sliding on a frictionless shape and slow them on a frictional one."""
+    builder = newton.ModelBuilder()
+    mode = newton.ShapeFrictionMode
+    for i, ground_mode in enumerate((mode.NONE, mode.SLIDING)):
+        cfg = newton.ModelBuilder.ShapeConfig(friction_mode=ground_mode)
+        builder.add_shape_box(
+            -1, xform=wp.transform((0.0, 2.0 * i, -0.1), wp.quat_identity()), hx=1.0, hy=0.5, hz=0.1, cfg=cfg
+        )
+        builder.add_particle((0.0, 2.0 * i, 0.0499), (0.5, 0.0, 0.0), mass=0.01, radius=0.05)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    state_0, state_1 = model.state(), model.state()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    simulate(solver, model, state_0, state_1, None, collision_pipeline, contacts, 0.2, 100)
+
+    frictionless, sliding = state_0.particle_qd.numpy()
+    test.assertAlmostEqual(frictionless[0], 0.5, delta=0.02)
+    test.assertLess(sliding[0], 0.4)
+
+
 devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
@@ -947,7 +1047,7 @@ solvers = {
     "featherstone": newton.solvers.SolverFeatherstone,
     "mujoco_cpu": requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)),
     "mujoco_warp": requires(*MUJOCO_MODULES)(
-        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150)
+        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False, njmax=150)
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
@@ -1045,12 +1145,14 @@ class TestRigidContact(unittest.TestCase):
                 np.testing.assert_allclose(local, np.broadcast_to(local[:1], local.shape), rtol=0, atol=1e-7)
 
 
-add_function_test(
-    TestRigidContact,
-    "test_penalty_friction_force_and_gradient",
-    test_penalty_friction_force_and_gradient,
-    devices=devices,
-)
+for deterministic in (False, True):
+    add_function_test(
+        TestRigidContact,
+        f"test_penalty_friction_force_and_gradient{'_deterministic' if deterministic else ''}",
+        test_penalty_friction_force_and_gradient,
+        devices=devices,
+        deterministic=deterministic,
+    )
 add_function_test(
     TestRigidContact, "test_penalty_friction_solver_step", test_penalty_friction_solver_step, devices=devices
 )
@@ -1113,21 +1215,56 @@ for device in devices:
         )
 
 
-# Register MuJoCo convex<>convex tests for appropriate backends
+# Register friction mode tests; the listed solvers apply torsional friction.
 for device in devices:
-    for solver_name, solver_fn in solvers.items():
-        if not solver_name.startswith("mujoco_"):
-            continue
+    friction_mode_solvers = {
+        **solvers,
+        "kamino_lox": lambda model: newton.solvers.SolverKamino(
+            model, newton.solvers.SolverKamino.Config(dynamics_solver="lox")
+        ),
+        "vbd": newton.solvers.SolverVBD,
+    }
+    for solver_name, solver_fn in friction_mode_solvers.items():
         if device.is_cpu and solver_name == "mujoco_warp":
             continue
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
         add_function_test(
             TestRigidContact,
+            f"test_shape_friction_modes_{solver_name}",
+            test_shape_friction_modes,
+            devices=[device],
+            solver_fn=solver_fn,
+            supports_torsion=solver_name in ("mujoco_cpu", "mujoco_warp", "xpbd", "kamino_lox", "vbd"),
+        )
+
+
+particle_solvers = {
+    "xpbd": newton.solvers.SolverXPBD,
+    "semi_implicit": newton.solvers.SolverSemiImplicit,
+    "vbd": newton.solvers.SolverVBD,
+}
+for solver_name, solver_fn in particle_solvers.items():
+    add_function_test(
+        TestRigidContact,
+        f"test_particle_friction_modes_{solver_name}",
+        test_particle_friction_modes,
+        devices=devices,
+        solver_fn=solver_fn,
+    )
+
+
+# Register MuJoCo convex<>convex tests for appropriate backends
+for device in devices:
+    for solver_name, use_mujoco_cpu in (("mujoco_cpu", True), ("mujoco_warp", False)):
+        if device.is_cpu != use_mujoco_cpu:
+            continue
+        add_function_test(
+            TestRigidContact,
             f"test_mujoco_convex_on_convex_{solver_name}",
             test_mujoco_convex_on_convex,
             devices=[device],
-            solver_fn=solver_fn,
+            use_mujoco_cpu=use_mujoco_cpu,
         )
 
 if __name__ == "__main__":

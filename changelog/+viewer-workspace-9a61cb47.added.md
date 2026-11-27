@@ -9,7 +9,7 @@ Keep viewport picking and selection outlines synchronized with body variants and
 Refresh geometry properties and BVH references when shape variants change, respect
 particle visibility during picking, and apply viewport display modes across layers.
 Inspect and edit custom joint-frequency attributes using their own namespace and row width.
-Expose deformable surfaces, volumes, curves, bending edges, skinned visual meshes, routed tendons, particle-body attachments, mimic constraints, actuators and batteries, OptiX query structures, and paused body-variant switching in the explorer and property panels, with a searchable folder tree in the Examples browser and a compact live-readout timeline bar when history recording is off.
+Expose deformable surfaces, volumes, curves, bending edges, skinned visual meshes, routed tendons, particle-body attachments, model cameras, actuators and batteries, OptiX query structures, and paused body-variant switching in the explorer and property panels, with a searchable folder tree in the Examples browser and a compact live-readout timeline bar when history recording is off.
 Record history from the application's `log_state()`, `log_contacts()`, `log_observables()`, `log_points()`, and `log_lines()` calls and replay it through those calls, pausing stepping through `ViewerBase.should_step()` until playback reaches the newest frame. Recording is opt-in through the timeline's **Record history** checkbox.
 Mirror `newton` log records and Newton warnings into the console only when the application passes `ViewerGL(capture_logs=True)`, as the example runner does.
 Frame scenes and selections from displayed geometry when rendering uses different units from the collision model.

@@ -93,7 +93,7 @@ class PropertyInspector:
         "tendon_guide": Frequency.TENDON_GUIDE,
         "tendon_segment": Frequency.TENDON_SEGMENT,
         "attachment_particle_body": Frequency.ATTACHMENT_PARTICLE_BODY,
-        "constraint_mimic": Frequency.CONSTRAINT_MIMIC,
+        "camera": Frequency.CAMERA,
         "actuator": Frequency.ACTUATOR,
     }
 
@@ -238,8 +238,8 @@ class PropertyInspector:
             add(Frequency.ATTACHMENT_PARTICLE_BODY, ws.tree.attachments_in_world(index))
         elif kind == "attachment_page":
             add(Frequency.ATTACHMENT_PARTICLE_BODY, ws.tree.meta[selected].get("indices", ()))
-        elif kind == "mimic_group":
-            add(Frequency.CONSTRAINT_MIMIC, ws.tree.mimics_in_world(index))
+        elif kind == "camera_group":
+            add(Frequency.CAMERA, ws.tree.cameras_in_world(index))
         elif kind == "actuator_group":
             if 0 <= index < len(model.actuators):
                 act_indices = model.actuators[index].actuator_indices

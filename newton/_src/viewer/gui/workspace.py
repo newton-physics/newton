@@ -494,19 +494,10 @@ class ViewerWorkspace:
                     body = int(self.model.attachment_particle_body_body[index : index + 1].numpy()[0])
                     if body >= 0:
                         shapes.update(self.model.body_shapes.get(body, ()))
-            elif (
-                kind == "constraint_mimic"
-                and self.model.constraint_mimic_joint0 is not None
-                and self.model.constraint_mimic_joint1 is not None
-            ):
-                if 0 <= index < self.model.constraint_mimic_count:
-                    for j_arr in (self.model.constraint_mimic_joint0, self.model.constraint_mimic_joint1):
-                        j_idx = int(j_arr[index : index + 1].numpy()[0])
-                        if 0 <= j_idx < self.model.joint_count:
-                            joints.add(j_idx)
-                            child = int(self.model.joint_child[j_idx : j_idx + 1].numpy()[0])
-                            if child >= 0:
-                                shapes.update(self.model.body_shapes.get(child, ()))
+            elif kind == "camera" and 0 <= index < self.model.camera_count:
+                body = int(self.model.camera_body[index : index + 1].numpy()[0])
+                if body >= 0:
+                    shapes.update(self.model.body_shapes.get(body, ()))
             elif self.tree is not None and (shape := self.tree.resources.shape_owner(item)) is not None:
                 shapes.add(shape)
             elif self.collision.handles(item):
@@ -1602,7 +1593,7 @@ class ViewerWorkspace:
             + m.deformable_visual_mesh_count
             + m.tendon_count
             + m.attachment_particle_body_count
-            + m.constraint_mimic_count
+            + m.camera_count
             + m.actuator_count
         )
         count += sum(tree.custom.counts.values())
@@ -1755,8 +1746,8 @@ class ViewerWorkspace:
             "attachment_group": "folder",
             "attachment_page": "folder",
             "attachment_particle_body": "joint_fixed",
-            "mimic_group": "folder",
-            "constraint_mimic": "link",
+            "camera_group": "folder",
+            "camera": "camera",
             "actuator_collection": "folder",
             "actuator_group": "custom",
             "battery": "custom",
@@ -1774,8 +1765,8 @@ class ViewerWorkspace:
                 "attachment_group",
                 "attachment_page",
                 "attachment_particle_body",
-                "mimic_group",
-                "constraint_mimic",
+                "camera_group",
+                "camera",
                 "actuator_collection",
                 "actuator_group",
                 "battery",
@@ -1818,7 +1809,7 @@ class ViewerWorkspace:
             else "tri"
             if kind == "edge"
             else "joint"
-            if kind in ("tendon", "tendon_guide", "tendon_segment", "attachment_particle_body", "constraint_mimic")
+            if kind in ("tendon", "tendon_guide", "tendon_segment", "attachment_particle_body")
             else "custom"
             if custom
             else kind
@@ -1930,8 +1921,8 @@ class ViewerWorkspace:
             "attachment_group": "Particle-body attachments",
             "attachment_page": "Particle-body attachments",
             "attachment_particle_body": "Particle-body attachment",
-            "mimic_group": "Joint mimic constraints",
-            "constraint_mimic": "Joint mimic constraint",
+            "camera_group": "Model cameras",
+            "camera": "Model camera",
             "actuator_collection": "Actuators and batteries",
             "actuator_group": "Actuator group",
             "battery": "Battery group",

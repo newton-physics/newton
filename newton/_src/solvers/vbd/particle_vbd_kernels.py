@@ -50,6 +50,7 @@ from ...utils.mesh import (
     get_vertex_num_adjacent_springs,
     get_vertex_num_adjacent_tets,
 )
+from ..solver import particle_is_kinematic
 
 # TODO: Grab changes from Warp that has fixed the backward pass
 # SolverVBD(enable_fast_math=True) also approximates sin/cos/tan/exp/log/pow; keep those out of this module
@@ -382,16 +383,6 @@ def _evaluate_membrane_from_vertices(
     f0 = x01 * DmInv00 + x02 * DmInv10
     f1 = x01 * DmInv01 + x02 * DmInv11
 
-    f0_prev = wp.vec3(0.0)
-    f1_prev = wp.vec3(0.0)
-    if damping > 0.0:
-        x0_prev = pos_anchor[v0]
-        x01_prev = pos_anchor[v1] - x0_prev
-        x02_prev = pos_anchor[v2] - x0_prev
-
-        f0_prev = x01_prev * DmInv00 + x02_prev * DmInv10
-        f1_prev = x01_prev * DmInv01 + x02_prev * DmInv11
-
     # The Gram determinant subtracts nearly equal large values for stretched,
     # almost collinear columns. Use the equivalent cross-product area instead.
     area_vector = wp.cross(f0, f1)
@@ -457,6 +448,16 @@ def _evaluate_membrane_from_vertices(
         f0_dot_f0 = wp.dot(f0, f0)
         f1_dot_f1 = wp.dot(f1, f1)
         f0_dot_f1 = wp.dot(f0, f1)
+
+        # Keep the anchor gather next to its only use. Hoisting it lets the CUDA
+        # backend contract these terms differently per tiled kernel variant (seen
+        # on sm_89), breaking the packed tile's bit-for-bit match with the legacy tile.
+        x0_prev = pos_anchor[v0]
+        x01_prev = pos_anchor[v1] - x0_prev
+        x02_prev = pos_anchor[v2] - x0_prev
+
+        f0_prev = x01_prev * DmInv00 + x02_prev * DmInv10
+        f1_prev = x01_prev * DmInv01 + x02_prev * DmInv11
 
         c00_rate = (f0_dot_f0 - wp.dot(f0_prev, f0_prev)) * inv_dt
         c01_rate = (f0_dot_f1 - wp.dot(f0_prev, f1_prev)) * inv_dt
@@ -1122,12 +1123,29 @@ def reset_particle_state(
         particle_qd[tid] = model_particle_qd[tid]
 
 
+@wp.func
+def vbd_particle_is_fixed(flags: wp.int32, mass: float) -> bool:
+    return (flags & ParticleFlags.ACTIVE) == 0 or mass == 0.0 or (flags & ParticleFlags.KINEMATIC) != 0
+
+
+@wp.kernel
+def vbd_apply_particle_kinematic_targets(
+    particle_flags: wp.array[wp.int32],
+    target_q: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+):
+    particle = wp.tid()
+    pos_prev[particle] = pos[particle]
+    if target_q and particle_is_kinematic(particle_flags[particle]):
+        pos[particle] = target_q[particle]
+
+
 @wp.kernel
 def forward_step(
     dt: float,
     gravity: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
-    pos_prev: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
     vel: wp.array[wp.vec3],
     inv_mass: wp.array[float],
@@ -1138,9 +1156,9 @@ def forward_step(
 ):
     particle = wp.tid()
 
-    pos_prev[particle] = pos[particle]
-    if not particle_flags[particle] & ParticleFlags.ACTIVE or inv_mass[particle] == 0:
-        inertia_out[particle] = pos_prev[particle]
+    flags = particle_flags[particle]
+    if not flags & ParticleFlags.ACTIVE or flags & ParticleFlags.KINEMATIC or inv_mass[particle] == 0:
+        inertia_out[particle] = pos[particle]
         if displacements_out:
             displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
         return
@@ -1673,7 +1691,7 @@ def step_particle_body_attachment_lambda_rho(
     attachment_lambda[i] = lambda_retention * attachment_lambda[i]
     p = attachment_particle[i]
     w_p = particle_inv_mass[p]
-    if not particle_flags[p] & ParticleFlags.ACTIVE:
+    if vbd_particle_is_fixed(particle_flags[p], w_p):
         w_p = 0.0
     material_h = wp.mat33(0.0)
     if w_p > 0.0:
@@ -2387,16 +2405,12 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
         if wp.static(use_cloth_tile):
             particle_index = particle_ids_in_color[wp.min(particle_slot, particle_ids_in_color.shape[0] - 1)]
             vertex_mass = mass[particle_index]
-            particle_is_dynamic = (
-                particle_slot_valid
-                and (particle_flags[particle_index] & ParticleFlags.ACTIVE) != 0
-                and vertex_mass != 0.0
+            particle_is_dynamic = particle_slot_valid and not vbd_particle_is_fixed(
+                particle_flags[particle_index], vertex_mass
             )
         elif particle_slot_valid:
             particle_index = particle_ids_in_color[particle_slot]
-            particle_is_dynamic = (
-                particle_flags[particle_index] & ParticleFlags.ACTIVE != 0 and mass[particle_index] != 0.0
-            )
+            particle_is_dynamic = not vbd_particle_is_fixed(particle_flags[particle_index], mass[particle_index])
 
         if wp.static(not two_particles_per_warp):
             # Whole 16-lane block shares one particle: safe to retire inactive blocks early.
@@ -3121,7 +3135,7 @@ def solve_elasticity(
 
     particle_index = particle_ids_in_color[t_id]
 
-    if not particle_flags[particle_index] & ParticleFlags.ACTIVE or mass[particle_index] == 0:
+    if vbd_particle_is_fixed(particle_flags[particle_index], mass[particle_index]):
         particle_displacements[particle_index] = wp.vec3(0.0)
         return
 

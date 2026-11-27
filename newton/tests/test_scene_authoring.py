@@ -334,13 +334,13 @@ class TestSceneAuthoring(unittest.TestCase):
                 for _ in range(3):
                     editor.before_frame()
                 self.assertEqual(signature.call_count, 0)
-            editor.request_commit()
-            editor.before_frame()
-            self.assertTrue(editor._preparing)
-            with self.assertRaises(ValueError):
-                next(iter(editor._preparing.values())).result(timeout=30)
-            with self.assertLogs("newton", level="ERROR"):
-                editor.before_frame()
+            with self.assertLogs("newton", level="ERROR") as retry:
+                editor.request_commit()
+                deadline = time.monotonic() + 30
+                while not retry.records and time.monotonic() < deadline:
+                    editor.before_frame()
+                    time.sleep(0.001)
+            self.assertRegex(editor.error, "(?i)(parse|syntax|expected)")
             self.assertFalse(editor._preparing)
             self.assertFalse(editor.busy)
             self.assertIs(editor.model, model)

@@ -299,7 +299,7 @@ state:
 
 .. testcode:: deformable-visual-mesh
 
-    rays = camera.compute_camera_rays_pinhole(32, 32, camera_fov=np.deg2rad(45), device=model.device)
+    rays = camera.compute_camera_rays_pinhole(32, 32, fov=np.deg2rad(45), device=model.device)
     poses = wp.array([wp.transform(wp.vec3(0.5, 0.5, 3.0), wp.quat_identity())], dtype=wp.transform, device=model.device)
     color = camera.allocate_image_color(1, 32, 32)
     depth = camera.allocate_image_depth(1, 32, 32)
@@ -586,7 +586,7 @@ is also docked alongside **Scene** for switching scenes in place.
 
 The **Scene** explorer includes worlds, articulations, joints, bodies, shapes,
 deformable objects (surfaces, volumes, curves, and skinned visual meshes),
-tendons, particle-body attachments, mimic constraints, actuators and batteries,
+tendons, particle-body attachments, model cameras, actuators and batteries,
 custom attribute frequencies, collision pipelines and contacts, and shared
 geometry and BVH resources, with search filtering and per-object visibility and
 flag controls. Empty property categories are hidden. Custom attributes use

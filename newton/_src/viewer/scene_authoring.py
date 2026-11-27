@@ -31,7 +31,17 @@ from ..geometry.bvh import (
     compute_shape_bounds,
     compute_sphere_bounds,
 )
-from ..sim import BodyFlags, CollisionPipeline, Contacts, JointType, Model, ModelBuilder, ModelFlags, eval_ik
+from ..sim import (
+    BodyFlags,
+    CollisionPipeline,
+    Contacts,
+    JointType,
+    Model,
+    ModelBuilder,
+    ModelFlags,
+    ShapeFrictionMode,
+    eval_ik,
+)
 from ..solvers.xpbd import SolverXPBD
 from .authoring_coupling import create_coupled_solver, create_deformable_solver, create_mujoco_solver
 from .authoring_deformables import DEFORMABLE_KINDS, MAX_PARTICLES, MPM_VOXEL_SIZE, build_deformable
@@ -1224,7 +1234,7 @@ class SceneEditor:
         elif obj.kind == self.Shape.SPHERE:
             cfg.mu_rolling = _SPHERE_ROLLING_FRICTION
             if self._uses_mujoco:
-                common["custom_attributes"] = {"mujoco:condim": 6}
+                cfg.friction_mode = ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING
             builder.add_shape_sphere(body, radius=radius, **common)
         elif obj.kind == self.Shape.CYLINDER:
             builder.add_shape_cylinder(body, radius=radius, half_height=z * 0.5, **common)
@@ -1266,6 +1276,7 @@ class SceneEditor:
                 flags = template.shape_flags[index]
                 cfg = ModelBuilder.ShapeConfig(
                     mu=obj.friction,
+                    friction_mode=ShapeFrictionMode(template.shape_material_friction_mode[index]),
                     has_shape_collision=True,
                     has_particle_collision=bool(flags & int(ShapeFlags.COLLIDE_PARTICLES)),
                     is_visible=bool(flags & int(ShapeFlags.VISIBLE)),
@@ -1589,6 +1600,7 @@ class SceneEditor:
                     pipeline.broad_phase_pair_count,
                     contacts.contact_counters.shape[0],
                     pipeline._empty_mesh_recovery,
+                    None,  # Placement needs bounds for every shape.
                 ],
                 outputs=[
                     pipeline.narrow_phase.shape_aabb_lower,

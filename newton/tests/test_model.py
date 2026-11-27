@@ -208,7 +208,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             ("joint_target_q", flags.NONE),
             # Read only at construction: no flag refreshes them.
             ("shape_type", None),
-            ("mujoco:condim", None),
+            ("shape_material_friction_mode", None),
             ("user:label_id", None),
         ):
             with self.subTest(attribute=name):
@@ -1441,13 +1441,18 @@ class TestModelMesh(unittest.TestCase):
         with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape])
         self.assertEqual(captured["threshold"], 0.5)
+        self.assertEqual(
+            {key: captured[key] for key in ("mcts_nodes", "mcts_iterations", "mcts_max_depth", "merge")},
+            {"mcts_nodes": 20, "mcts_iterations": 20, "mcts_max_depth": 2, "merge": False},
+        )
 
-        # an explicit argument overrides the builder default
+        # explicit arguments override the builder and search defaults
         captured.clear()
         shape = builder.add_shape_mesh(body=-1, mesh=box)
         with patch_sys_module("coacd", fake_coacd):
-            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2, mcts_max_depth=1)
         self.assertEqual(captured["threshold"], 0.2)
+        self.assertEqual(captured["mcts_max_depth"], 1)
 
     @requires("scipy")
     def test_mesh_approximation_coacd_limits_hull_vertices(self):
@@ -1470,9 +1475,9 @@ class TestModelMesh(unittest.TestCase):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
-    @requires("coacd")
+    @requires("coacd", "scipy")
     def test_mesh_approximation_coacd_is_repeatable(self):
-        """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
+        """Decompose a torus with CoACD into few accurate hulls, identically across runs."""
         # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
         rings, sides = 32, 12
         u, v = np.meshgrid(
@@ -1492,14 +1497,36 @@ class TestModelMesh(unittest.TestCase):
             builder = ModelBuilder()
             builder.add_shape_mesh(body=-1, mesh=torus)
             builder.approximate_meshes(method="coacd", raise_on_failure=True)
-            return [np.concatenate((m.vertices.ravel(), m.indices.ravel())) for m in builder.shape_source]
+            return builder.shape_source
 
         first = decompose()
         for _ in range(2):
             again = decompose()
             self.assertEqual(len(again), len(first))
             for part, expected in zip(again, first, strict=True):
-                np.testing.assert_array_equal(part, expected)
+                np.testing.assert_array_equal(part.vertices, expected.vertices)
+                np.testing.assert_array_equal(part.indices, expected.indices)
+
+        # A one-level cut search needs 20 to 66 parts for this torus; a two-level search needs 10 to 12.
+        self.assertLessEqual(len(first), 16)
+
+        from scipy.spatial import ConvexHull
+
+        planes = [ConvexHull(part.vertices).equations for part in first]
+
+        def outside_distance(points):
+            """Return each point's largest plane distance to its nearest part, which is negative inside a part."""
+            return np.min([(points @ eq[:, :3].T + eq[:, 3]).max(axis=1) for eq in planes], axis=0)
+
+        rng = np.random.default_rng(0)
+        samples = rng.uniform((-0.07, -0.07, -0.02), (0.07, 0.07, 0.02), (100000, 3))
+        in_torus = (np.hypot(samples[:, 0], samples[:, 1]) - 0.05) ** 2 + samples[:, 2] ** 2 < 0.015**2
+        in_parts = outside_distance(samples) <= 0.0
+        self.assertGreater(np.sum(in_torus & in_parts) / np.sum(in_torus | in_parts), 0.9)
+        # The parts leave the hole open.
+        angles = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+        hole = np.stack((0.025 * np.cos(angles), 0.025 * np.sin(angles), np.zeros_like(angles)), axis=-1)
+        self.assertTrue(np.all(outside_distance(hole) > 0.0))
 
     @requires("scipy")
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
@@ -2758,6 +2785,35 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_invalid_friction_mode(self):
+        """Reject friction modes outside ShapeFrictionMode."""
+        for friction_mode in (-1, 2, 4):
+            with self.subTest(friction_mode=friction_mode):
+                cfg = newton.ModelBuilder.ShapeConfig(friction_mode=friction_mode)
+
+                with self.assertRaisesRegex(ValueError, "friction_mode must be a ShapeFrictionMode value"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_friction_mode_propagates_to_model(self):
+        """Carry shape friction modes through add_builder() and replicate() into the model."""
+        mode = newton.ShapeFrictionMode
+        self.assertEqual(newton.ModelBuilder.ShapeConfig().friction_mode, mode.SLIDING)
+
+        source = newton.ModelBuilder()
+        body = source.add_body()
+        source.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.NONE))
+        source.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        source.add_shape_capsule(
+            body, cfg=newton.ModelBuilder.ShapeConfig(friction_mode=mode.SLIDING_TORSIONAL_ROLLING)
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_builder(source)
+        builder.replicate(source, 2)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(model.shape_material_friction_mode.numpy(), [0, 1, 7] * 3)
+
     def test_shape_config_rejects_invalid_density(self):
         """Reject negative and non-finite density values."""
         for density in (-1.0, float("nan"), float("inf"), float("-inf")):
@@ -4151,76 +4207,6 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertIn("DFS topological order", str(cm.warning))
 
-    def test_mimic_constraint_programmatic(self):
-        """Test programmatic creation of mimic constraints."""
-        builder = newton.ModelBuilder()
-
-        # Create three links without implicit FREE joints.
-        b0 = builder.add_link()
-        b1 = builder.add_link()
-        b2 = builder.add_link()
-
-        j1 = builder.add_joint_revolute(
-            parent=-1,
-            child=b0,
-            axis=(0, 0, 1),
-            label="j1",
-        )
-        j2 = builder.add_joint_revolute(
-            parent=-1,
-            child=b1,
-            axis=(0, 0, 1),
-            label="j2",
-        )
-        j3 = builder.add_joint_revolute(
-            parent=-1,
-            child=b2,
-            axis=(0, 0, 1),
-            label="j3",
-        )
-        builder.add_articulation([j1])
-        builder.add_articulation([j2])
-        builder.add_articulation([j3])
-
-        # Add mimic constraints
-        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
-            _c1 = builder.add_constraint_mimic(
-                joint0=j2,
-                joint1=j1,
-                coef0=-0.25,
-                coef1=1.5,
-                label="mimic1",
-            )
-        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
-            _c2 = builder.add_constraint_mimic(
-                joint0=j3,
-                joint1=j1,
-                coef0=0.0,
-                coef1=-1.0,
-                enabled=False,
-                label="mimic2",
-            )
-
-        model = builder.finalize()
-
-        self.assertEqual(model.constraint_mimic_count, 2)
-
-        # Check first constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
-        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
-        self.assertEqual(model.constraint_mimic_label[0], "mimic1")
-
-        # Check second constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
-        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
-        self.assertEqual(model.constraint_mimic_label[1], "mimic2")
-
     def test_joint_mimic_metadata_and_evaluation(self):
         """Verify joint-owned mimic metadata evaluates scalar coordinates."""
         builder = newton.ModelBuilder()
@@ -4243,7 +4229,6 @@ class TestModelJoints(unittest.TestCase):
             model.joint_mimic_coeffs.numpy(),
             [(0.0, 1.0), (0.5, 2.0)],
         )
-        self.assertEqual(model.constraint_mimic_count, 0)
 
         state_in = model.state()
         state_out = model.state()

@@ -649,7 +649,8 @@ class PhysicsWidgets:
             draw = ui.get_window_draw_list()
             end = ui.ImVec2(pos.x + width, pos.y + height)
             rounding = ui.get_style().frame_rounding
-            left_corners = ui.ImDrawFlags_.round_corners_left
+            flags = ui.ImDrawFlags_
+            left_corners = flags.round_left if hasattr(flags, "round_left") else flags.round_corners_left
             if axis_index is not None:
                 axis_rgb = self.axes[axis_index][:3]
                 draw.add_rect_filled(pos, end, self.color((*axis_rgb, 0.16)), rounding, left_corners)

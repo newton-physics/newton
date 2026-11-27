@@ -8,7 +8,6 @@ import gc
 import inspect
 import sys
 import unittest
-import warnings
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -521,9 +520,7 @@ class TestViewerUI(unittest.TestCase):
         j0 = builder.add_joint_revolute(-1, body0)
         j1 = builder.add_joint_revolute(body0, body1)
         builder.add_articulation([j0, j1])
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            builder.add_constraint_mimic(j1, j0, coef0=0.0, coef1=1.0)
+        builder.add_camera(body1)
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 1.0, 0.5),
             rot=wp.quat_identity(),
@@ -647,7 +644,7 @@ class TestViewerUI(unittest.TestCase):
             ("tendon_guide", 0),
             ("tendon_segment", 0),
             ("attachment_particle_body", 0),
-            ("constraint_mimic", 0),
+            ("camera", 0),
             ("actuator_collection", 0),
             ("actuator_group", 0),
             ("battery", 0),
@@ -2613,8 +2610,8 @@ class TestViewerProperties(unittest.TestCase):
         self.assertIn("Update flags:", summary)
         self.assertIn("SHAPE_PROPERTIES", summary)
 
-    def test_tendons_attachments_mimics_and_actuators(self) -> None:
-        """Expose tendons, particle-body attachments, mimic constraints, and actuators in tree and inspector."""
+    def test_tendons_attachments_cameras_and_actuators(self) -> None:
+        """Expose tendons, particle-body attachments, model cameras, and actuators in tree and inspector."""
         from newton.actuators import DrivePD  # noqa: PLC0415
 
         builder = newton.ModelBuilder()
@@ -2636,9 +2633,7 @@ class TestViewerProperties(unittest.TestCase):
             ],
             label="cable_tendon",
         )
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            builder.add_constraint_mimic(j1, j0, coef0=0.0, coef1=0.5, label="linked_mimic")
+        builder.add_camera(b1, label="inspection_camera")
         builder.add_actuator(DrivePD, index=0, kp=50.0, kd=5.0)
         model = builder.finalize(device="cpu")
 
@@ -2647,8 +2642,8 @@ class TestViewerProperties(unittest.TestCase):
         self.assertIn(("tendon", 0), tree.labels)
         self.assertEqual(tree.labels[("tendon", 0)], "cable_tendon")
         self.assertIn(("attachment_group", -1), tree.labels)
-        self.assertIn(("mimic_group", -1), tree.labels)
-        self.assertEqual(tree.labels[("constraint_mimic", 0)], "linked_mimic")
+        self.assertIn(("camera_group", -1), tree.labels)
+        self.assertEqual(tree.labels[("camera", 0)], "inspection_camera")
         self.assertIn(("actuator_collection", 0), tree.roots)
 
         # Guides, segments, attachments, and actuators expand lazily.
@@ -2682,11 +2677,11 @@ class TestViewerProperties(unittest.TestCase):
         ws.selected, ws.selection = ("attachment_particle_body", 0), {("attachment_particle_body", 0)}
         inspector._contexts()
         self.assertEqual([d.frequency for d in inspector.domains], [Frequency.ATTACHMENT_PARTICLE_BODY])
-        ws.selected, ws.selection = ("constraint_mimic", 0), {("constraint_mimic", 0)}
+        ws.selected, ws.selection = ("camera", 0), {("camera", 0)}
         inspector._contexts()
-        self.assertEqual([d.frequency for d in inspector.domains], [Frequency.CONSTRAINT_MIMIC])
+        self.assertEqual([d.frequency for d in inspector.domains], [Frequency.CAMERA])
 
-        for query, expected_key in (("cable_tendon", ("tendon", 0)), ("linked_mimic", ("constraint_mimic", 0))):
+        for query, expected_key in (("cable_tendon", ("tendon", 0)), ("inspection_camera", ("camera", 0))):
             tree.query = query
             tree.rebuild()
             self.assertIn((expected_key, 1), tree.rows)

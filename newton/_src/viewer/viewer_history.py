@@ -45,11 +45,7 @@ def _component_arrays(component: object | None, *, model: Model | None = None) -
         # Solvers can attach scratch arrays allocated inside CUDA graphs. Their
         # pointers need not be accessible outside graph execution. Only declared
         # State/Control attributes (including custom namespaces) are snapshots.
-        arrays = {
-            name: array
-            for name, array in arrays.items()
-            if model._attribute_spec(name) is not None or name in State.EXTENDED_ATTRIBUTES
-        }
+        arrays = {name: array for name, array in arrays.items() if model._attribute_spec(name) is not None}
     return arrays
 
 

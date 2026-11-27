@@ -11,11 +11,13 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import GeoType
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.friction_patches import (
     _FrictionPatchState,
 )
 from newton._src.solvers.steel.kernels import (
+    PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
 )
 from newton._src.solvers.steel.solver_steel import _get_pgs_solve_propagation_colored_block_kernel
@@ -328,10 +330,15 @@ def select_colored_variant(test, solver, variant):
 def set_torsion_radius(model, radius, shapes=None):
     """Set ``steel:min_torsional_patch_radius`` [m] of ``shapes`` (every shape for ``None``), zero elsewhere.
 
-    ``radius`` may also be one value per selected shape.
+    ``radius`` may also be one value per selected shape. Shapes with a positive radius get the
+    torsional friction mode it needs, the others sliding friction.
     """
     radii = np.zeros(model.shape_count, dtype=np.float32)
     radii[slice(None) if shapes is None else list(shapes)] = radius
+    mode = newton.ShapeFrictionMode
+    model.shape_material_friction_mode.assign(
+        np.where(radii > 0.0, mode.SLIDING_TORSIONAL, mode.SLIDING).astype(np.int32)
+    )
     namespace = getattr(model, "steel", None)
     if namespace is not None and getattr(namespace, "min_torsional_patch_radius", None) is not None:
         namespace.min_torsional_patch_radius.assign(radii)
@@ -572,6 +579,9 @@ def _patch_fixture(
         shape_gap=wp.zeros(len(shape_bodies), dtype=float, device=device),
         shape_is_solid=wp.ones(len(shape_bodies), dtype=bool, device=device),
         shape_material_mu=wp.array(materials, dtype=float, device=device),
+        shape_material_friction_mode=wp.full(
+            len(shape_bodies), int(newton.ShapeFrictionMode.SLIDING), dtype=wp.int32, device=device
+        ),
     )
     state = SimpleNamespace(body_q=wp.array([wp.transform_identity()] * body_count, dtype=wp.transform, device=device))
     contacts = SimpleNamespace(
@@ -1039,11 +1049,12 @@ def _build_mixed_response_model(
     return replicated.finalize(device=device)
 
 
-def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
+def _build_two_revolute_chain(coef0: float, coef1: float, equality: bool = False, enabled: bool = True):
     """Build a fixed-base chain of two revolute Z-joints with a mimic between them.
 
     The leader joint is position-driven; the follower joint has no drive and no spring,
-    so any tracking it does comes from the mimic row alone.
+    so any tracking it does comes from the mimic row alone. With ``equality``, the coupling
+    is a MuJoCo joint equality row (``enabled`` or not) instead of a joint-owned mimic.
     """
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
     # add_link (not add_body): add_body wraps each body in its own free-joint articulation.
@@ -1070,10 +1081,8 @@ def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
     b.joint_target_kd[0] = 5.0
     b.joint_target_mode[0] = int(newton.JointTargetMode.POSITION)
     # follower: q_follower = coef0 + coef1 * q_leader
-    if legacy:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            b.add_constraint_mimic(joint0=j_follower, joint1=j_leader, coef0=coef0, coef1=coef1)
+    if equality:
+        newton.solvers.mujoco.add_equality_joint(b, j_follower, j_leader, polycoef=(coef0, coef1), enabled=enabled)
     else:
         b.set_joint_mimic(j_follower, j_leader, coeffs=(coef0, coef1))
     return b, j_leader, j_follower
@@ -1329,3 +1338,135 @@ def _assert_budget(test, result, solver):
         sliding = sum(float(np.linalg.norm(impulse[n + 1 : n + 3])) for n in group["anchor_rows"])
         spin = abs(float(impulse[group["row"]])) / group["effective_radius_m"]
         test.assertLessEqual(sliding + spin, group["mu"] * normal + 3e-6)
+
+
+def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cpu", padding=7):
+    """Create ordered/reordered contact worlds with unequal articulation DOFs.
+
+    The torsion tests and the ``SteelContactTorsionPreparation`` ASV benchmark share these inputs.
+    """
+    rng = np.random.default_rng(seed)
+    n = worlds * witnesses
+    capacity = n + padding
+    dense = witnesses * 3 + 8
+    records = [(world, local) for world in range(worlds) for local in range(witnesses)]
+    rng.shuffle(records)
+
+    def arr(value, dtype=None):
+        return wp.array(np.asarray(value), dtype=dtype, device=device)
+
+    def zero(shape, dtype=float):
+        return wp.zeros(shape, dtype=dtype, device=device)
+
+    def full(shape, value, dtype=int):
+        return wp.full(shape, value, dtype=dtype, device=device)
+
+    count = np.full(worlds, witnesses * 3, np.int32)
+    row_types = np.zeros((worlds, dense), np.int32)
+    parents = np.full((worlds, dense), -1, np.int32)
+    mu = np.zeros((worlds, dense), np.float32)
+    world_ids = np.zeros(capacity, np.int32)
+    slots = np.full(capacity, -1, np.int32)
+    anchors = np.zeros(capacity, np.int32)
+    sa = np.zeros(capacity, np.int32)
+    sb = np.zeros(capacity, np.int32)
+    owner = np.full(capacity, -1, np.int32)
+    normals = np.zeros((capacity, 3), np.float32)
+    points = np.zeros((capacity, 3), np.float32)
+    region_seeds = {}
+    for c, (world, local) in enumerate(records):
+        slot = local * 3
+        region = local % 2
+        region_seeds.setdefault((world, region), c)
+        world_ids[c], slots[c], anchors[c] = world, slot, 3
+        sa[c], sb[c] = world * 4 + region, world * 4 + 2 + region
+        owner[c] = region_seeds[world, region]
+        normals[c] = (0.0, 0.0, -1.0)
+        points[c] = (rng.uniform(-0.1, 0.1), rng.uniform(-0.1, 0.1), 0.0)
+        row_types[world, slot : slot + 3] = (
+            PGS_CONSTRAINT_TYPE_CONTACT,
+            PGS_CONSTRAINT_TYPE_FRICTION,
+            PGS_CONSTRAINT_TYPE_FRICTION,
+        )
+        parents[world, slot : slot + 3] = (slot, slot, slot)
+        mu[world, slot + 1 : slot + 3] = 0.7
+    if patches:
+        for world in range(worlds):
+            for region in range(2):
+                members = [c for c, (w, local) in enumerate(records) if w == world and local % 2 == region]
+                for i, c in enumerate(members):
+                    parents[world, slots[c]] = slots[members[(i + 1) % len(members)]]
+                    mu[world, slots[c] + 1 : slots[c] + 3] /= len(members)
+    shape_body = np.repeat(np.arange(worlds * 2, dtype=np.int32), 2)
+    response_sizes = np.tile([6, 3], worlds).astype(np.int32)
+    starts = np.concatenate(([0], np.cumsum(response_sizes))).astype(np.int32)
+    total_dofs = int(starts[-1])
+    motion = rng.normal(size=(total_dofs, 6)).astype(np.float32)
+    body_velocity = rng.normal(size=(worlds * 2, 6)).astype(np.float32)
+    prescribed = np.zeros(worlds * 2, np.int32)
+    if worlds > 1:
+        prescribed[-1] = 1
+    model = SimpleNamespace(
+        device=wp.get_device(device),
+        shape_count=worlds * 4,
+        shape_body=arr(shape_body, int),
+        shape_type=full(worlds * 4, int(GeoType.BOX)),
+        joint_ancestor=full(worlds * 2, -1),
+        joint_qd_start=arr(starts, int),
+    )
+    state = SimpleNamespace(
+        body_q=arr(np.tile([0, 0, 0, 0, 0, 0, 1], (worlds * 2, 1)).astype(np.float32), wp.transform)
+    )
+    augmented = SimpleNamespace(
+        _joint_S_s=arr(motion, wp.spatial_vector), _body_v_s=arr(body_velocity, wp.spatial_vector)
+    )
+    contacts = SimpleNamespace(
+        rigid_contact_count=arr([n], int),
+        rigid_contact_max=capacity,
+        rigid_contact_stiffness=None,
+        rigid_contact_shape0=arr(sa, int),
+        rigid_contact_shape1=arr(sb, int),
+        rigid_contact_normal=arr(normals, wp.vec3),
+        rigid_contact_point0=arr(points, wp.vec3),
+        rigid_contact_point1=arr(points, wp.vec3),
+        rigid_contact_margin0=zero(capacity),
+        rigid_contact_margin1=zero(capacity),
+    )
+    solver = SimpleNamespace(
+        model=model,
+        _world_count=worlds,
+        _articulation_constraint_max=dense,
+        _max_contacts_alloc=capacity,
+        _contact_torsion_shape_radius=full(worlds * 4, 0.01, float),
+        _friction_anchors_enabled=patches,
+        _friction_patches=SimpleNamespace(current=SimpleNamespace(owner=arr(owner, int))),
+        _contact_path=zero(capacity, int),
+        _contact_slot=arr(slots, int),
+        _contact_world=arr(world_ids, int),
+        _contact_slots_needed=arr(anchors, int),
+        _constraint_count=arr(count, int),
+        _slot_counter=arr(count, int),
+        _row_type=arr(row_types, int),
+        _row_parent=arr(parents, int),
+        _row_mu=arr(mu, float),
+        _row_dropped_dense=zero(worlds, int),
+        constraint_overflow=zero(worlds + 1, wp.bool),
+        _has_responding_global=False,
+        _warn_constraint_overflow=False,
+        _row_overflow_warning_emitted=zero(5, wp.int32),
+        _contact_torsion_group=full((worlds, dense), -1),
+        _torsion_row_radius=zero((worlds, dense)),
+        _body_to_joint=arr(np.arange(worlds * 2, dtype=np.int32), int),
+        _body_to_articulation=arr(np.arange(worlds * 2, dtype=np.int32), int),
+        _articulation_dof_start=arr(starts[:-1], int),
+        _articulation_response_dof_count=arr(response_sizes, int),
+        _art_group_idx=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
+        _art_to_world=arr(np.repeat(np.arange(worlds, dtype=np.int32), 2), int),
+        _prescribed_articulation=arr(prescribed, int),
+        _group_to_art={size: arr(np.flatnonzero(response_sizes == size).astype(np.int32), int) for size in (3, 6)},
+        _J_by_size={size: zero((worlds, dense, size)) for size in (3, 6)},
+        _propagation_torsion_rows=False,
+    )
+    for name in ("_phi", "_target_velocity", "_row_rebound_velocity"):
+        setattr(solver, name, zero((worlds, dense)))
+    return solver, state, augmented, contacts

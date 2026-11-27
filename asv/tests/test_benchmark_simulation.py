@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import json
 import os
 import re
@@ -217,6 +218,27 @@ class TestSimulationBenchmarks(unittest.TestCase):
         for benchmark_name in benchmark_names:
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
+    def test_steel_benchmarks_stay_out_of_pr_gate(self):
+        """Discover every Steel benchmark and keep them all out of the PR gate."""
+        benchmark_names = (
+            "simulation.bench_steel.SteelFrictionPatches.time_simulate",
+            "simulation.bench_steel.SteelFrictionPatchBuild.time_build",
+            "simulation.bench_steel.SteelFrictionPair.time_pair_update",
+            "simulation.bench_steel.SteelContactTorsionPreparation.time_prepare",
+        )
+        inventory = {entry["name"]: entry["params"] for entry in self._discover_benchmarks(pr_gate=False)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for benchmark_name in benchmark_names:
+            with self.subTest(benchmark_name=benchmark_name):
+                self.assertIn(benchmark_name, inventory)
+                # ASV also matches --bench against each parameterized name, e.g. "name(4, 'patch')".
+                names = [benchmark_name] + [
+                    f"{benchmark_name}({', '.join(case)})" for case in itertools.product(*inventory[benchmark_name])
+                ]
+                self.assertGreater(len(names), 1)
+                for name in names:
+                    self.assertFalse(any(pattern.search(name) for pattern in patterns), name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
         """Keep nightly collisions out of the gate with finite timing statistics."""
@@ -685,7 +707,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
                 self.assertFalse(any(pattern.search(benchmark) for pattern in patterns), benchmark)
 
     def test_pr_gate_caps_repeats_without_dropping_cases(self):
-        """Keep full workloads with three timing samples in the PR gate."""
+        """Keep full workloads with two timing samples per round in the PR gate."""
         cases = (
             (bench_selection.FastExampleSelectionCartpoleMuJoCo, 10),
             (bench_contacts.FastConvexCollision, 5),
@@ -694,9 +716,25 @@ class TestSimulationBenchmarks(unittest.TestCase):
             with self.subTest(benchmark=benchmark_cls.__name__):
                 self.assertEqual(benchmark_cls.repeat, pr_gate_repeat(full_repeat))
                 with patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}):
-                    self.assertEqual(pr_gate_repeat(full_repeat), 3)
+                    self.assertEqual(pr_gate_repeat(full_repeat), 2)
                 with patch.dict("os.environ", {}, clear=True):
                     self.assertEqual(pr_gate_repeat(full_repeat), full_repeat)
+
+    def test_pr_gate_sample_counts_can_reach_significance(self):
+        """Avoid six samples per revision, where ASV never reports a change."""
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        checked = 0
+        for benchmark in self._discover_benchmarks(pr_gate=True):
+            name, repeat = benchmark["name"], benchmark["repeat"]
+            if ".time_" not in name or not any(pattern.search(name) for pattern in patterns):
+                continue
+            if not isinstance(repeat, int) or repeat <= 0:
+                continue  # ASV picks the sample count at run time.
+            checked += 1
+            with self.subTest(benchmark=name):
+                # At 6 vs 6 the smallest Mann-Whitney p-value, 2/924, exceeds ASV's 0.002 threshold.
+                self.assertNotEqual(repeat * benchmark["rounds"], 6)
+        self.assertGreater(checked, 0)
 
     def test_fast_allegro_uses_representative_pr_workload(self):
         """Keep Allegro coverage while reducing duplicated PR sampling."""

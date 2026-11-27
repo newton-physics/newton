@@ -63,7 +63,7 @@ class ModelTree:
         self._tendon_worlds: np.ndarray | None = None
         self._tendon_starts: np.ndarray | None = None
         self._attachment_worlds: np.ndarray | None = None
-        self._mimic_worlds: np.ndarray | None = None
+        self._camera_worlds: np.ndarray | None = None
         self.collision: CollisionInspector | None = None
         self.kinds = ("body", "joint", "shape", "articulation")
         from .viewer_deformables import DeformableCatalog  # noqa: PLC0415
@@ -164,19 +164,19 @@ class ModelTree:
             return [int(i) for i in np.flatnonzero((worlds < 0) | (worlds >= self.model.world_count))]
         return [int(i) for i in np.flatnonzero(worlds == world)]
 
-    def _mimic_world_array(self) -> np.ndarray:
-        """Cache host mimic-constraint world indices once when mimic constraints exist."""
-        if self._mimic_worlds is None:
+    def _camera_world_array(self) -> np.ndarray:
+        """Cache host world indices for model cameras."""
+        if self._camera_worlds is None:
             m = self.model
-            if m.constraint_mimic_count and m.constraint_mimic_world is not None:
-                self._mimic_worlds = m.constraint_mimic_world.numpy()
+            if m.camera_count and m.camera_world is not None:
+                self._camera_worlds = m.camera_world.numpy()
             else:
-                self._mimic_worlds = np.empty(0, dtype=np.int32)
-        return self._mimic_worlds
+                self._camera_worlds = np.empty(0, dtype=np.int32)
+        return self._camera_worlds
 
-    def mimics_in_world(self, world: int) -> list[int]:
-        """Return mimic-constraint indices owned by a world (or -1 for global constraints)."""
-        worlds = self._mimic_world_array()
+    def cameras_in_world(self, world: int) -> list[int]:
+        """Return camera indices owned by a world (or -1 for global cameras)."""
+        worlds = self._camera_world_array()
         if not len(worlds):
             return []
         if world < 0:
@@ -184,14 +184,14 @@ class ModelTree:
         return [int(i) for i in np.flatnonzero(worlds == world)]
 
     def _world_has_content(self, world: int) -> bool:
-        """Report whether a world owns any spatial, deformable, tendon, attachment, mimic, or custom objects."""
+        """Report whether a world owns any spatial, deformable, tendon, attachment, camera, or custom objects."""
         return (
             any(self.ranges(kind, world) for kind in self.starts)
             or self.deformables.has_world(world)
             or world in self.custom.buckets
             or bool(self.tendons_in_world(world))
             or bool(self.attachments_in_world(world))
-            or bool(self.mimics_in_world(world))
+            or bool(self.cameras_in_world(world))
         )
 
     def _attach_actuators(self) -> None:
@@ -303,7 +303,7 @@ class ModelTree:
         kind, index = key
         if "world" in self.meta.get(key, {}):
             return self.meta[key]["world"]
-        if kind in ("root", "tendon_group", "attachment_group", "mimic_group"):
+        if kind in ("root", "tendon_group", "attachment_group", "camera_group"):
             return index
         if kind == "attachment_page":
             return index[0]
@@ -331,8 +331,8 @@ class ModelTree:
         if kind == "attachment_particle_body":
             worlds = self._attachment_world_array()
             return int(worlds[index]) if 0 <= index < len(worlds) else -1
-        if kind == "constraint_mimic":
-            worlds = self._mimic_world_array()
+        if kind == "camera":
+            worlds = self._camera_world_array()
             return int(worlds[index]) if 0 <= index < len(worlds) else -1
         if self.custom.frequency(key) is not None:
             return self.custom.world_for(key)
@@ -479,20 +479,20 @@ class ModelTree:
             self.meta[agroup] = {"world": world}
             self.parents[agroup] = root
             self.children[root].append(agroup)
-        mimics = self.mimics_in_world(world)
-        if mimics:
-            mgroup = ("mimic_group", world)
-            self.labels[mgroup] = f"Mimic constraints · {len(mimics):,}"
-            self.meta[mgroup] = {"world": world}
-            self.parents[mgroup] = root
-            self.children[root].append(mgroup)
-            labels = m.constraint_mimic_label
-            for i in mimics:
-                mkey = ("constraint_mimic", i)
-                self.labels[mkey] = labels[i] if i < len(labels) and labels[i] else f"Mimic {i}"
-                self.meta[mkey] = {"world": world}
-                self.parents[mkey] = mgroup
-                self.children[mgroup].append(mkey)
+        cameras = self.cameras_in_world(world)
+        if cameras:
+            cgroup = ("camera_group", world)
+            self.labels[cgroup] = f"Cameras · {len(cameras):,}"
+            self.meta[cgroup] = {"world": world}
+            self.parents[cgroup] = root
+            self.children[root].append(cgroup)
+            labels = m.camera_label
+            for i in cameras:
+                ckey = ("camera", i)
+                self.labels[ckey] = labels[i] if i < len(labels) and labels[i] else f"Camera {i}"
+                self.meta[ckey] = {"world": world}
+                self.parents[ckey] = cgroup
+                self.children[cgroup].append(ckey)
         self.custom.add_world(self, world)
 
     def has_children(self, key: TreeKey) -> bool:
@@ -610,10 +610,10 @@ class ModelTree:
                 label = name or f"Tendon {i}"
                 if query in label.casefold():
                     self.ensure_world(self.world_for(("tendon", i)))
-            for i, name in enumerate(self.model.constraint_mimic_label):
-                label = name or f"Mimic {i}"
+            for i, name in enumerate(self.model.camera_label):
+                label = name or f"Camera {i}"
                 if query in label.casefold():
-                    self.ensure_world(self.world_for(("constraint_mimic", i)))
+                    self.ensure_world(self.world_for(("camera", i)))
             parts = query.split()
             if len(parts) == 2 and parts[1].isdigit():
                 idx = int(parts[1])
@@ -649,7 +649,7 @@ class ModelTree:
                         "tendon_guide",
                         "tendon_segment",
                         "attachment_particle_body",
-                        "constraint_mimic",
+                        "camera",
                     )
                     or self.resources.shape_owner(key) is not None
                 ) and query in name.casefold():

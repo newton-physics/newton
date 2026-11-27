@@ -24,7 +24,6 @@ import numpy as np
 import warp as wp
 
 import newton as nt
-from newton.selection import ArticulationView
 
 from ...core.host_transform import transform_assign, transform_assign_matrix, transform_to_matrix
 from ...core.types import Axis
@@ -1816,7 +1815,7 @@ class ViewerGui:
             include_links = [link.strip() for link in state["include_links"].split(",") if link.strip()] or None
             exclude_links = [link.strip() for link in state["exclude_links"].split(",") if link.strip()] or None
 
-            state["selected_articulation_view"] = ArticulationView(
+            state["selected_articulation_view"] = nt.selection.ArticulationView(
                 model=viewer.model,
                 pattern=state["selected_articulation_pattern"],
                 include_joints=include_joints,
@@ -1830,7 +1829,7 @@ class ViewerGui:
             state["error_message"] = str(e)
             state["selected_articulation_view"] = None
 
-    def _render_attribute_values(self, view: ArticulationView, attribute_name: str):
+    def _render_attribute_values(self, view: nt.selection.ArticulationView, attribute_name: str):
         """Read the selected ArticulationView attribute to the host and draw values and statistics in the basic panel."""
         imgui = self.ui.imgui
         viewer = self._viewer
@@ -1899,7 +1898,7 @@ class ViewerGui:
         except Exception as e:
             imgui.text(f"Error getting attribute: {e!s}")
 
-    def _get_attribute_names(self, view: ArticulationView, attribute_name: str):
+    def _get_attribute_names(self, view: nt.selection.ArticulationView, attribute_name: str):
         """Resolve coordinate, DOF, or body labels for a basic-panel attribute, returning None when unavailable."""
         try:
             if attribute_name.startswith("joint_q") or attribute_name.startswith("joint_f"):
