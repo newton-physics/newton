@@ -5464,7 +5464,7 @@ class TestActuatorBuilder(unittest.TestCase):
         result2 = parse_usd(builder2, usd_path, ignore_paths=[".*Actuator"])
         self.assertEqual(result2["actuator_count"], 0)
 
-    @requires("pxr.Usd")
+    @requires("pxr.Usd", "newton_usd_schemas")
     def test_from_usd_instanceable(self):
         """Actuators and batteries under instanceable prims import like the uninstanced asset."""
         from pxr import UsdPhysics
