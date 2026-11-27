@@ -560,10 +560,21 @@ _DEVICE = "cuda:0"
 
 
 def _patch_fixture(
-    points, *, shape0=None, normals=None, materials=(0.5, 0.5, 0.5), shape_bodies=(0, 1, 0), device=_DEVICE
+    points,
+    *,
+    shape0=None,
+    normals=None,
+    gaps=None,
+    materials=(0.5, 0.5, 0.5),
+    shape_bodies=(0, 1, 0),
+    device=_DEVICE,
 ):
-    """Construct patch geometry without a collision matcher or a solver step."""
+    """Construct patch geometry without a collision matcher or a solver step; ``gaps`` separate the witness points."""
     n = len(points)
+    normal_values = normals if normals is not None else [[0.0, 0.0, -1.0]] * n
+    points0 = points
+    if gaps is not None:
+        points0 = (np.asarray(points) - np.asarray(gaps)[:, None] * np.asarray(normal_values)).astype(np.float32)
     body_count = max(shape_bodies) + 1
     model = SimpleNamespace(
         device=wp.get_device(device),
@@ -588,11 +599,9 @@ def _patch_fixture(
         rigid_contact_count=wp.array([n], dtype=int, device=device),
         rigid_contact_shape0=wp.array(shape0 if shape0 is not None else [0] * n, dtype=int, device=device),
         rigid_contact_shape1=wp.ones(n, dtype=int, device=device),
-        rigid_contact_point0=wp.array(points, dtype=wp.vec3, device=device),
+        rigid_contact_point0=wp.array(points0, dtype=wp.vec3, device=device),
         rigid_contact_point1=wp.array(points, dtype=wp.vec3, device=device),
-        rigid_contact_normal=wp.array(
-            normals if normals is not None else [[0.0, 0.0, -1.0]] * n, dtype=wp.vec3, device=device
-        ),
+        rigid_contact_normal=wp.array(normal_values, dtype=wp.vec3, device=device),
         rigid_contact_margin0=wp.zeros(n, dtype=float, device=device),
         rigid_contact_margin1=wp.zeros(n, dtype=float, device=device),
         rigid_contact_surface_velocity=None,

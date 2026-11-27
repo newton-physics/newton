@@ -9,6 +9,10 @@ Locations sit at the footprint's axial extremes along its principal axis, with
 the transverse offset and height of the members near each end, avoiding a
 diagonal friction couple on symmetric narrow footprints. Isotropic footprints
 retain a canonical farthest pair because they have no unique axis.
+In a region that touches, only members separated by at most ``_TOUCH_TOLERANCE``
+times the smaller body's radius are friction locations, so a separated member
+never carries the region's pooled load. A region that is only speculatively in
+contact keeps the members within that tolerance of its nearest one.
 Regions require matching friction materials, nearly aligned normals, nearby
 contact planes, and connected shape bounding spheres on each body. The latter
 is a conservative test across convex seams, not an exact surface-connectivity
@@ -89,6 +93,7 @@ class _PatchFrame:
     second: wp.array[int]
     separation: wp.array[float]
     support_gap_limit: wp.array[float]
+    gap: wp.array[float]
     tangent_impulse: wp.array[wp.vec3]
     # Per sorted pair start: nonzero when a frozen pair's contacts differ from the previous frame's.
     carry_failed: wp.array[int]
@@ -178,6 +183,7 @@ def _prepare(
     # filtered regions must still be able to carry their anchor history.
     frame.support_gap_limit[c] = wp.max(support_gap_limit, 0.0)
     frame.eligible[c] = int(eligible)
+    frame.gap[c] = gap
     flip = int(ka > kb)
     if flip != 0:
         t = a
@@ -228,6 +234,14 @@ def _compatible(frame: _PatchFrame, seed: int, c: int):
         and frame.mu[seed][1] == frame.mu[c][1]
         and wp.abs(wp.dot(d, frame.normal[seed])) <= 0.02 * r
         and wp.length_sq(d) <= 4.0 * r * r
+    )
+
+
+@wp.func
+def _precedes(position: wp.vec3, other: wp.vec3):
+    """Lexicographic order of contact centers, which picks a region's first friction location."""
+    return position[0] < other[0] or (
+        position[0] == other[0] and (position[1] < other[1] or (position[1] == other[1] and position[2] < other[2]))
     )
 
 
@@ -309,6 +323,26 @@ def _carried_displacement(q: wp.array[wp.transform], prev: _PatchFrame, p: int, 
 _FLOOD_CUDA = """
 #if defined(__CUDA_ARCH__)
     const int lane = threadIdx.x & 31;
+    const unsigned full = 0xffffffffu;
+    // Raise separation to the warp's largest distance if it is larger; the earliest lane wins ties.
+    const auto farthest = [&](float distance, int c, float& separation, int& second) {
+        float best = distance;
+        int best_lane = lane;
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            const float other = __shfl_down_sync(full, best, offset);
+            const int other_lane = __shfl_down_sync(full, best_lane, offset);
+            if (other > best || (other == best && other_lane < best_lane)) {
+                best = other;
+                best_lane = other_lane;
+            }
+        }
+        best = __shfl_sync(full, best, 0);
+        const int winner = __shfl_sync(full, c, __shfl_sync(full, best_lane, 0));
+        if (best > separation) {
+            separation = best;
+            second = winner;
+        }
+    };
     int end = count.data[0];
     if (end > capacity) end = capacity;
     const int n_pairs = min(pair_count.data[0], pair_list.shape[0]);
@@ -328,7 +362,9 @@ _FLOOD_CUDA = """
         remaining -= 1;
         int tail = seed;
         int first = (eligible.data[seed] != 0) ? seed : -1;
+        float nearest = (first >= 0) ? gap.data[seed] : 1.0e30f;
         const wp::vec3 seed_center = center.data[seed];
+        wp::vec3 first_center = seed_center;
         const wp::vec3 seed_normal = normal.data[seed];
         const wp::vec2 seed_mu = mu.data[seed];
         const float r = radius.data[seed];
@@ -345,40 +381,46 @@ _FLOOD_CUDA = """
                     const int j = base + lane;
                     int c = -1;
                     bool accept = false;
+                    int usable = 0;
+                    float candidate_gap = 0.0f;
+                    wp::vec3 position(0.0f);
                     if (j < stop) {
                         c = indices.data[j];
                         if (owner.data[c] < 0) {
-                            const wp::vec3 d = wp::sub(center.data[c], seed_center);
+                            position = center.data[c];
+                            const wp::vec3 d = wp::sub(position, seed_center);
                             const wp::vec2 cmu = mu.data[c];
                             const bool compatible = wp::dot(seed_normal, normal.data[c]) >= 0.995f
                                 && seed_mu[0] == cmu[0] && seed_mu[1] == cmu[1]
                                 && wp::abs(wp::dot(d, seed_normal)) <= 0.02f * r
                                 && wp::length_sq(d) <= 4.0f * r * r;
-                            if (compatible && shapes_adjacent(sa, shape_a.data[c]) && shapes_adjacent(sb, shape_b.data[c]))
+                            if (compatible && shapes_adjacent(sa, shape_a.data[c]) && shapes_adjacent(sb, shape_b.data[c])) {
                                 accept = true;
+                                usable = eligible.data[c];
+                                candidate_gap = gap.data[c];
+                            }
                         }
                     }
-                    unsigned ballot = __ballot_sync(0xffffffffu, accept);
+                    // Each lane loaded its own candidate; the loop below only shuffles registers.
+                    unsigned ballot = __ballot_sync(full, accept);
                     while (ballot) {
                         const int l = __ffs(ballot) - 1;
                         ballot &= ballot - 1u;
-                        const int cc = __shfl_sync(0xffffffffu, c, l);
+                        const int cc = __shfl_sync(full, c, l);
                         if (lane == 0) {
                             owner.data[cc] = seed;
                             next_contact.data[tail] = cc;
                         }
                         tail = cc;
                         remaining -= 1;
-                        if (eligible.data[cc] != 0) {
-                            if (first < 0) {
+                        const wp::vec3 p(__shfl_sync(full, position[0], l), __shfl_sync(full, position[1], l),
+                                         __shfl_sync(full, position[2], l));
+                        const float g = __shfl_sync(full, candidate_gap, l);
+                        if (__shfl_sync(full, usable, l) != 0) {
+                            nearest = fminf(nearest, g);
+                            if (first < 0 || precedes(p, first_center)) {
                                 first = cc;
-                            } else {
-                                const wp::vec3 position = center.data[cc];
-                                const wp::vec3 p0 = center.data[first];
-                                if (position[0] < p0[0]
-                                    || (position[0] == p0[0]
-                                        && (position[1] < p0[1] || (position[1] == p0[1] && position[2] < p0[2]))))
-                                    first = cc;
+                                first_center = p;
                             }
                         }
                     }
@@ -391,29 +433,68 @@ _FLOOD_CUDA = """
         }
         // Members in sorted order with the member farthest from the first location,
         // as _build collects them: the same independent test, applied in lane order.
+        // Members separated beyond the touching gate lose eligibility, as in _build.
         __syncwarp();
         const bool carry_only = first < 0;
-        const int anchor = carry_only ? seed : first;
-        const wp::vec3 anchor_center = center.data[anchor];
-        int second = anchor;
+        const float gate = fmaxf(nearest, 0.0f) + touch_tolerance * r;
+        const bool relocate = !carry_only && gap.data[first] > gate;
+        if (relocate) first = -1;
+        const int member_start = member_stop;
+        const wp::vec3 anchor_center = carry_only ? seed_center : first_center;
+        int second = carry_only ? seed : first;
         float separation = 0.0f;
         for (int base = index; base < stop; base += 32) {
             const int j = base + lane;
             const int c = (j < stop) ? indices.data[j] : -1;
-            unsigned ballot = __ballot_sync(0xffffffffu, c >= 0 && owner.data[c] == seed);
-            while (ballot) {
-                const int l = __ffs(ballot) - 1;
-                ballot &= ballot - 1u;
-                const int cc = __shfl_sync(0xffffffffu, c, l);
-                if (lane == 0) members.data[member_stop] = cc;
-                member_stop += 1;
-                if (carry_only || eligible.data[cc] != 0) {
-                    const float distance = wp::length_sq(wp::sub(center.data[cc], anchor_center));
-                    if (distance > separation) {
-                        separation = distance;
-                        second = cc;
+            const bool member = c >= 0 && owner.data[c] == seed;
+            const unsigned ballot = __ballot_sync(full, member);
+            bool usable = false;
+            float distance = -1.0f;
+            wp::vec3 position(0.0f);
+            if (member) {
+                members.data[member_stop + __popc(ballot & ((1u << lane) - 1u))] = c;
+                usable = eligible.data[c] != 0;
+                if (usable && !carry_only && gap.data[c] > gate) {
+                    usable = false;
+                    eligible.data[c] = 0;
+                }
+                position = center.data[c];
+                if (!relocate && (carry_only || usable)) {
+                    const float d = wp::length_sq(wp::sub(position, anchor_center));
+                    if (d >= 0.0f) distance = d;
+                }
+            }
+            member_stop += __popc(ballot);
+            if (relocate) {
+                unsigned candidates = __ballot_sync(full, usable);
+                while (candidates) {
+                    const int l = __ffs(candidates) - 1;
+                    candidates &= candidates - 1u;
+                    const wp::vec3 p(__shfl_sync(full, position[0], l), __shfl_sync(full, position[1], l),
+                                     __shfl_sync(full, position[2], l));
+                    const int cc = __shfl_sync(full, c, l);
+                    if (first < 0 || precedes(p, first_center)) {
+                        first = cc;
+                        first_center = p;
                     }
                 }
+            } else {
+                farthest(distance, c, separation, second);
+            }
+        }
+        if (relocate) {
+            // The lowest member lay beyond the gate: measure from the new first location.
+            __syncwarp();
+            second = first;
+            for (int base = member_start; base < member_stop; base += 32) {
+                const int k = base + lane;
+                const int c = (k < member_stop) ? members.data[k] : -1;
+                float distance = -1.0f;
+                if (c >= 0 && eligible.data[c] != 0) {
+                    const float d = wp::length_sq(wp::sub(center.data[c], first_center));
+                    if (d >= 0.0f) distance = d;
+                }
+                farthest(distance, c, separation, second);
             }
         }
         if (lane == 0) {
@@ -437,6 +518,9 @@ _FLOOD_CUDA = _FLOOD_CUDA.replace(
         const wp::vec3 delta = wp::sub(
             wp::transform_get_translation(shape_transform.data[a]), wp::transform_get_translation(shape_transform.data[b]));
         return wp::length_sq(delta) <= (1.0f + 1.0e-5f) * rad * rad;
+    };
+    const auto precedes = [](const wp::vec3& p, const wp::vec3& p0) {
+        return p[0] < p0[0] || (p[0] == p0[0] && (p[1] < p0[1] || (p[1] == p0[1] && p[2] < p0[2])));
     };""",
     1,
 )
@@ -454,6 +538,8 @@ def _flood_native(
     indices: wp.array[int],
     owner: wp.array[int],
     eligible: wp.array[int],
+    gap: wp.array[float],
+    touch_tolerance: float,
     center: wp.array[wp.vec3],
     normal: wp.array[wp.vec3],
     mu: wp.array[wp.vec2],
@@ -473,6 +559,9 @@ def _flood_native(
 
 _FLOOD_MIN_CONTACTS = 32
 """Body pairs with more contacts than this grow their regions on a warp; smaller pairs in ``_build``."""
+
+_TOUCH_TOLERANCE = wp.constant(0.01)
+"""Fraction of the smaller body's radius by which a contact may be separated and still count as touching."""
 
 _SUPPORT_EDGE_FRACTION = wp.constant(0.05)
 """Fraction of a footprint's principal extent that groups members into each end's support edge.
@@ -546,6 +635,8 @@ def _flood_regions(
         frame.indices,
         frame.owner,
         frame.eligible,
+        frame.gap,
+        _TOUCH_TOLERANCE,
         frame.center,
         frame.normal,
         frame.mu,
@@ -672,14 +763,8 @@ def _build(
                                 if frame.eligible[c] != 0:
                                     if first < 0:
                                         first = c
-                                    else:
-                                        position = frame.center[c]
-                                        p0 = frame.center[first]
-                                        if position[0] < p0[0] or (
-                                            position[0] == p0[0]
-                                            and (position[1] < p0[1] or (position[1] == p0[1] and position[2] < p0[2]))
-                                        ):
-                                            first = c
+                                    elif _precedes(frame.center[c], frame.center[first]):
+                                        first = c
                     expanded_a = sa
                     expanded_b = sb
                 cursor = patches.next_contact[cursor]
@@ -699,6 +784,8 @@ def _build(
             second = frame.second[seed]
             separation = frame.separation[seed]
         else:
+            nearest = float(1.0e30)
+            farthest = float(-1.0e30)
             # Preserve sorted contact order for footprint sums and tie breaking.
             # The collision list follows flood order and must remain unchanged.
             for j in range(index, stop):
@@ -708,10 +795,40 @@ def _build(
                 frame.members[member_stop] = c
                 member_stop += 1
                 if carry_only != 0 or frame.eligible[c] != 0:
+                    if carry_only == 0:
+                        gap = frame.gap[c]
+                        nearest = wp.min(nearest, gap)
+                        farthest = wp.max(farthest, gap)
                     distance = wp.length_sq(frame.center[c] - frame.center[first])
                     if distance > separation:
                         separation = distance
                         second = c
+            # Members separated beyond the touching gate are no friction locations: they would
+            # place the region's pooled load where nothing touches.
+            gate = wp.max(nearest, 0.0) + _TOUCH_TOLERANCE * frame.radius[seed]
+            if farthest > gate:
+                relocate = frame.gap[first] > gate
+                if relocate:
+                    first = -1
+                for j in range(member_start, member_stop):
+                    c = frame.members[j]
+                    if frame.eligible[c] != 0:
+                        if frame.gap[c] > gate:
+                            frame.eligible[c] = 0
+                        elif relocate:
+                            if first < 0:
+                                first = c
+                            elif _precedes(frame.center[c], frame.center[first]):
+                                first = c
+                second = first
+                separation = float(0.0)
+                for j in range(member_start, member_stop):
+                    c = frame.members[j]
+                    if frame.eligible[c] != 0:
+                        distance = wp.length_sq(frame.center[c] - frame.center[first])
+                        if distance > separation:
+                            separation = distance
+                            second = c
         anchors = int(1)
         if separation > 1.0e-8 * frame.radius[seed] * frame.radius[seed]:
             anchors = 2
@@ -867,6 +984,10 @@ def _build(
                 support_gap = wp.dot(_world_point(q, a, prev.surface_a[p]) - _world_point(q, b, prev.surface_b[p]), n)
                 if not (support_gap <= wp.max(current_gap, frame.support_gap_limit[c]) + 1.0e-5 * r):
                     continue
+                # A separated contact keeps only its own history: witnesses nearer than its gap by
+                # more than the touching tolerance belong to a nearer contact, which carries them on.
+                if current_gap > _TOUCH_TOLERANCE * r and support_gap < current_gap - _TOUCH_TOLERANCE * r:
+                    continue
                 error = _carried_displacement(q, prev, p, n)
                 error += motion
                 tangent_delta = error - n * wp.dot(error, n)
@@ -924,6 +1045,7 @@ def _build(
                         if (
                             wp.dot(other_normal, n) < 0.995
                             or other_gap > wp.max(current_gap, frame.support_gap_limit[c]) + 1.0e-5 * r
+                            or (current_gap > _TOUCH_TOLERANCE * r and other_gap < current_gap - _TOUCH_TOLERANCE * r)
                         ):
                             break
                         other_center = 0.5 * (
@@ -1389,6 +1511,7 @@ class _FrictionPatchState:
         frame.mu = wp.zeros(n, dtype=wp.vec2, device=device)
         frame.radius = wp.zeros(n, dtype=float, device=device)
         frame.support_gap_limit = wp.zeros(n, dtype=float, device=device)
+        frame.gap = wp.zeros(n, dtype=float, device=device)
         frame.separation = wp.zeros(n, dtype=float, device=device)
         for field in (
             "body_a",

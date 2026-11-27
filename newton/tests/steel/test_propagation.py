@@ -217,18 +217,16 @@ def test_native_tree_kernels_match_generic(test, device):
 def test_propagation_row_overflow_is_flagged_and_reset(test, device):
     """Flag a world whose propagation rows exceed their capacity until that world is reset."""
     builder = newton.ModelBuilder()
-    for root_z in (0.3, 3.0):
-        # World 1's chain hangs far above the ground and makes no contact.
+    for root_z in (0.25, 3.0):
+        # World 0's chain rests on the ground through several contacts; world 1's hangs far above it.
         world = newton.ModelBuilder()
         _chain(world, 0.0, 2, root_z)
         builder.add_world(world)
     builder.add_ground_plane()
     model = builder.finalize(device=device)
-    for response, capacity in (
-        # Dense rows hold the two rows of each joint limit; one contact's three rows fit.
-        ("propagation", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
-        ("colored", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
-    ):
+    # Dense rows hold the two rows of each joint limit; the propagation family holds one contact's three rows.
+    capacity = {"free_body_constraint_max": 1, "articulation_constraint_max": 4, "propagation_constraint_max": 3}
+    for response in ("propagation", "colored"):
         with test.subTest(response=response):
             solver = SolverSteel(model, **_response(response), warn_constraint_overflow=False, **capacity)
             state, contacts = _step(model, solver)
