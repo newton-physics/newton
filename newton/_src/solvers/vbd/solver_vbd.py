@@ -8,7 +8,7 @@ import warnings
 import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -65,6 +65,9 @@ from .particle_vbd_kernels import (
     build_particle_body_contact_adjacency_active,
     # Solver kernels (particle VBD)
     forward_step,
+    mark_held_contact_groups,
+    mark_held_particle_groups,
+    mark_held_self_contact_groups,
     gather_particle_body_contact_force_and_hessian,
     make_solve_elasticity_tile,
     reset_particle_state,
@@ -216,6 +219,34 @@ def _validate_compliant_alm_material_coefficient(
         raise ValueError(f"{name} must contain nonnegative values")
     if np.any(values > np.finfo(np.float32).max):
         raise ValueError(f"{name} must not exceed the float32 maximum")
+
+
+def _particle_groups(model: Model) -> np.ndarray:
+    """Connected-component label (0..groups-1) of every particle, joined by tets, triangles, edges and springs."""
+    count = model.particle_count
+    elements = []
+    for name in ("tet_indices", "tri_indices", "edge_indices", "spring_indices"):
+        array = getattr(model, name, None)
+        if array is None or array.shape[0] == 0:
+            continue
+        indices = array.numpy().reshape(array.shape[0], -1) if name != "spring_indices" else array.numpy().reshape(-1, 2)
+        elements.append(indices)
+    labels = np.arange(count, dtype=np.int64)
+    while elements:  # propagate the smallest label along every element until nothing changes
+        changed = False
+        for indices in elements:
+            safe = np.where(indices >= 0, indices, 0)
+            element_min = np.where(indices >= 0, labels[safe], count).min(axis=1)
+            before = labels.copy()
+            for column in range(indices.shape[1]):
+                valid = indices[:, column] >= 0
+                np.minimum.at(labels, indices[valid, column], element_min[valid])
+            changed = changed or not np.array_equal(before, labels)
+        labels = labels[labels]  # pointer jumping: follow each label to its own label
+        if not changed:
+            break
+    _unique, groups = np.unique(labels, return_inverse=True)
+    return groups.astype(np.int32)
 
 
 class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
@@ -462,6 +493,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
+        particle_initial_guess: Literal["inertia", "adaptive"] = "inertia",
         # Rigid body - constraint formulation and stabilization
         rigid_compliant_alm: bool = _DEPRECATED_RIGID_COMPLIANT_ALM_UNSET,
         rigid_avbd_alpha: float | None = None,  # Shared alpha override; None uses zero
@@ -566,6 +598,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_external_edge_contact_filtering_map: Optional dictionary used to exclude additional edge-edge pairs during contact
                 generation. Keys must be edge primitive ids (integers), and each value must be a `list` or `set`
                 containing the edges to be filtered out. Only used when `particle_enable_self_contact` is `True`.
+            particle_initial_guess: Where each step's particle iteration starts. ``"inertia"`` (default)
+                starts at the inertial target ``x + (v + a dt) dt``. ``"adaptive"`` scales the external
+                acceleration ``a`` by how much of it each particle actually followed over the previous step
+                (Chen et al. 2024, *Vertex Block Descent*, adaptive initialization), so a particle at rest
+                on contact or held by elasticity starts at ``x + v dt``. With a fixed iteration count the
+                inertial start biases resting bodies: the truncated solve cannot get back to equilibrium
+                from a guess a full gravity step away, and damping (``k_damp``), which slows each
+                iteration, makes the stationary error larger. A soft column then rests visibly short of
+                its elastic height. ``"adaptive"`` removes that bias while free fall stays inertial: the
+                scaling applies only to particles of a connected body (joined by tets, triangles, edges or
+                springs) that something holds this step (a fixed particle, a body-particle contact or a
+                self-contact with another body). A free body starts at the inertial target, which is exact in
+                free flight; a stiff body's truncated solve would otherwise fall short of gravity and the
+                measured acceleration would carry that shortfall into the next step.
 
             rigid_compliant_alm: Deprecated; omit it. Compliant ALM is always used for
                 body-body contacts, structural joints, drives, and limits. Explicit
@@ -1034,6 +1080,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
             enable_fast_math,
+            particle_initial_guess,
         )
 
         # Routed tendon geometry and material state are shared with XPBD; VBD
@@ -1133,11 +1180,27 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
         enable_fast_math: bool,
+        particle_initial_guess: str = "inertia",
     ):
         """Initialize particle-specific data structures and settings."""
+        if particle_initial_guess not in ("inertia", "adaptive"):
+            raise ValueError(
+                f"particle_initial_guess must be 'inertia' or 'adaptive', got {particle_initial_guess!r}"
+            )
+        self.particle_initial_guess = particle_initial_guess
+        # Velocities at the start of the previous step, for the adaptive initial guess.
+        self.particle_qd_prev_step = None
         # Early exit if no particles
         if model.particle_count == 0:
             return
+        # Adaptive guess: one group per connected body, flagged each step when something holds it.
+        self.particle_group = None
+        self.particle_group_held = None
+        if particle_initial_guess == "adaptive":
+            self.particle_qd_prev_step = wp.clone(model.particle_qd, device=self.device)
+            groups = _particle_groups(model)
+            self.particle_group = wp.array(groups, dtype=wp.int32, device=self.device)
+            self.particle_group_held = wp.zeros(int(groups.max()) + 1, dtype=wp.int32, device=self.device)
 
         self.particle_collision_detection_interval = particle_collision_detection_interval
         self.particle_topological_contact_filter_threshold = particle_topological_contact_filter_threshold
@@ -3537,6 +3600,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.pos_prev_collision_detection.assign(state_in.particle_q)
             self.particle_displacements.zero_()
 
+        if self.particle_group_held is not None:
+            self._mark_held_particle_groups(contacts)
+
         wp.launch(
             kernel=forward_step,
             inputs=[
@@ -3548,6 +3614,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.model.particle_inv_mass,
                 state_in.particle_f,
                 self.model.particle_flags,
+                self.particle_qd_prev_step,
+                self.particle_group,
+                self.particle_group_held,
             ],
             outputs=[
                 self.inertia,
@@ -3558,6 +3627,38 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
 
         self._penetration_free_truncation(state_in, contacts)
+
+    def _mark_held_particle_groups(self, contacts: Contacts | None) -> None:
+        """Flag each particle group held this step: a fixed particle, a self-contact with another body, or a
+        body-particle contact."""
+        model = self.model
+        held = self.particle_group_held
+        held.zero_()
+        wp.launch(
+            kernel=mark_held_particle_groups,
+            dim=model.particle_count,
+            inputs=[model.particle_inv_mass, self.particle_group, held],
+            device=self.device,
+        )
+        if self.particle_enable_self_contact and model.tri_count:
+            wp.launch(
+                kernel=mark_held_self_contact_groups,
+                dim=model.particle_count,
+                inputs=[self.trimesh_collision_info, model.tri_indices, self.particle_group, held],
+                device=self.device,
+            )
+        if (
+            contacts is not None
+            and contacts.soft_contact_count is not None
+            and contacts.soft_contact_indices is not None
+            and contacts.soft_contact_indices.shape[0] > 0
+        ):
+            wp.launch(
+                kernel=mark_held_contact_groups,
+                dim=contacts.soft_contact_indices.shape[0],
+                inputs=[contacts.soft_contact_count, contacts.soft_contact_indices, self.particle_group, held],
+                device=self.device,
+            )
 
     def _refresh_rigid_contact_state(
         self, contacts: Contacts | None, refresh: bool, *, restore_history: bool = False

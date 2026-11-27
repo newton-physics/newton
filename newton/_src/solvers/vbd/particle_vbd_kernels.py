@@ -37,6 +37,7 @@ from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftCon
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
     get_edge_colliding_edges_count,
+    get_vertex_colliding_triangles,
     get_vertex_colliding_triangles_count,
 )
 from ...utils.mesh import (
@@ -1151,9 +1152,29 @@ def forward_step(
     inv_mass: wp.array[float],
     external_force: wp.array[wp.vec3],
     particle_flags: wp.array[wp.int32],
+    vel_prev_step: wp.array[wp.vec3],
+    particle_group: wp.array[wp.int32],
+    group_held: wp.array[wp.int32],
     inertia_out: wp.array[wp.vec3],
     displacements_out: wp.array[wp.vec3],
 ):
+    """Compute the inertial target and the initial guess of one VBD step.
+
+    The initial guess is ``pos + displacements_out``. Without ``vel_prev_step`` it is the
+    inertial target ``pos + (vel + a dt) dt``. With ``vel_prev_step`` (the particle velocities
+    at the start of the previous step, updated here) it is the adaptive guess
+    ``pos + (vel + s a dt) dt``: the external acceleration ``a`` is scaled by
+    ``s = clamp(dot(a_obs, a) / |a|^2, 0, 1)``, where ``a_obs`` is the acceleration the
+    particle actually had over the previous step. A particle held by contact or elasticity
+    (``s`` near 0) starts at ``pos + vel dt``; a free particle (``s`` near 1) starts at the
+    inertial target.
+
+    With ``group_held`` (one flag per connected group of particles, ``particle_group`` mapping each
+    particle to its group), a particle whose group nothing holds this step (no contact, no fixed
+    particle) starts at the inertial target: in free flight the inertial target is exact, while
+    ``a_obs`` of a stiff, truncated solve falls short of ``a`` and would feed that shortfall back
+    into the next step.
+    """
     particle = wp.tid()
 
     flags = particle_flags[particle]
@@ -1161,14 +1182,78 @@ def forward_step(
         inertia_out[particle] = pos[particle]
         if displacements_out:
             displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
+        if vel_prev_step:
+            vel_prev_step[particle] = vel[particle]
         return
     world_idx = particle_world[particle]
     world_g = gravity[world_idx]
-    vel_new = vel[particle] + (world_g + external_force[particle] * inv_mass[particle]) * dt
+    acceleration = world_g + external_force[particle] * inv_mass[particle]
+    vel_new = vel[particle] + acceleration * dt
     inertia = pos[particle] + vel_new * dt
     inertia_out[particle] = inertia
     if displacements_out:
-        displacements_out[particle] = vel_new * dt
+        if vel_prev_step:
+            scale = float(1.0)
+            acceleration_sq = wp.dot(acceleration, acceleration)
+            free = False
+            if group_held:
+                free = group_held[particle_group[particle]] == 0
+            if acceleration_sq > 0.0 and not free:
+                observed = (vel[particle] - vel_prev_step[particle]) / dt
+                scale = wp.clamp(wp.dot(observed, acceleration) / acceleration_sq, 0.0, 1.0)
+            displacements_out[particle] = (vel[particle] + acceleration * (scale * dt)) * dt
+        else:
+            displacements_out[particle] = vel_new * dt
+    if vel_prev_step:
+        vel_prev_step[particle] = vel[particle]
+
+
+@wp.kernel
+def mark_held_particle_groups(
+    inv_mass: wp.array[float],
+    particle_group: wp.array[wp.int32],
+    group_held: wp.array[wp.int32],
+):
+    """Flag the group of every fixed particle."""
+    particle = wp.tid()
+    if inv_mass[particle] == 0.0:
+        group_held[particle_group[particle]] = 1
+
+
+@wp.kernel
+def mark_held_self_contact_groups(
+    collision_info: TriMeshCollisionInfo,
+    tri_indices: wp.array2d[wp.int32],
+    particle_group: wp.array[wp.int32],
+    group_held: wp.array[wp.int32],
+):
+    """Flag both sides of every vertex-triangle contact between two different groups. A body touching its own
+    surface (near-contacts within one body's surface are common on coarse meshes) is not held by it."""
+    vertex = wp.tid()
+    count = get_vertex_colliding_triangles_count(collision_info, vertex)
+    group = particle_group[vertex]
+    for i in range(count):
+        triangle = get_vertex_colliding_triangles(collision_info, vertex, i)
+        other = particle_group[tri_indices[triangle, 0]]
+        if other != group:
+            group_held[group] = 1
+            group_held[other] = 1
+
+
+@wp.kernel
+def mark_held_contact_groups(
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_indices: wp.array[wp.vec3i],
+    particle_group: wp.array[wp.int32],
+    group_held: wp.array[wp.int32],
+):
+    """Flag the group of every soft feature in a body-particle contact (particle, edge or face record: the
+    first index is always a particle of the feature)."""
+    contact = wp.tid()
+    if contact < soft_contact_count[0]:
+        particle = soft_contact_indices[contact][0]
+        if particle >= 0:
+            group_held[particle_group[particle]] = 1
 
 
 @wp.kernel
