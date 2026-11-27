@@ -1644,7 +1644,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         The accounting has these limits:
 
         - With ``enable_bilateral_preelimination`` the loop-closure reactions are left out;
-          requesting the wrench warns once.
+          requesting the wrench warns once while a loop closure is enabled in
+          :attr:`~newton.Model.joint_enabled` as of construction or the last
+          ``JOINT_PROPERTIES`` notification outside graph capture. Editing ``joint_enabled``
+          in place without that notification, or notifying during capture, changes the
+          closure rows but not this warning.
         - A body whose inbound joint is FREE reports the residual of its discrete momentum
           balance, its FREE ``joint_f`` less ``armature * qdd``; with neither, its force part is
           zero up to solver tolerance. The stabilized gyroscopic update of single-body FREE
@@ -2933,6 +2937,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 f"{self._articulated_contact_response!r}"
             )
         self._build_preelimination_plan(model)
+        self._refresh_preelim_closure_enabled()
         self._setup_passive_joint_forces(model)
         self._compute_world_response_dof_mapping(model)
         self._parallel_tree = bool(parallel_tree)
@@ -3409,9 +3414,11 @@ class SolverSteel(SolverBase, CouplingInterface):
         DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
         Steel spring, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
-        Steel ignores. A captured notification skips all three checks. An eager shape notification reads
-        the scaled friction coefficients on the host and raises :class:`ValueError` when one is not finite in
-        float32; a captured one leaves the error to :meth:`check_constraint_capacity`.
+        Steel ignores. With ``enable_bilateral_preelimination`` and loop closures, an eager joint notification
+        also reads :attr:`~newton.Model.joint_enabled` on the host to decide whether requesting
+        ``BODY_PARENT_F`` warns. A captured notification skips these host reads. An eager shape notification
+        reads the scaled friction coefficients on the host and raises :class:`ValueError` when one is not finite
+        in float32; a captured one leaves the error to :meth:`check_constraint_capacity`.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3504,6 +3511,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._validate_shape_friction()
         joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
         if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
+            if flags & ModelFlags.JOINT_PROPERTIES:
+                self._refresh_preelim_closure_enabled()
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
             if flags & dof_force:
                 self._warn_ignored_spring_stiffness(stacklevel=3)
@@ -4574,6 +4583,15 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._preelim_reg_floor = max(self._cfm, 1.0e-7)
         self._preelim_count = n_pe
         self._preelim_active = True
+
+    def _refresh_preelim_closure_enabled(self) -> None:
+        """Record on the host whether :attr:`~newton.Model.joint_enabled` enables a pre-eliminated loop closure."""
+        enabled = self.model.joint_enabled
+        self._preelim_closure_enabled = bool(
+            self._preelim_active
+            and self._connect_count
+            and (enabled is None or np.any(enabled.numpy()[self._connect_joint_np]))
+        )
 
     def _stage4_build_bilateral_rows(self, state_in: State, state_aug: State) -> None:
         """Allocate and fill the mimic and connect rows; they precede the joint-limit rows."""
@@ -7330,7 +7348,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._stage1_joint_tau(state_in, state_aug, state_out, control, dt)
         parent_wrench_prescale = None
         if computed_parent_f is not None:
-            preelim_warning = self._preelim_active and self._connect_count and body_parent_f is not None
+            preelim_warning = self._preelim_closure_enabled and body_parent_f is not None
             if preelim_warning and not self._parent_wrench_preelim_warned:
                 self._parent_wrench_preelim_warned = True
                 warnings.warn(
