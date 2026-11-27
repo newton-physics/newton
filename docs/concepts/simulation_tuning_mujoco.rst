@@ -152,16 +152,10 @@ Authored raw ``solref`` retains native MuJoCo meaning. Existing force-space-mode
 contacts aim to make normal-contact tuning more transferable across effective
 masses. The mode constants are internal; do not import them from
 ``newton._src``. Imported metadata selects authored/default behavior
-automatically. For the hydroelastic opt-in, follow
-:ref:`mujoco-hydroelastic-patch-response` and set mode ``0`` on both shapes
-before constructing the solver.
-
-For hydroelastic pressure contacts with the default pressure law, tune ``kh``
-for stiffness. With ``HydroelasticSDF.Config(generate_damping=True)``, tune
-``kd / ke`` for damping. The two shapes' ratios add to give the contact relaxation
-time; see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
-The ordinary-contact gain and ``solimp`` recipes below exclude these contacts;
-see :ref:`mujoco-hydroelastic-patch-response` for timestep and impedance limits.
+automatically. For hydroelastic pressure contacts, follow
+:ref:`mujoco-hydroelastic-patch-response` to select the mode and tune stiffness
+and damping. The ordinary-contact gain and ``solimp`` recipes below exclude
+these contacts.
 
 For other force-space contacts, evaluate damping and timestep safety
 with :ref:`contact-stiffness-sanity-checks`. The mode does not add friction,

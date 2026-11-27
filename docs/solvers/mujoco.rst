@@ -539,17 +539,12 @@ USD assets cannot select this mode directly. For imported shapes, set
 Use MuJoCo-Warp with Newton contacts (``use_mujoco_contacts=False``),
 ``cone="elliptic"``, and Euler, implicit, implicitfast, or discrete integration.
 Recreate the solver and CUDA graphs after changing which shapes select this
-mode. Default, raw, and mixed pairs keep the existing solver mapping. Damping
-generation is a separate opt-in, described in
-:ref:`hydroelastic damping <hydroelastic-contact-damping>`. Other solver settings use the existing
-contact mapping.
+mode. Default, raw, and mixed pairs keep the existing solver mapping; so do
+other solver settings. Existing force-space hydroelastic scenes may need retuning.
 
-Tune ``kh`` for stiffness with the default pressure law. Each penetrating
-contact receives damping ``c = k * (kd_a / ke_a + kd_b / ke_b)`` when generation
-is enabled, for positive ``ke`` and nonnegative ``kd``. Set ``kd=0`` on both shapes for no generated
-damping. Per-contact damping overrides are honored, including zero.
-``ke`` affects damping through this ratio; it does not set hydroelastic stiffness.
-Existing force-space hydroelastic scenes may need retuning.
+Tune ``kh`` for stiffness with the default pressure law. Per-contact damping
+overrides are honored, including zero; see
+:ref:`hydroelastic damping <hydroelastic-contact-damping>` for generation and tuning.
 
 For Euler, implicit, and implicitfast, this mapping gives the implicit normal
 spring-damper law while the requested impedance lies within MuJoCo's limits.

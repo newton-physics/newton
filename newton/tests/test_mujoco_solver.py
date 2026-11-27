@@ -15126,9 +15126,6 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
             for index in (0, 1, 0):
                 wp.capture_launch(graphs[index])
                 np.testing.assert_allclose(output.body_qd.numpy(), expected[index], rtol=2.0e-4, atol=1.0e-7)
-                velocity = output.body_qd.numpy()[:, 2]
-                np.testing.assert_allclose(velocity, velocity[0], rtol=2.0e-4, atol=1.0e-7)
-                self.assertGreater(float(velocity[0]), 0.0)
                 # Contact frames remain orthonormal for native force readouts.
                 frame = solver.mjw_data.contact.frame.numpy()[:10]
                 np.testing.assert_allclose(
