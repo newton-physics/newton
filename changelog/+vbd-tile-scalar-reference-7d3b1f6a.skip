@@ -1,0 +1,1 @@
+Compare the VBD tile elasticity solves with the scalar kernel within a tolerance instead of with each other bit for bit.
