@@ -421,7 +421,6 @@ class ImplicitMPMModel:
         - The transfer and material particle masks, the compliant-particle
           flag, and ``environment_max_particle_density`` (see
           :meth:`refresh_particle_flags`).
-
         - ``max_particle_radius``, the largest particle radius.
 
         After the first call, this only launches kernels that write existing

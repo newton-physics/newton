@@ -2515,7 +2515,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         notification may be issued every step and recorded in a CUDA graph.
 
         ``ModelFlags.MODEL_PROPERTIES`` triggers the same refresh, for
-        compatibility with code that notified material changes this way.
+        compatibility with code that notified material changes this way. The
+        particle and ``mpm:*`` attributes declare ``PARTICLE_PROPERTIES``
+        (see :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>`),
+        so wrappers that refresh attributes by flag, such as
+        :class:`~newton.solvers.experimental.coupled.SolverCoupled`, refresh them for that flag only.
 
         The solver's code paths do not depend on the material values, so a CUDA
         graph that captured :meth:`step` follows any material change. With

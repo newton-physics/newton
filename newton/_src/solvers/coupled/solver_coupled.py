@@ -3906,6 +3906,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model_frequency.JOINT_COORD: ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
             model_frequency.JOINT_DOF: ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
             model_frequency.SHAPE: ModelFlags.SHAPE_PROPERTIES,
+            model_frequency.PARTICLE: ModelFlags.PARTICLE_PROPERTIES,
             model_frequency.ONCE: ModelFlags.MODEL_PROPERTIES,
             model_frequency.WORLD: ModelFlags.MODEL_PROPERTIES,
             model_frequency.CONSTRAINT_MIMIC: ModelFlags.CONSTRAINT_PROPERTIES,
