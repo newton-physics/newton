@@ -16072,6 +16072,27 @@ class ModelBuilder:
                 )
         return resolved
 
+    def precompute_convex_support(self) -> None:
+        """Compute the convex support tables of colliding convex hull shapes ahead of :meth:`finalize`.
+
+        :meth:`finalize` builds hull certificates and support-map acceleration tables for every
+        colliding :attr:`GeoType.CONVEX_MESH` shape and keeps them on the source :class:`Mesh`, so
+        later finalizations reuse them. This method fills the same per-mesh tables without building a
+        model. The tables are plain NumPy data and are pickled with the mesh, so call it before
+        serializing a builder or its meshes to let finalizations after loading skip this work.
+        Meshes that already carry tables are left unchanged.
+        """
+        shape_types = _list_for_iteration(self.shape_type)
+        shape_flags = _list_for_iteration(self.shape_flags)
+        for shape_type, source, flags in zip(shape_types, self.shape_source, shape_flags, strict=True):
+            if (
+                shape_type == GeoType.CONVEX_MESH
+                and flags & ShapeFlags.COLLIDE_SHAPES
+                and isinstance(source, Mesh)
+                and source._convex_support_data is None
+            ):
+                source._convex_support_data = _build_convex_support_data(_deduplicate_convex_collision_mesh(source))
+
     def finalize(
         self,
         device: Devicelike | None = None,

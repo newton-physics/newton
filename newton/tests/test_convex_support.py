@@ -270,6 +270,51 @@ class TestConvexSupportAcceleration(unittest.TestCase):
         self.assertEqual(model._shape_support_data.numpy()[0, 2], 0)
         self.assertGreater(model._convex_support_neighbors.numpy()[0], 0)
 
+    def test_precomputed_support_data_survives_pickling(self):
+        """Precompute support tables, pickle the meshes, and finalize without rebuilding them."""
+        sphere = newton.Mesh.create_sphere(
+            0.5, num_latitudes=16, num_longitudes=24, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        box = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
+        visual = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+
+        def build(meshes):
+            builder = newton.ModelBuilder()
+            for mesh in meshes[:2]:
+                builder.add_shape_convex_hull(body=-1, mesh=mesh)
+            visual_cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False)
+            builder.add_shape_convex_hull(body=-1, mesh=meshes[2], cfg=visual_cfg)
+            return builder
+
+        def support_arrays(model):
+            return (
+                model._shape_support_data.numpy(),
+                model._convex_support_lut.numpy(),
+                model._convex_support_vertex_offsets.numpy(),
+                model._convex_support_neighbors.numpy(),
+            )
+
+        with patch.object(builder_module, "_convex_hull_adjacency", wraps=_convex_hull_adjacency) as hull:
+            expected = support_arrays(build([sphere.copy(), box.copy(), visual.copy()]).finalize(device="cpu"))
+            finalize_calls = hull.call_count
+
+        builder = build([sphere, box, visual])
+        with patch.object(builder_module, "_convex_hull_adjacency", wraps=_convex_hull_adjacency) as hull:
+            builder.precompute_convex_support()
+            self.assertEqual(hull.call_count, finalize_calls)  # The same work finalize would do.
+            builder.precompute_convex_support()
+            self.assertEqual(hull.call_count, finalize_calls)
+        self.assertIsNotNone(sphere._convex_support_data)
+        self.assertIsNotNone(box._convex_support_data)
+        self.assertIsNone(visual._convex_support_data)  # Non-colliding hulls get no tables.
+
+        restored = pickle.loads(pickle.dumps([sphere, box, visual]))
+        with patch.object(builder_module, "_convex_hull_adjacency", wraps=_convex_hull_adjacency) as hull:
+            actual = support_arrays(build(restored).finalize(device="cpu"))
+            self.assertEqual(hull.call_count, 0)
+        for actual_array, expected_array in zip(actual, expected, strict=True):
+            np.testing.assert_array_equal(actual_array, expected_array)
+
     def test_pipeline_specializes_support_map_for_available_acceleration(self):
         """Specialize support mapping only when acceleration data exists."""
 
