@@ -114,6 +114,8 @@ class Example(DeterminismExample):
                 "free_body_constraint_max": 128,
             },
             side_offset=(0.0, 1.0, 0.0),
+            # Each copy simulates one world. Its scripted sweep peaks below 150 contacts.
+            rigid_contact_max=512,
             camera={"pos": wp.vec3(2.7, 0.0, 1.3), "pitch": -20.0, "yaw": 180.0},
         )
 

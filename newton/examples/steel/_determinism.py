@@ -45,6 +45,8 @@ class DeterminismExample:
         solver_options: dict,
         side_offset: tuple[float, float, float],
         camera: dict,
+        *,
+        rigid_contact_max: int | None = None,
     ):
         """Create the four copies of ``scene``, bind each to a viewer layer and capture their frame."""
         self.viewer = viewer
@@ -57,7 +59,14 @@ class DeterminismExample:
 
         self.copies = {
             mode: [
-                _SimulationCopy(f"{mode} {color_name}", scene, solver_options, deterministic, color)
+                _SimulationCopy(
+                    f"{mode} {color_name}",
+                    scene,
+                    solver_options,
+                    deterministic,
+                    color,
+                    rigid_contact_max=rigid_contact_max,
+                )
                 for color_name, color in COPY_COLORS.items()
             ]
             for mode, deterministic in (("default", False), ("deterministic", True))
@@ -157,6 +166,8 @@ class _SimulationCopy:
         solver_options: dict,
         deterministic: bool,
         color: tuple[float, float, float],
+        *,
+        rigid_contact_max: int | None = None,
     ):
         """Build the scene on a ground plane with its shapes tinted ``color`` and create the solver and pipeline."""
         self.layer_id = layer_id
@@ -169,6 +180,8 @@ class _SimulationCopy:
             builder.shape_opacity[shape] = COPY_OPACITY
         builder.add_ground_plane()
         self.model = builder.finalize()
+        if rigid_contact_max is not None:
+            self.model.rigid_contact_max = rigid_contact_max
         self.solver = SolverSteel(
             self.model,
             deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else wp.DeterministicMode.NOT_GUARANTEED,

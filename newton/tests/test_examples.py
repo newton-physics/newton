@@ -40,6 +40,7 @@ from newton.examples.robot.example_robot_cartpole import Example as RobotCartpol
 from newton.tests.unittest_utils import (
     ASSET_CACHE_REFRESH_OUTPUT_RE,
     INFO_LOG_PREFIX_RE,
+    MODULE_LOAD_OUTPUT_RE,
     MUJOCO_MODULES,
     NEWTON_ASSET_DOWNLOAD_OUTPUT_RE,
     PXR_WORK_THREAD_LIMIT_OUTPUT_RE,
@@ -1316,6 +1317,38 @@ add_example_test(
 
 class TestSteelExamples(NewtonTestCase):
     pass
+
+
+def test_steel_determinism_contact_capacity(test, device):
+    """Check that every arm copy uses the example's contact budget and the default uses automatic sizing."""
+    from newton._src.sim.collide import _estimate_rigid_contact_max  # noqa: PLC0415
+    from newton.examples.steel import example_steel_determinism_arms as arms  # noqa: PLC0415
+    from newton.examples.steel._determinism import DeterminismExample  # noqa: PLC0415
+
+    # Allocation happens before graph capture. A single box avoids downloading the arm meshes.
+    test.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
+    with wp.ScopedDevice(device), patch.object(DeterminismExample, "capture"):
+        scene = newton.ModelBuilder()
+        scene.add_shape_box(scene.add_body(), hx=0.1, hy=0.1, hz=0.1)
+        with patch.object(arms, "build_scene", return_value=scene):
+            arms_example = arms.Example(ViewerNull(), args=None)
+        automatic = DeterminismExample(ViewerNull(), scene, {}, (0.0, 0.0, 0.0), {"pos": wp.vec3(0.0)})
+
+        for example in (arms_example, automatic):
+            for copies in example.copies.values():
+                for copy in copies:
+                    expected = 512 if example is arms_example else _estimate_rigid_contact_max(copy.model)
+                    with test.subTest(example=type(example).__name__, layer=copy.layer_id):
+                        test.assertEqual(copy.contacts.rigid_contact_max, expected)
+                        test.assertEqual(copy.solver._friction_patches.capacity, expected)
+
+
+add_function_test(
+    TestSteelExamples,
+    "test_steel_determinism_contact_capacity",
+    test_steel_determinism_contact_capacity,
+    devices=cuda_test_devices,
+)
 
 
 add_example_test(
