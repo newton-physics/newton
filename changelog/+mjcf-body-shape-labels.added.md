@@ -1,0 +1,1 @@
+Register `mujoco:body_label` and `mujoco:shape_label` custom attributes to preserve unsanitized MJCF body, geom, and site `name` attributes (empty string when unnamed) and USD prim paths across `ModelBuilder.add_mjcf()` and `ModelBuilder.add_usd()`.

@@ -13748,5 +13748,144 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
+class TestImportMjcfBodyShapeLabels(unittest.TestCase):
+    def test_mjcf_raw_body_and_shape_labels_distinguish_authored_from_synthesized(self):
+        mjcf = """<mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <site name="world/origin-site" pos="0 0 0"/>
+            <body name="upper-arm/link">
+              <joint name="h0" type="hinge"/>
+              <geom name="lower_geom_0" type="sphere" size="0.1"/>
+              <site name="hand/tip-1" pos="0 0 0.2"/>
+              <body name="lower">
+                <joint name="h1" type="hinge"/>
+                <geom type="sphere" size="0.05"/>
+                <site pos="0 0 0.1"/>
+              </body>
+              <body>
+                <joint name="h2" type="hinge"/>
+                <geom name="leaf-geom" type="sphere" size="0.04"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.mujoco.body_label, ["upper-arm/link", "lower", ""])
+        self.assertEqual(
+            model.mujoco.shape_label,
+            ["lower_geom_0", "hand/tip-1", "", "", "leaf-geom", "", "world/origin-site"],
+        )
+
+    def test_mjcf_body_and_shape_labels_survive_collapse_and_world_replication(self):
+        mjcf = """<mujoco>
+          <worldbody>
+            <body name="base-link">
+              <joint name="h0" type="hinge"/>
+              <geom name="base-geom" type="sphere" size="0.1"/>
+              <body name="welded-tip" pos="0 0 0.2">
+                <geom name="tip-geom" type="sphere" size="0.05"/>
+                <site name="tip-site" pos="0 0 0.1"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>"""
+        blueprint = newton.ModelBuilder()
+        blueprint.add_mjcf(mjcf, collapse_fixed_joints=True)
+        builder = newton.ModelBuilder()
+        builder.add_world(blueprint, label_prefix="env_0")
+        builder.add_world(blueprint, label_prefix="env_1")
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.mujoco.body_label, ["base-link", "base-link"])
+        self.assertEqual(
+            model.mujoco.shape_label,
+            ["base-geom", "tip-geom", "tip-site", "base-geom", "tip-geom", "tip-site"],
+        )
+
+    @requires("pxr", "newton_usd_schemas")
+    def test_usd_import_populates_mujoco_body_and_shape_prim_labels(self):
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        root_xform = UsdGeom.Xform.Define(stage, "/World/robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root_xform.GetPrim())
+        link = UsdGeom.Xform.Define(stage, "/World/robot/link_a")
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).CreateMassAttr(1.0)
+        sph = UsdGeom.Sphere.Define(stage, "/World/robot/link_a/col_sphere")
+        sph.CreateRadiusAttr(0.1)
+        UsdPhysics.CollisionAPI.Apply(sph.GetPrim())
+        vis = UsdGeom.Cube.Define(stage, "/World/robot/link_a/vis_box")
+        vis.CreateSizeAttr(0.08)
+        vis.GetPrim().CreateAttribute("mjc:group", Sdf.ValueTypeNames.Int).Set(2)
+        site = UsdGeom.Sphere.Define(stage, "/World/robot/link_a/tip_site")
+        site.CreateRadiusAttr(0.02)
+        site.GetPrim().AddAppliedSchema("MjcSiteAPI")
+        site.GetPrim().CreateAttribute("mjc:group", Sdf.ValueTypeNames.Int).Set(4)
+
+        box = newton.Mesh.create_box(
+            0.05,
+            0.05,
+            0.05,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        vis_mesh = UsdGeom.Mesh.Define(stage, "/World/robot/link_a/vis_mesh")
+        vis_mesh.CreatePointsAttr([Gf.Vec3f(*pt) for pt in box.vertices.tolist()])
+        face_count = len(box.indices) // 3
+        vis_mesh.CreateFaceVertexCountsAttr([3] * face_count)
+        vis_mesh.CreateFaceVertexIndicesAttr(box.indices.tolist())
+        vis_mesh.GetPrim().CreateAttribute("mjc:group", Sdf.ValueTypeNames.Int).Set(3)
+        vis_mesh.GetPrim().CreateAttribute("mjc:priority", Sdf.ValueTypeNames.Int).Set(5)
+
+        for name, color, face_indices in (
+            ("Red", (1.0, 0.0, 0.0), range(4)),
+            ("Blue", (0.0, 0.0, 1.0), range(4, 8)),
+        ):
+            material = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+            shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Shader")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            subset = UsdGeom.Subset.CreateGeomSubset(
+                vis_mesh, name, UsdGeom.Tokens.face, list(face_indices), familyName="materialBind"
+            )
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(material)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        result = builder.add_usd(stage)
+        model = builder.finalize(device="cpu")
+
+        shape_map = result["path_shape_map"]
+        geom_groups = model.mujoco.geom_group.numpy()
+        geom_priorities = model.mujoco.geom_priority.numpy()
+
+        self.assertEqual(model.mujoco.body_label, ["/World/robot/link_a"])
+        self.assertIn("/World/robot/link_a/col_sphere", model.mujoco.shape_label)
+        self.assertIn("/World/robot/link_a/vis_box", model.mujoco.shape_label)
+        self.assertIn("/World/robot/link_a/tip_site", model.mujoco.shape_label)
+        self.assertEqual(int(geom_groups[shape_map["/World/robot/link_a/vis_box"]]), 2)
+        self.assertEqual(int(geom_groups[shape_map["/World/robot/link_a/tip_site"]]), 4)
+
+        for subset_path in (
+            "/World/robot/link_a/vis_mesh",
+            "/World/robot/link_a/vis_mesh/Red",
+            "/World/robot/link_a/vis_mesh/Blue",
+        ):
+            idx = shape_map[subset_path]
+            self.assertEqual(model.shape_label[idx], subset_path)
+            self.assertEqual(model.mujoco.shape_label[idx], "/World/robot/link_a/vis_mesh")
+            self.assertEqual(int(geom_groups[idx]), 3)
+            self.assertEqual(int(geom_priorities[idx]), 5)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

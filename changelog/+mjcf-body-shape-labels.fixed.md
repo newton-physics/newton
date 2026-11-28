@@ -1,0 +1,1 @@
+Populate registered `SHAPE`-frequency custom attributes for non-collision visual shapes and sites during `ModelBuilder.add_usd()`, including mesh attributes on visual meshes split by material `GeomSubset`s.
