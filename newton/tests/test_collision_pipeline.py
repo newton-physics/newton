@@ -750,6 +750,39 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     )
 
 
+def test_mesh_mesh_rejects_separated_oriented_bounds(test, device):
+    """Skip disjoint BVH meshes whose world boxes overlap, honoring the contact gap."""
+    mesh = newton.Mesh.create_box(0.25, 0.015, 0.015, duplicate_vertices=False)
+    rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi / 4.0)
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(gap=0.003, margin=0.0)
+    body = builder.add_body()
+    builder.add_shape_mesh(body, mesh=mesh, cfg=cfg)
+    builder.add_shape_mesh(-1, xform=wp.transform(wp.vec3(0.0), rotation), mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    for separation, expect_pair in ((0.025, True), (0.034, True), (0.05, False)):
+        position = wp.quat_rotate(rotation, wp.vec3(0.0, separation, 0.0))
+        state.body_q.fill_(wp.transform(position, rotation))
+        pipeline.collide(state, contacts)
+        routed = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertEqual(routed, int(expect_pair), f"Center separation {separation} m")
+        test.assertEqual(contact_count > 0, expect_pair, f"Center separation {separation} m")
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_mesh_mesh_rejects_separated_oriented_bounds",
+    test_mesh_mesh_rejects_separated_oriented_bounds,
+    devices=get_test_devices(),
+    check_output=False,
+)
+
+
 # Add mesh-mesh SDF mode tests for all broad phase modes
 mesh_mesh_sdf_tests = [
     ("sdf_vs_sdf", test_mesh_mesh_sdf_vs_sdf),
@@ -3464,6 +3497,38 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         pipeline.collide(model.state(), contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
+    def test_mesh_plane_contact_admission_is_translation_invariant(self):
+        """Keep shallow separation and penetration at a translated, rotated plane."""
+        rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        box = newton.Mesh.create_box(0.25, 0.25, 0.1, duplicate_vertices=False)
+        cfg = newton.ModelBuilder.ShapeConfig(gap=0.0, margin=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        pairs = []
+        for position in (wp.vec3(0.0), wp.vec3(32768.0, -32768.0, 32768.0)):
+            pose = wp.transform(position, rotation)
+            plane = builder.add_shape_plane(xform=pose, width=0.0, length=0.0, cfg=cfg)
+            for height in (0.1002, 0.0998):
+                vertices = box.vertices.copy()
+                vertices[:, 2] += height
+                mesh = newton.Mesh(vertices, box.indices)
+                shape = builder.add_shape_mesh(builder.add_body(xform=pose), mesh=mesh, cfg=cfg)
+                pairs.append((shape, plane))
+        model = builder.finalize(device="cpu")
+        shape_pairs = wp.array(pairs, dtype=wp.vec2i, device="cpu")
+        for reduce_contacts in (False, True):
+            with self.subTest(reduce_contacts=reduce_contacts):
+                pipeline = newton.CollisionPipeline(
+                    model, broad_phase="explicit", shape_pairs_filtered=shape_pairs, reduce_contacts=reduce_contacts
+                )
+                contacts = pipeline.contacts()
+                pipeline.collide(model.state(), contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                a = contacts.rigid_contact_shape0.numpy()[:count]
+                b = contacts.rigid_contact_shape1.numpy()[:count]
+                for i, (mesh_shape, _plane) in enumerate(pairs):
+                    rows = np.count_nonzero((a == mesh_shape) | (b == mesh_shape))
+                    self.assertEqual(rows, 4 if i % 2 else 0, f"pair {i}")
+
     def test_explicit_cross_world_mesh_pair_uses_explicit_bound(self):
         """Keep explicit cross-world mesh pairs in mesh work buffers."""
         world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -4970,6 +5035,45 @@ add_function_test(
     test_split_gjk_mpr_matches_fused_under_graph_capture,
     devices=get_cuda_test_devices(),
     check_output=False,
+)
+
+
+def test_split_convex_rechecks_cached_separating_axis(test, device):
+    """Skip repeated separated queries and detect contact when their separation closes."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    mesh = newton.Mesh.create_box(0.65, 0.03, 0.05, duplicate_vertices=False)
+    orientation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7)
+    separation = wp.quat_rotate(orientation, wp.vec3(0.19, 0.083, 0.0))
+    cfg = newton.ModelBuilder.ShapeConfig(gap=0.005, margin=0.0)
+    for position in (wp.vec3(0.0), separation):
+        body = builder.add_body(xform=wp.transform(position, orientation))
+        builder.add_shape_convex_hull(body, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+    broad_phase, narrow_phase = _expert_collision_components(model, split_gjk_mpr=True, has_meshes=False)
+    pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, narrow_phase=narrow_phase)
+    state = model.state()
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(narrow_phase.split_gjk_work_count.numpy()[0]), 1)
+
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
+    wp.capture_launch(capture.graph)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    test.assertEqual(int(narrow_phase.split_gjk_work_count.numpy()[0]), 0)
+
+    pose = state.body_q.numpy()
+    pose[1, :3] = wp.quat_rotate(orientation, wp.vec3(0.19, 0.049, 0.0))
+    state.body_q.assign(pose)
+    wp.capture_launch(capture.graph)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+add_function_test(
+    TestDeterministicPipeline,
+    "test_split_convex_rechecks_cached_separating_axis",
+    test_split_convex_rechecks_cached_separating_axis,
+    devices=get_cuda_test_devices(),
 )
 
 

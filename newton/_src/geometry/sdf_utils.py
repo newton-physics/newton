@@ -222,6 +222,9 @@ class SDF:
         self.texture_data = texture_data
         self.shape_margin = shape_margin
         self._construction_padding = construction_padding
+        # Only parity bakes of the original closed geometry can reuse its
+        # triangle BVH for speculative sweep rejection.
+        self._unscaled_mesh_hash: int | None = None
         # Keep texture references alive to prevent GC
         self._coarse_texture = _coarse_texture
         self._subgrid_texture = _subgrid_texture
@@ -581,6 +584,13 @@ class SDF:
             _subgrid_texture=subgrid_texture,
             _internal=True,
         )
+        if (
+            is_watertight
+            and sign_method_resolved == "parity"
+            and tuple(effective_scale) == (1.0, 1.0, 1.0)
+            and shape_margin == 0.0
+        ):
+            sdf._unscaled_mesh_hash = hash(mesh)
         sdf.validate()
         return sdf
 

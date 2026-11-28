@@ -16838,6 +16838,12 @@ class ModelBuilder:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         if (
+                            shape_type == GeoType.MESH
+                            and mesh_sdf._unscaled_mesh_hash == hash(shape_src)
+                            and mesh_sdf.shape_margin == 0.0
+                        ):
+                            shape_mesh_properties[i] |= int(MeshProperties.SDF_FROM_MESH)
+                        if (
                             self.shape_force_sdf[i]
                             and shape_flags & ShapeFlags.COLLIDE_PARTICLES
                             and mesh_sdf.to_texture_kernel_data() is None

@@ -50,6 +50,7 @@ from ..geometry.contact_data import (
     contact_separation,
     contact_sort_key_layout,
     make_contact_sort_key_with_bits,
+    mesh_search_envelope,
     prepare_speculative_contact,
 )
 from ..geometry.contact_reduction_global import (
@@ -70,10 +71,12 @@ from ..geometry.contact_reduction_global import (
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
-from ..geometry.flags import ShapeFlags
+from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.mpr import create_solve_mpr, create_support_map_function
 from ..geometry.sdf_contact import (
     MESH_SDF_BLOCK_DIM,
+    _mesh_bounds_overlap,
+    _mesh_sweep_may_contact,
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
@@ -146,6 +149,13 @@ def _append_pair_compacted(
     index = _reserve_compacted_slot(int(predicate), work_count)
     if index >= 0 and index < work_items.shape[0]:
         work_items[index] = value
+
+
+@wp.func
+def _mesh_sdf_matches_sweep_geometry(index: int, properties: int, scale: wp.vec3) -> bool:
+    return index < 0 or (
+        (properties & MeshProperties.SDF_FROM_MESH) != 0 and wp.min(scale) == 1.0 and wp.max(scale) == 1.0
+    )
 
 
 @wp.struct
@@ -513,6 +523,7 @@ def create_narrow_phase_primitive_kernel(
     speculative: bool = False,
     sparse_gjk_pairs: bool = False,
     hydroelastic_enabled: bool = False,
+    mesh_bounds_culling: bool = False,
     _tetrahedron_separation: bool = False,
 ):
     """
@@ -528,12 +539,15 @@ def create_narrow_phase_primitive_kernel(
         speculative: Enable predictive contact admission.
         sparse_gjk_pairs: Preserve broad-phase pair indices in the GJK buffer.
         hydroelastic_enabled: Route hydroelastic pairs to the SDF-SDF pipeline.
+        mesh_bounds_culling: Cull separated oriented mesh bounds in discrete BVH queries.
         _tetrahedron_separation: Reject distant four-vertex hulls using padded local bounds.
 
     Returns:
         A warp kernel for primitive collision detection
     """
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
+    if mesh_bounds_culling:
+        _module += "_mesh_bounds"
     if _tetrahedron_separation:
         _module += "_tetrahedra"
 
@@ -591,9 +605,13 @@ def create_narrow_phase_primitive_kernel(
         max_speculative_extension: float,
         shape_source: wp.array[wp.uint64],
         shape_gap: wp.array[float],
+        shape_base_gap: wp.array[float],
         shape_flags: wp.array[wp.int32],
         shape_sdf_index: wp.array[wp.int32],
         shape_edge_range: wp.array[wp.vec2i],
+        shape_mesh_properties: wp.array[wp.int32],
+        shape_collision_aabb_lower: wp.array[wp.vec3],
+        shape_collision_aabb_upper: wp.array[wp.vec3],
         shape_unit_scale_sdf: wp.array[wp.int32],
         writer_data: Any,
         total_num_threads: int,
@@ -738,6 +756,81 @@ def create_narrow_phase_primitive_kernel(
                 and has_sdf_edges_b
                 and not (is_box_a and is_box_b)
             ):
+                if wp.static(mesh_bounds_culling):
+                    # Unit-scale BVH distances measure the same geometry as
+                    # the mesh bounds. Texture samples and rescaled distances
+                    # can admit contacts across a wider envelope.
+                    if (
+                        is_mesh_a
+                        and is_mesh_b
+                        and shape_sdf_index[shape_a] < 0
+                        and shape_sdf_index[shape_b] < 0
+                        and (shape_mesh_properties[shape_a] & MeshProperties.WATERTIGHT) != 0
+                        and (shape_mesh_properties[shape_b] & MeshProperties.WATERTIGHT) != 0
+                        and wp.min(scale_a) == 1.0
+                        and wp.max(scale_a) == 1.0
+                        and wp.min(scale_b) == 1.0
+                        and wp.max(scale_b) == 1.0
+                        and not _mesh_bounds_overlap(
+                            shape_transform[shape_a],
+                            shape_transform[shape_b],
+                            shape_collision_aabb_lower[shape_a],
+                            shape_collision_aabb_upper[shape_a],
+                            shape_collision_aabb_lower[shape_b],
+                            shape_collision_aabb_upper[shape_b],
+                            mesh_search_envelope(
+                                shape_base_gap[shape_a] + shape_base_gap[shape_b], data_a[3] + data_b[3]
+                            ),
+                        )
+                    ):
+                        continue
+                if wp.static(speculative):
+                    if (
+                        is_mesh_a
+                        and is_mesh_b
+                        and max_speculative_extension > 0.0
+                        and collision_update_dt > 0.0
+                        and (shape_mesh_properties[shape_a] & MeshProperties.WATERTIGHT) != 0
+                        and (shape_mesh_properties[shape_b] & MeshProperties.WATERTIGHT) != 0
+                        and _mesh_sdf_matches_sweep_geometry(
+                            shape_sdf_index[shape_a], shape_mesh_properties[shape_a], scale_a
+                        )
+                        and _mesh_sdf_matches_sweep_geometry(
+                            shape_sdf_index[shape_b], shape_mesh_properties[shape_b], scale_b
+                        )
+                        and wp.length_sq(shape_angular_velocity[shape_a]) == 0.0
+                        and wp.length_sq(shape_angular_velocity[shape_b]) == 0.0
+                    ):
+                        probe, target = shape_a, shape_b
+                        target_scale = scale_b
+                        if shape_edge_range[probe][1] > shape_edge_range[target][1]:
+                            probe, target = shape_b, shape_a
+                            target_scale = scale_a
+                        target_mesh = shape_source[target]
+                        displacement = (
+                            shape_linear_velocity[probe] - shape_linear_velocity[target]
+                        ) * collision_update_dt
+                        clearance = mesh_search_envelope(
+                            shape_base_gap[shape_a] + shape_base_gap[shape_b], data_a[3] + data_b[3]
+                        )
+                        if (
+                            target_mesh != wp.uint64(0)
+                            and wp.min(target_scale) > 0.0
+                            and wp.length_sq(displacement) > 0.0
+                            and not _mesh_sweep_may_contact(
+                                shape_transform[probe],
+                                shape_transform[target],
+                                shape_collision_aabb_lower[probe],
+                                shape_collision_aabb_upper[probe],
+                                shape_collision_aabb_lower[target],
+                                shape_collision_aabb_upper[target],
+                                displacement,
+                                clearance,
+                                target_mesh,
+                                target_scale,
+                            )
+                        ):
+                            continue
                 idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                 if idx < shape_pairs_mesh_mesh.shape[0]:
                     shape_pairs_mesh_mesh[idx] = wp.vec2i(shape_a, shape_b)
@@ -1401,6 +1494,25 @@ def create_narrow_phase_kernel_gjk_mpr(
     return narrow_phase_kernel_gjk_mpr
 
 
+@wp.func
+def _encode_separation_hint(partner: int, normal: wp.vec3) -> wp.uint64:
+    """Pack the partner shape and three signed direction components into one atomic entry."""
+    n = wp.normalize(normal)
+    x = wp.uint64(int(wp.round(511.0 * n[0])) + 512)
+    y = wp.uint64(int(wp.round(511.0 * n[1])) + 512)
+    z = wp.uint64(int(wp.round(511.0 * n[2])) + 512)
+    return (wp.uint64(partner) + wp.uint64(1)) << wp.uint64(32) | z << wp.uint64(20) | y << wp.uint64(10) | x
+
+
+@wp.func
+def _decode_separation_axis(entry: wp.uint64) -> wp.vec3:
+    mask = wp.uint64(1023)
+    x = float(int(entry & mask) - 512)
+    y = float(int((entry >> wp.uint64(10)) & mask) - 512)
+    z = float(int((entry >> wp.uint64(20)) & mask) - 512)
+    return wp.normalize(wp.vec3(x, y, z))
+
+
 @lru_cache
 def create_narrow_phase_kernels_gjk_mpr_split(
     external_aabb: bool,
@@ -1416,6 +1528,7 @@ def create_narrow_phase_kernels_gjk_mpr_split(
         post_process_contact = post_process_axial_on_discrete_contact
 
     support_funcs = create_support_map_function(support_func, use_precomputed_center=True)
+    _, support_pair, _ = support_funcs
     solve_mpr = create_solve_mpr(
         support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
     )
@@ -1450,6 +1563,7 @@ def create_narrow_phase_kernels_gjk_mpr_split(
         shape_collision_aabb_upper: wp.array[wp.vec3],
         total_num_threads: int,
         query_results: wp.array[ConvexQueryResult],
+        separation_hints: wp.array[wp.uint64],
         gjk_work_items: wp.array[int],
         gjk_work_count: wp.array[int],
         manifold_work_items: wp.array[int],
@@ -1494,6 +1608,35 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                 if wp.static(accelerated_support):
                     provider.support_lut = support_lut
                     provider.support_vertex_offsets = support_vertex_offsets
+                if (
+                    query.type_a == GeoType.CONVEX_MESH
+                    and query.type_b == GeoType.CONVEX_MESH
+                    and query.shape_a < separation_hints.shape[0]
+                ):
+                    # One hint per first hull survives queue reordering. A
+                    # different partner can overwrite it without changing contacts.
+                    entry = wp.atomic_add(separation_hints, query.shape_a, wp.uint64(0))
+                    threshold = wp.max(query.contact_threshold, 0.0)
+                    if (entry >> wp.uint64(32)) == wp.uint64(query.shape_b) + wp.uint64(1):
+                        axis = _decode_separation_axis(entry)
+                        witness = wp.static(support_pair)(
+                            query.geom_a,
+                            query.geom_b,
+                            axis,
+                            query.relative_orientation_b,
+                            query.relative_position_b,
+                            0.0,
+                            provider,
+                        )
+                        scale = (
+                            coordinate_scale(query.position_a)
+                            + coordinate_scale(query.position_b)
+                            + coordinate_scale(witness.B)
+                            + coordinate_scale(witness.BtoA)
+                        )
+                        if -wp.dot(axis, witness.BtoA) > threshold + GJK_CUTOFF_TOLERANCE * (scale + threshold):
+                            continue
+                        wp.atomic_cas(separation_hints, query.shape_a, entry, wp.uint64(0))
                 collision, point_a, point_b, normal, penetration, seed, witnesses_valid = wp.static(
                     solve_mpr.portal_core
                 )(
@@ -1589,6 +1732,7 @@ def create_narrow_phase_kernels_gjk_mpr_split(
             shape_collision_aabb_upper: wp.array[wp.vec3],
             total_num_threads: int,
             query_results: wp.array[ConvexQueryResult],
+            separation_hints: wp.array[wp.uint64],
             gjk_work_items: wp.array[int],
             gjk_work_count: wp.array[int],
             manifold_work_items: wp.array[int],
@@ -1732,6 +1876,17 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                             0.0,
                             provider,
                         )
+                    if wp.static(not refine_overlap):
+                        if (
+                            query.type_a == GeoType.CONVEX_MESH
+                            and query.type_b == GeoType.CONVEX_MESH
+                            and signed_distance > wp.max(query.contact_threshold, 0.0)
+                            and query.shape_a < separation_hints.shape[0]
+                            and wp.length_sq(normal) > 0.0
+                        ):
+                            wp.atomic_exch(
+                                separation_hints, query.shape_a, _encode_separation_hint(query.shape_b, normal)
+                            )
                     if resolved and signed_distance <= query.contact_threshold:
                         result = ConvexQueryResult()
                         result.point_a = point_a
@@ -2241,6 +2396,16 @@ def compute_mesh_plane_block_offsets_scan(
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
+@wp.func
+def _plane_in_mesh_space(
+    mesh_pose: wp.transform, plane_origin: wp.vec3, plane_normal: wp.vec3, mesh_scale: wp.vec3
+) -> tuple[wp.vec3, float]:
+    """Express the world-space signed distance in unscaled mesh coordinates."""
+    normal = wp.quat_rotate_inv(wp.transform_get_rotation(mesh_pose), plane_normal)
+    offset = wp.dot(wp.transform_get_translation(mesh_pose) - plane_origin, plane_normal)
+    return wp.cw_mul(normal, mesh_scale), offset
+
+
 @lru_cache
 def create_narrow_phase_process_mesh_plane_contacts_kernel(
     writer_func: Any,
@@ -2300,7 +2465,6 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
             # Get plane world transform
             X_plane_ws = shape_transform[plane_shape]
-            X_plane_sw = wp.transform_inverse(X_plane_ws)
 
             # Get plane normal in world space (plane normal is along local +Z, pointing upward)
             plane_normal = wp.transform_vector(X_plane_ws, wp.vec3(0.0, 0.0, 1.0))
@@ -2308,6 +2472,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Get mesh scale
             scale_data = shape_data[mesh_shape]
             mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
+            local_normal, local_offset = _plane_in_mesh_space(
+                X_mesh_ws, wp.transform_get_translation(X_plane_ws), plane_normal, mesh_scale
+            )
 
             # Extract per-shape margin offsets (stored in shape_data.w)
             margin_offset_mesh = shape_data[mesh_shape][3]
@@ -2322,23 +2489,11 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Strided loop over vertices across all threads in the launch
             total_num_threads = total_num_blocks * wp.block_dim()
             for vertex_idx in range(tid, num_vertices, total_num_threads):
-                # Get vertex position in mesh local space and transform to world space
-                vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
-                vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
-
-                # Project vertex onto plane to get closest point
-                vertex_in_plane_space = wp.transform_point(X_plane_sw, vertex_world)
-                point_on_plane_local = wp.vec3(vertex_in_plane_space[0], vertex_in_plane_space[1], 0.0)
-                point_on_plane = wp.transform_point(X_plane_ws, point_on_plane_local)
-
-                # Compute distance
-                diff = vertex_world - point_on_plane
-                distance = wp.dot(diff, plane_normal)
-
-                # Check if this vertex generates a contact
+                vertex = mesh_obj.points[vertex_idx]
+                distance = wp.dot(vertex, local_normal) + local_offset
                 if distance < gap_sum + total_margin_offset:
-                    # Contact position is the midpoint
-                    contact_pos = (vertex_world + point_on_plane) * 0.5
+                    vertex_world = wp.transform_point(X_mesh_ws, wp.cw_mul(vertex, mesh_scale))
+                    contact_pos = vertex_world - 0.5 * distance * plane_normal
 
                     # Normal points from mesh to plane (negate plane normal since plane normal points up/away from plane)
                     contact_normal = -plane_normal
@@ -2432,7 +2587,6 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
             # Get plane world transform
             X_plane_ws = shape_transform[plane_shape]
-            X_plane_sw = wp.transform_inverse(X_plane_ws)
 
             # Get plane normal in world space (plane normal is along local +Z)
             plane_normal = wp.transform_vector(X_plane_ws, wp.vec3(0.0, 0.0, 1.0))
@@ -2440,6 +2594,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Get mesh scale
             scale_data = shape_data[mesh_shape]
             mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
+            local_normal, local_offset = _plane_in_mesh_space(
+                X_mesh_ws, wp.transform_get_translation(X_plane_ws), plane_normal, mesh_scale
+            )
 
             # Extract per-shape margin offsets (stored in shape_data.w)
             margin_offset_mesh = scale_data[3]
@@ -2454,23 +2611,11 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             # Process this block's chunk of vertices — write contacts directly
             # to the global reducer buffer (no per-block shared memory reduction).
             for vertex_idx in range(vert_start + t, vert_end, wp.block_dim()):
-                # Get vertex position in mesh local space and transform to world space
-                vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
-                vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
-
-                # Project vertex onto plane to get closest point
-                vertex_in_plane_space = wp.transform_point(X_plane_sw, vertex_world)
-                point_on_plane_local = wp.vec3(vertex_in_plane_space[0], vertex_in_plane_space[1], 0.0)
-                point_on_plane = wp.transform_point(X_plane_ws, point_on_plane_local)
-
-                # Compute distance
-                diff = vertex_world - point_on_plane
-                distance = wp.dot(diff, plane_normal)
-
-                # Check if this vertex generates a contact
+                vertex = mesh_obj.points[vertex_idx]
+                distance = wp.dot(vertex, local_normal) + local_offset
                 if distance < gap_sum + total_margin_offset:
-                    # Contact position is the midpoint
-                    contact_pos = (vertex_world + point_on_plane) * 0.5
+                    vertex_world = wp.transform_point(X_mesh_ws, wp.cw_mul(vertex, mesh_scale))
+                    contact_pos = vertex_world - 0.5 * distance * plane_normal
 
                     # Normal points from mesh to plane
                     contact_normal = -plane_normal
@@ -2907,6 +3052,7 @@ class NarrowPhase:
             speculative=speculative,
             sparse_gjk_pairs=self.sparse_gjk_pairs,
             hydroelastic_enabled=hydroelastic_sdf is not None,
+            mesh_bounds_culling=has_meshes and not speculative and not self.mesh_sdf_texture_only,
             _tetrahedron_separation=self._tetrahedron_separation,
         )
         # GJK/MPR kernel handles remaining convex-convex pairs. Only models with cooked
@@ -3097,6 +3243,10 @@ class NarrowPhase:
                 wp.zeros(candidate_pair_work_estimate, dtype=ConvexQueryResult, device=device)
                 if self.split_gjk_mpr
                 else None
+            )
+            hint_count = shape_aabb_lower.shape[0] if shape_aabb_lower is not None else max_candidate_pairs
+            self._split_separation_hints = (
+                wp.zeros(hint_count, dtype=wp.uint64, device=device) if self.split_gjk_mpr else None
             )
             self.split_gjk_work_items = (
                 wp.zeros(candidate_pair_work_estimate, dtype=wp.int32, device=device) if self.split_gjk_mpr else None
@@ -3308,6 +3458,7 @@ class NarrowPhase:
                         *common_inputs,
                         self.split_convex_total_num_threads,
                         self.split_query_results,
+                        self._split_separation_hints,
                         self.split_gjk_work_items,
                         self.split_gjk_work_count,
                         self.split_manifold_work_items,
@@ -3322,6 +3473,7 @@ class NarrowPhase:
                     *common_inputs,
                     self.split_convex_total_num_threads,
                     self.split_query_results,
+                    self._split_separation_hints,
                     self.split_gjk_work_items,
                     self.split_gjk_work_count,
                     self.split_manifold_work_items,
@@ -3676,9 +3828,13 @@ class NarrowPhase:
                 max_speculative_extension,
                 shape_source,
                 shape_gap,
+                shape_base_gap,
                 shape_flags,
                 shape_sdf_index,
                 shape_edge_range,
+                shape_mesh_properties,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
                 self._shape_unit_scale_sdf,
                 contact_writer_data,
                 self.total_num_threads,

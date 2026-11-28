@@ -32,6 +32,40 @@ from newton.tests.unittest_utils import (
 )
 
 
+def test_mesh_sdf_contact_admission_is_translation_invariant(test, device):
+    """Preserve a submillimeter mesh gap after translating both bodies together."""
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+    origin_delta = wp.vec3(0.25, 0.0, 0.0)
+    local_delta = np.asarray(wp.quat_rotate_inv(rotation, origin_delta))
+    box = newton.Mesh.create_box(0.1, 0.1, 0.1, duplicate_vertices=False)
+    probes = []
+    for height in (0.2003, 0.1997):
+        vertices = box.vertices + (np.array([0.0, 0.0, height], dtype=np.float32) - local_delta)
+        probes.append(newton.Mesh(vertices, box.indices))
+    cfg = newton.ModelBuilder.ShapeConfig(gap=0.0, margin=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    pairs = []
+    for position in (wp.vec3(0.0), wp.vec3(32768.0, -32768.0, 32768.0)):
+        target = builder.add_shape_mesh(-1, xform=wp.transform(position, rotation), mesh=box, cfg=cfg)
+        for mesh in probes:
+            body = builder.add_body(xform=wp.transform(position + origin_delta, rotation))
+            pairs.append((builder.add_shape_mesh(body, mesh=mesh, cfg=cfg), target))
+    model = builder.finalize(device=device)
+    shape_pairs = wp.array(pairs, dtype=wp.vec2i, device=device)
+    for reduce_contacts in (False, True):
+        with test.subTest(reduce_contacts=reduce_contacts):
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="explicit", shape_pairs_filtered=shape_pairs, reduce_contacts=reduce_contacts
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            a = contacts.rigid_contact_shape0.numpy()[:count]
+            b = contacts.rigid_contact_shape1.numpy()[:count]
+            for i, (probe, _target) in enumerate(pairs):
+                test.assertEqual(bool(np.any((a == probe) | (b == probe))), bool(i % 2), f"pair {i}")
+
+
 @wp.func
 def _two_sphere_distance(sdf: TextureSDFData, p: wp.vec3) -> float:
     scale = sdf.voxel_radius
@@ -1012,6 +1046,12 @@ class TestSDFContact(unittest.TestCase):
                 np.testing.assert_allclose(result.numpy(), expected, rtol=np.finfo(np.float32).eps, atol=0.0)
 
 
+add_function_test(
+    TestSDFContact,
+    "test_mesh_sdf_contact_admission_is_translation_invariant",
+    test_mesh_sdf_contact_admission_is_translation_invariant,
+    devices=get_test_devices(),
+)
 add_function_test(
     TestSDFContact,
     "test_mesh_mesh_contained_bvh_contacts",

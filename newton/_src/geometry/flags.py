@@ -84,6 +84,9 @@ class MeshProperties(IntFlag):
     RECOVERY_PROBE = 1 << 2
     """The textured mesh has a single closed component within the planar recovery vertex budget."""
 
+    SDF_FROM_MESH = 1 << 3
+    """The attached texture SDF was baked from this mesh's own unscaled collision geometry."""
+
 
 __all__ = [
     "MeshProperties",

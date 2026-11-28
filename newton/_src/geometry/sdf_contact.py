@@ -18,6 +18,8 @@ from ..geometry.sdf_texture import (
 )
 from ..geometry.types import GeoType
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield, sample_sdf_heightfield
+from .broad_phase_common import check_aabb_overlap, check_aabb_sweep
+from .collision_core import sat_box_intersection
 from .contact_reduction_global import (
     GlobalContactReducerData,
     _export_and_reduce_contact_centered_two_spatial_depths,
@@ -1290,6 +1292,86 @@ def compute_mesh_mesh_block_offsets_scan(
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
+@wp.func
+def _mesh_to_sdf_transform(mesh_pose: wp.transform, sdf_pose: wp.transform) -> wp.transform:
+    """Compose the local transform without rotating large world offsets separately."""
+    sdf_rotation = wp.transform_get_rotation(sdf_pose)
+    delta = wp.transform_get_translation(mesh_pose) - wp.transform_get_translation(sdf_pose)
+    rotation = wp.quat_inverse(sdf_rotation) * wp.transform_get_rotation(mesh_pose)
+    return wp.transform(wp.quat_rotate_inv(sdf_rotation, delta), rotation)
+
+
+@wp.func
+def _mesh_bounds_overlap(
+    pose_a: wp.transform,
+    pose_b: wp.transform,
+    lower_a: wp.vec3,
+    upper_a: wp.vec3,
+    lower_b: wp.vec3,
+    upper_b: wp.vec3,
+    clearance: float,
+) -> bool:
+    relative = _mesh_to_sdf_transform(pose_a, pose_b)
+    center_a = wp.transform_point(relative, 0.5 * (lower_a + upper_a))
+    center_b = 0.5 * (lower_b + upper_b)
+    centered_a = wp.transform(center_a - center_b, wp.transform_get_rotation(relative))
+
+    # Include local offsets in the roundoff bound before the centers cancel.
+    size_a = wp.max(wp.max(wp.abs(lower_a), wp.abs(upper_a)))
+    size_b = wp.max(wp.max(wp.abs(lower_b), wp.abs(upper_b)))
+    magnitude = wp.max(size_a + size_b, wp.max(wp.abs(wp.transform_get_translation(relative))))
+    padding = wp.max(clearance, 0.0) + 2.0e-6 * wp.max(magnitude, 1.0)
+    return sat_box_intersection(
+        centered_a,
+        0.5 * (upper_a - lower_a) + wp.vec3(padding),
+        wp.transform_identity(),
+        0.5 * (upper_b - lower_b),
+    )
+
+
+@wp.func
+def _mesh_sweep_may_contact(
+    probe_pose: wp.transform,
+    target_pose: wp.transform,
+    probe_lower: wp.vec3,
+    probe_upper: wp.vec3,
+    target_lower: wp.vec3,
+    target_upper: wp.vec3,
+    displacement: wp.vec3,
+    clearance: float,
+    target_mesh: wp.uint64,
+    target_scale: wp.vec3,
+) -> bool:
+    """Check a translating mesh bound against a closed target's box and triangles."""
+    relative = _mesh_to_sdf_transform(probe_pose, target_pose)
+    center = wp.transform_point(relative, 0.5 * (probe_lower + probe_upper))
+    half = 0.5 * (probe_upper - probe_lower)
+    extent = (
+        wp.abs(wp.transform_vector(relative, wp.vec3(half[0], 0.0, 0.0)))
+        + wp.abs(wp.transform_vector(relative, wp.vec3(0.0, half[1], 0.0)))
+        + wp.abs(wp.transform_vector(relative, wp.vec3(0.0, 0.0, half[2])))
+    )
+    local_displacement = wp.quat_rotate_inv(wp.transform_get_rotation(target_pose), displacement)
+    # Bound roundoff before a local vertex offset cancels the relative origin.
+    probe_size = wp.max(wp.max(wp.abs(probe_lower), wp.abs(probe_upper)))
+    target_size = wp.max(wp.max(wp.abs(target_lower), wp.abs(target_upper)))
+    origin = wp.transform_get_translation(relative)
+    magnitude = wp.max(target_size, wp.max(wp.abs(origin) + wp.abs(local_displacement)) + 2.0 * probe_size)
+    padding = wp.max(clearance, 0.0) + 2.0e-6 * wp.max(magnitude, 1.0)
+    lower = center - extent
+    upper = center + extent
+    if check_aabb_overlap(lower, upper, padding, target_lower, target_upper, 0.0):
+        # A box that starts inside the solid need not cross a triangle.
+        return True
+    if not check_aabb_sweep(lower, upper, target_lower, target_upper, padding, local_displacement):
+        return False
+    box_lower = wp.cw_div(wp.min(lower, lower + local_displacement) - wp.vec3(padding), target_scale)
+    box_upper = wp.cw_div(wp.max(upper, upper + local_displacement) + wp.vec3(padding), target_scale)
+    query = wp.mesh_query_aabb(target_mesh, box_lower, box_upper)
+    face = int(0)
+    return wp.mesh_query_aabb_next(query, face)
+
+
 @lru_cache
 def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     writer_func: Any,
@@ -1562,7 +1644,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if not use_bvh_for_sdf and texture_sdf.scale_baked:
                             sdf_scale = wp.vec3(1.0, 1.0, 1.0)
 
-                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
+                X_mesh_to_sdf = _mesh_to_sdf_transform(X_tri_ws, X_sdf_ws)
 
                 triangle_mesh_margin = scale_data_tri[3]
                 sdf_mesh_margin = scale_data_sdf[3]
@@ -2017,7 +2099,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if not use_bvh_for_sdf and texture_sdf.scale_baked:
                             sdf_scale = wp.vec3(1.0, 1.0, 1.0)
 
-                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws_search), X_tri_ws_search)
+                X_mesh_to_sdf = _mesh_to_sdf_transform(X_tri_ws_search, X_sdf_ws_search)
 
                 triangle_mesh_margin = scale_data_tri[3]
                 sdf_mesh_margin = scale_data_sdf[3]

@@ -1108,6 +1108,10 @@ Two approaches available:
 2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
    For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
+For discrete BVH queries between closed, unit-scale meshes, Newton first
+checks their oriented bounds with the contact gap and margins. This can skip
+pairs whose world-space boxes overlap while their oriented boxes are separated.
+
 When a rounded, closed mesh probe straddles a thin wall, Newton can publish a
 single contact on the shorter exit path. Both shapes need texture SDFs and
 the probe surface must be connected. A mesh query verifies the two locally
@@ -1734,6 +1738,13 @@ it must be non-negative and finite. ``0.0`` does not enlarge authored gaps.
 Speculation changes when a contact is retained, not its geometry: contact points remain
 at their current separation rather than a predicted impact pose. Mesh and SDF contact
 reduction preserves representative close-clearance and early-impact candidates.
+
+For two closed meshes moving without rotation, Newton can also check the swept
+bounds in one mesh's frame. If the meshes start separated along a box axis, the
+triangle BVH can rule out a hit even when the swept boxes overlap. This applies
+to BVH distance queries and to unit-scale meshes with a parity SDF baked from
+their own geometry. These checks include the authored gap and contact margins
+and use the same constant-velocity prediction horizon as speculative contacts.
 
 .. note::
 
