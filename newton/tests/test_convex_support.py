@@ -272,18 +272,39 @@ class TestConvexSupportAcceleration(unittest.TestCase):
 
     def test_precomputed_support_data_survives_pickling(self):
         """Precompute support tables, pickle the meshes, and finalize without rebuilding them."""
-        sphere = newton.Mesh.create_sphere(
-            0.5, num_latitudes=16, num_longitudes=24, compute_normals=False, compute_uvs=False, compute_inertia=False
-        )
-        box = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)
-        visual = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+
+        def sphere(radius):
+            return newton.Mesh.create_sphere(
+                radius,
+                num_latitudes=16,
+                num_longitudes=24,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
+
+        def box(half_extent):
+            return newton.Mesh.create_box(
+                half_extent, half_extent, half_extent, duplicate_vertices=False, compute_inertia=False
+            )
+
+        def make_meshes():
+            return {"sphere": sphere(0.5), "box": box(1.0), "visual": box(0.5), "a": sphere(0.3), "b": box(0.2)}
 
         def build(meshes):
+            # A sphere and a box hull, a non-colliding hull, and a body whose two variants hold
+            # different convex hulls.
             builder = newton.ModelBuilder()
-            for mesh in meshes[:2]:
-                builder.add_shape_convex_hull(body=-1, mesh=mesh)
+            builder.add_shape_convex_hull(body=-1, mesh=meshes["sphere"])
+            builder.add_shape_convex_hull(body=-1, mesh=meshes["box"])
             visual_cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=False)
-            builder.add_shape_convex_hull(body=-1, mesh=meshes[2], cfg=visual_cfg)
+            builder.add_shape_convex_hull(body=-1, mesh=meshes["visual"], cfg=visual_cfg)
+            variants = []
+            for name in ("a", "b"):
+                variant = newton.ModelBuilder()
+                variant.add_shape_convex_hull(variant.add_body(), mesh=meshes[name])
+                variants.append(variant)
+            builder.add_body_variants(builder.add_body(), variants)
             return builder
 
         def support_arrays(model):
@@ -295,20 +316,21 @@ class TestConvexSupportAcceleration(unittest.TestCase):
             )
 
         with patch.object(builder_module, "_convex_hull_adjacency", wraps=_convex_hull_adjacency) as hull:
-            expected = support_arrays(build([sphere.copy(), box.copy(), visual.copy()]).finalize(device="cpu"))
+            expected = support_arrays(build(make_meshes()).finalize(device="cpu"))
             finalize_calls = hull.call_count
 
-        builder = build([sphere, box, visual])
+        meshes = make_meshes()
+        builder = build(meshes)
         with patch.object(builder_module, "_convex_hull_adjacency", wraps=_convex_hull_adjacency) as hull:
             builder.precompute_convex_support()
             self.assertEqual(hull.call_count, finalize_calls)  # The same work finalize would do.
             builder.precompute_convex_support()
             self.assertEqual(hull.call_count, finalize_calls)
-        self.assertIsNotNone(sphere._convex_support_data)
-        self.assertIsNotNone(box._convex_support_data)
-        self.assertIsNone(visual._convex_support_data)  # Non-colliding hulls get no tables.
+        for name in ("sphere", "box", "a", "b"):
+            self.assertIsNotNone(meshes[name]._convex_support_data, name)
+        self.assertIsNone(meshes["visual"]._convex_support_data)  # Non-colliding hulls get no tables.
 
-        restored = pickle.loads(pickle.dumps([sphere, box, visual]))
+        restored = pickle.loads(pickle.dumps(meshes))
         with patch.object(builder_module, "_convex_hull_adjacency", wraps=_convex_hull_adjacency) as hull:
             actual = support_arrays(build(restored).finalize(device="cpu"))
             self.assertEqual(hull.call_count, 0)

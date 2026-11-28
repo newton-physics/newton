@@ -10,6 +10,7 @@ import ctypes
 import functools
 import gc
 import hashlib
+import itertools
 import logging
 import math
 import operator
@@ -16076,15 +16077,28 @@ class ModelBuilder:
         """Compute the convex support tables of colliding convex hull shapes ahead of :meth:`finalize`.
 
         :meth:`finalize` builds hull certificates and support-map acceleration tables for every
-        colliding :attr:`GeoType.CONVEX_MESH` shape and keeps them on the source :class:`Mesh`, so
-        later finalizations reuse them. This method fills the same per-mesh tables without building a
+        colliding :attr:`GeoType.CONVEX_MESH` shape, including the candidate shapes of
+        :meth:`add_body_variants`, and keeps them on the source :class:`Mesh`, so later
+        finalizations reuse them. This method fills the same per-mesh tables without building a
         model. The tables are plain NumPy data and are pickled with the mesh, so call it before
-        serializing a builder or its meshes to let finalizations after loading skip this work.
-        Meshes that already carry tables are left unchanged.
+        serializing the meshes to let finalizations of restored copies skip this work. Meshes that
+        already carry tables are left unchanged.
         """
-        shape_types = _list_for_iteration(self.shape_type)
-        shape_flags = _list_for_iteration(self.shape_flags)
-        for shape_type, source, flags in zip(shape_types, self.shape_source, shape_flags, strict=True):
+        shapes = zip(
+            _list_for_iteration(self.shape_type),
+            self.shape_source,
+            _list_for_iteration(self.shape_flags),
+            strict=True,
+        )
+        # finalize() appends every shape of each distinct variant set as a detached row.
+        variant_sets = {id(variants.variant_set): variants.variant_set for variants in self._body_variants.values()}
+        variant_shapes = (
+            (shape.values["shape_type"], shape.values["shape_source"], shape.values["shape_flags"])
+            for variant_set in variant_sets.values()
+            for variant in variant_set.variants
+            for shape in variant.shapes
+        )
+        for shape_type, source, flags in itertools.chain(shapes, variant_shapes):
             if (
                 shape_type == GeoType.CONVEX_MESH
                 and flags & ShapeFlags.COLLIDE_SHAPES
