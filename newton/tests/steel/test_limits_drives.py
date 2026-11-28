@@ -32,6 +32,7 @@ from newton._src.solvers.steel.kernels import (
 from newton._src.solvers.steel.solver_steel import _get_joint_limit_warp_kernel, _use_resident_mfgs_metadata
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.unittest_utils import (
+    MUJOCO_MODULES,
     add_function_test,
     get_cuda_test_devices,
     get_test_devices,
@@ -1815,6 +1816,7 @@ class TestSteelJointFriction(unittest.TestCase):
         qd = _run_friction(model, effort=(1.5, 1.5), steps=10, dofs=2)
         np.testing.assert_allclose(qd[-1], [0.5 * DT_JOINT_FRICTION * 10, 0.0], atol=1.0e-5)
 
+    @requires(*MUJOCO_MODULES)
     def test_ball_axes_match_mujoco_frictionloss(self):
         """Box each BALL DOF separately, matching analytic sticking and SolverMuJoCo's frictionloss when sliding."""
         efforts = np.array([[0.6, -0.5, 0.9], [2.5, 0.0, 0.0], [0.0, -2.5, 0.3], [2.0, 1.8, 0.0]], dtype=np.float32)
@@ -1827,10 +1829,7 @@ class TestSteelJointFriction(unittest.TestCase):
         np.testing.assert_allclose(qd[:, ~sliding], 0.0, atol=1.0e-6)
         ramp = (2.5 - FRICTION) / INERTIA * DT_JOINT_FRICTION * np.arange(1, 21)
         np.testing.assert_allclose(qd[:, 1, 0], ramp, atol=1.0e-5)
-        try:
-            reference = newton.solvers.SolverMuJoCo(model, iterations=100, ls_iterations=50, cone="pyramidal")
-        except ImportError as error:
-            self.skipTest(f"MuJoCo is not installed: {error}")
+        reference = newton.solvers.SolverMuJoCo(model, iterations=100, ls_iterations=50, cone="pyramidal")
         states, control = [model.state(), model.state()], model.control()
         control.joint_f.assign(efforts.ravel())
         qd_mujoco = _advance_friction(reference, states, control, 20)[1].reshape(20, -1, 3)

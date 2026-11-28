@@ -14,7 +14,13 @@ import warp as wp
 
 from ......core.types import override
 from ...core.types import mat36f, mat66f, to_warp_int32_array, vec6f
-from ...linalg.core import DenseSquareMultiLinearInfo, prefix_offsets, segment_local_indices
+from ...linalg.core import (
+    DenseSquareMultiLinearInfo,
+    dense_matrix_layout,
+    prefix_offsets,
+    segment_local_indices,
+    validate_dense_matrix_shape,
+)
 from .contact import mat55f, vec5f
 from .spatial_warmstart import WarmstarterAngularContacts
 
@@ -26,7 +32,6 @@ if TYPE_CHECKING:
 ###
 
 __all__ = [
-    "APGDData",
     "AndersonData",
     "AndersonRowsData",
     "BoxRows",
@@ -40,6 +45,7 @@ __all__ = [
     "LOXResiduals",
     "LOXStatus",
     "LOXSystemData",
+    "NesterovData",
     "ProjectionAcceleration",
     "ProjectionData",
     "SpatialContactBlocks",
@@ -61,8 +67,8 @@ class ProjectionAcceleration(IntEnum):
     NONE = 0
     """Plain projection sweeps."""
 
-    APGD = 1
-    """Restarted Nesterov extrapolation; requires the Jacobi schedule."""
+    NESTEROV = 1
+    """Restarted Nesterov extrapolation."""
 
     ANDERSON = 2
     """One safeguarded Anderson direction per projection sweep."""
@@ -807,8 +813,8 @@ class AndersonData:
         """Whether the safeguard of each world must check the next map."""
 
 
-class APGDData:
-    """Momentum state of APGD-accelerated Jacobi projection.
+class NesterovData:
+    """Momentum state of Nesterov-accelerated projection.
 
     Args:
         problem_data: Rows and body data of the LOX problem.
@@ -820,12 +826,13 @@ class APGDData:
         box_capacity = problem_data.box_rows.capacity
         rows = problem_data.contact_rows
         spatial = rows.angular_reaction is not None
-        self.theta = wp.ones(world_count, dtype=wp.float32, device=device)
-        """Momentum parameter of each world."""
-        self.beta = wp.zeros(world_count, dtype=wp.float32, device=device)
-        """Extrapolation factor of each world."""
-        self.restart_dot = wp.zeros(world_count, dtype=wp.float32, device=device)
-        """Restart criterion of each world."""
+        self.theta = wp.ones((2, world_count), dtype=wp.float32, device=device)
+        """Momentum parameter of each world, read and written alternately by the row-parallel extrapolations;
+        the first row holds it between projections."""
+        self.history = wp.zeros(world_count, dtype=wp.int32, device=device)
+        """Whether each world holds the row history of the previous splitting iteration."""
+        self.restart_dot = wp.zeros((2, world_count), dtype=wp.float32, device=device)
+        """Restart criterion of each world, accumulated and cleared alternately."""
         self.box_trial = wp.zeros(box_capacity, dtype=wp.float32, device=device)
         """Extrapolated trial reaction of each box row."""
         self.box_previous = wp.zeros(box_capacity, dtype=wp.float32, device=device)
@@ -838,6 +845,8 @@ class APGDData:
         """Extrapolated trial angular reaction of each contact, with spatial friction."""
         self.angular_previous = wp.zeros(rows.capacity, dtype=wp.vec3f, device=device) if spatial else None
         """Angular reaction of each contact at the previous sweep, with spatial friction."""
+        self.twist_previous = wp.zeros(problem_data.num_bodies, dtype=vec6f, device=device)
+        """Projected twist of each body at the previous sweep."""
 
 
 class ProjectionData:
@@ -878,21 +887,23 @@ class ProjectionData:
         """Per-body correction accumulated by one sweep, zero between sweeps."""
         self.anderson = AndersonData(problem_data) if acceleration == ProjectionAcceleration.ANDERSON else None
         """Anderson acceleration state, if selected."""
-        self.apgd = APGDData(problem_data) if acceleration == ProjectionAcceleration.APGD else None
-        """APGD acceleration state, if selected."""
+        self.nesterov = NesterovData(problem_data) if acceleration == ProjectionAcceleration.NESTEROV else None
+        """Nesterov acceleration state, if selected."""
 
 
 class LOXSystemData:
     """Arrays of the batched smooth body system.
 
-    Bodies stay in model order, while the dense matrices and vectors are packed by
-    factor block.
+    The multi-body factor blocks come first and hold one row of :attr:`matrix` each, sized for the largest
+    of them. The single-body blocks after them hold one row of :attr:`single_body_matrix` each, so free
+    bodies take ``6 x 6`` entries whatever the size of the articulations. Vectors are packed by factor block.
 
     Args:
         body_block: Factor block of each body, or ``-1`` for a prescribed body.
         body_local: Index of each body within its factor block, or ``-1``.
         body_vector_index: First entry of each body in the packed system vectors, or ``-1``.
         info: Dense layout of the factor blocks.
+        num_multi_body_blocks: Number of leading factor blocks of several bodies.
         device: Device of the arrays.
     """
 
@@ -902,6 +913,7 @@ class LOXSystemData:
         body_local: np.ndarray,
         body_vector_index: np.ndarray,
         info: DenseSquareMultiLinearInfo,
+        num_multi_body_blocks: int,
         device: wp.DeviceLike,
     ):
         num_bodies = len(body_block)
@@ -913,10 +925,18 @@ class LOXSystemData:
         """First entry of each body in the packed system vectors, or ``-1``."""
         self.info = info
         """Dense layout of the factor blocks."""
-        self.matrix = wp.zeros(info.total_mat_size, dtype=wp.float32, device=device)
-        """Dense matrix of each factor block: the smooth matrix ``A`` once assembled, then ``A + alpha W``
-        once the consensus fraction ``alpha`` of the splitting weights is added. Captured steps assemble
-        into the matrix of the factorization, in its row order."""
+        multi_body_sizes = [dimension * dimension for dimension in info.dimensions[:num_multi_body_blocks]]
+        matrix_shape = dense_matrix_layout(multi_body_sizes)
+        validate_dense_matrix_shape(matrix_shape, wp.float32)
+        self.matrix = wp.zeros(matrix_shape, dtype=wp.float32, device=device)
+        """Dense matrix of each multi-body factor block: the smooth matrix ``A`` once assembled, then
+        ``A + alpha W`` once the consensus fraction ``alpha`` of the splitting weights is added. Captured
+        steps assemble into the matrix of the factorization, in its row order."""
+        self.single_body_matrix = wp.zeros(
+            (info.num_blocks - num_multi_body_blocks, 36), dtype=wp.float32, device=device
+        )
+        """Row-major ``6 x 6`` matrix of each single-body factor block, after the multi-body blocks, see
+        :attr:`matrix`."""
         self.right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
         """Smooth right-hand side ``f``, frozen during the iterations."""
         self.candidate_right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)

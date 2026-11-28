@@ -78,10 +78,13 @@ class RobotComposerSim:
         # Create solver
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
+            use_mujoco_contacts=False,
             cone="elliptic",
             iterations=15,
             ls_iterations=100,
         )
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Create viewer
         if self.do_rendering:
@@ -432,7 +435,8 @@ class RobotComposerSim:
             self.state_0.clear_forces()
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):

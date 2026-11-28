@@ -299,7 +299,7 @@ state:
 
 .. testcode:: deformable-visual-mesh
 
-    rays = camera.compute_camera_rays_pinhole(32, 32, camera_fov=np.deg2rad(45), device=model.device)
+    rays = camera.compute_camera_rays_pinhole(32, 32, fov=np.deg2rad(45), device=model.device)
     poses = wp.array([wp.transform(wp.vec3(0.5, 0.5, 3.0), wp.quat_identity())], dtype=wp.transform, device=model.device)
     color = camera.allocate_image_color(1, 32, 32)
     depth = camera.allocate_image_depth(1, 32, 32)
@@ -734,22 +734,6 @@ Viewer controls:
 
 Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the model, ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
 
-**Troubleshooting:**
-
-If you encounter an OpenGL context error on Linux with Wayland:
-
-.. code-block:: text
-
-    OpenGL.error.Error: Attempt to retrieve context when no valid context
-
-Set the PyOpenGL platform before running:
-
-.. code-block:: bash
-
-    export PYOPENGL_PLATFORM=glx
-
-This is a known issue when running OpenGL applications on Wayland display servers.
-
 RTX Viewer
 ~~~~~~~~~~
 
@@ -785,7 +769,8 @@ for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for th
 ViewerRTX has been validated with the following renderer configurations:
 
 - ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency CI; Isaac Lab 3.0)
-- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420`` (locked GPU CI configuration)
+- ``ovrtx==0.6.0.1791947691`` with ``ovstage==0.3.0.1791986420``
+- ``ovrtx==0.7.0.1794596436`` with ``ovstage==0.4.0.1794520352`` (locked GPU CI configuration)
 
 Only the exact pairs above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
 together to one of these pairs. Mixed release pairs are unvalidated; OVRTX 0.5.1 fails to start with OVStage 0.2.0.

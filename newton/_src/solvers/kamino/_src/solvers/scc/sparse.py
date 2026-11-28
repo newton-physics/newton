@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
 import warp as wp
 
 from ...core.data import DataKamino
@@ -43,6 +44,8 @@ from .response import (
     make_response_kernel,
 )
 from .sparse_kernels import (
+    COMPACT_SCHUR_PGS_BLOCK_DIM,
+    COMPACT_SCHUR_PGS_TIERS,
     SMALL_BILATERAL_INVERSE_SIZE,
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
@@ -125,6 +128,7 @@ class SparseSCCPath:
         limits: LimitsKamino | None,
         contacts: ContactsKamino | None,
         jacobians: SparseSystemJacobians | None,
+        body_color_nodes: wp.array[wp.int32],
         bilateral_solver,
         use_schur_complement: bool,
         max_alternating_iterations: int,
@@ -158,6 +162,13 @@ class SparseSCCPath:
         self.all_worlds_mask = all_worlds_mask
         self.should_solve_bilateral_after_block = should_solve_bilateral_after_block
         self.set_bilateral_active_dim = set_bilateral_active_dim
+        # Since the cooperative kernel sweeps groups serially, coloring only
+        # sets the sweep order there. Body coloring is kept for this case, since
+        # coloring taking into account the articulation seems to lead to slower
+        # convergence.
+        if _can_use_cooperative_articulation(self):
+            body_color_nodes = wp.array(np.arange(body_color_nodes.shape[0], dtype=np.int32), device=device)
+        self.body_color_nodes = body_color_nodes
         self.bilateral_nzb_pairs: (
             tuple[
                 wp.array[wp.int32],
@@ -249,10 +260,8 @@ class SparseSCCPath:
                 and self.size.max_of_num_bilateral_joint_cts <= SMALL_BILATERAL_INVERSE_SIZE
             ):
                 operator = self.data.bilateral_operator
-                self.bilateral_lower_inverse = wp.zeros(
-                    operator.info.total_mat_size, dtype=wp.float32, device=self.device
-                )
-                self.bilateral_inverse = wp.zeros_like(self.bilateral_lower_inverse)
+                self.bilateral_lower_inverse = wp.zeros_like(operator.mat)
+                self.bilateral_inverse = wp.zeros_like(operator.mat)
 
         self.packed_coupling = PackedCoupling.create(self, self.joint_block_solver)
         self.effort_limit_condensation = EffortLimitCondensation.create(self)
@@ -436,6 +445,7 @@ def _prepare_sparse_inequality_pgs(path: SparseSCCPath, problem: DualProblem) ->
                 problem.data.nc,
                 problem.data.iio,
                 state.inequality_bodies,
+                path.body_color_nodes,
                 state.inequality_body_color_masks,
                 state.inequality_colors,
                 state.inequality_num_colors,
@@ -506,6 +516,7 @@ def _prepare_sparse_inequality_pgs(path: SparseSCCPath, problem: DualProblem) ->
             sorter.sorted_to_unsorted_map,
             contacts.cid,
             state.inequality_bodies,
+            path.body_color_nodes,
             state.inequality_body_color_masks,
             path.contact_group_starts,
             state.inequality_colors,
@@ -732,47 +743,11 @@ def _launch_sparse_inequality_pgs(
             state.bilateral_coupling,
             state.bilateral_response,
             state.bilateral_delta,
-            wp.bool(path.use_schur_complement),
         ]
         if cooperative_articulation:
-            kernel_inputs = [
-                *common_inputs,
-                jacobians.bounded_constraint_nzb_offsets,
-                jacobians.limit_constraint_nzb_offsets,
-                jacobians.contact_constraint_nzb_offsets,
-                state.limit_indices,
-                state.contact_indices,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.bcio,
-                problem.data.lio,
-                problem.data.cio,
-                problem.data.iio,
-                problem.data.bcgo,
-                problem.data.lcgo,
-                problem.data.ccgo,
-                problem.data.vio,
-                problem.data.mu,
-                problem.data.bound_lower,
-                problem.data.bound_upper,
-                problem.data.P,
-                problem.data.v_f,
-                problem.data.v_b_friction,
-                state.scratch,
-                state.inequality_projected_diagonal,
-                delassus.regularization,
-                problem.data.njc,
-                bilateral_vio,
-                state.bilateral_response_mio,
-                state.bilateral_response_stride,
-                state.bilateral_coupling,
-                state.bilateral_response,
-                state.bilateral_delta,
-                state.bilateral_response_factor,
-                state.s,
-                wp.bool(enable_compact_schur),
-            ]
+            kernel_inputs += [state.bilateral_response_factor, state.s, wp.bool(enable_compact_schur)]
+        else:
+            kernel_inputs.append(wp.bool(path.use_schur_complement))
         kernel_inputs.extend(
             [
                 state.inequality_num_colors,
@@ -919,13 +894,13 @@ def _launch_sparse_inequality_pgs(
         if path.effort_limit_condensation is not None:
             fallback_inputs = list(compact_inputs)
             fallback_inputs[4] = path.effort_limit_condensation.prepare_candidates(compact_inputs)
-        for max_rows in (64, 128):
+        for max_rows in COMPACT_SCHUR_PGS_TIERS:
             wp.launch(
                 kernel=make_compact_schur_pgs_kernel(max_rows),
                 dim=path.size.num_worlds * 32,
                 inputs=fallback_inputs,
                 device=path.device,
-                block_dim=32,
+                block_dim=COMPACT_SCHUR_PGS_BLOCK_DIM,
             )
         if path.effort_limit_condensation is not None:
             path.effort_limit_condensation.publish(compact_inputs)
@@ -1040,7 +1015,6 @@ def _factor_sparse_bilateral_block(path: SparseSCCPath, problem: DualProblem) ->
                 dim=path.size.num_worlds,
                 inputs=[
                     operator.info.dim,
-                    operator.info.mio,
                     path.bilateral_solver.L,
                     path.bilateral_lower_inverse,
                     path.bilateral_inverse,
@@ -1053,13 +1027,12 @@ def _factor_sparse_bilateral_block(path: SparseSCCPath, problem: DualProblem) ->
 def _assemble_sparse_bilateral_block(
     path: SparseSCCPath,
     problem: DualProblem,
-    matrix: wp.array[float32],
+    matrix: wp.array2d[float32],
     inverse: wp.array[int32] | None = None,
 ) -> None:
     """Assemble the bilateral matrix directly in the requested row ordering."""
     operator = path.data.bilateral_operator
     state = path.data.state
-    matrix_offsets = operator.info.mio
     if path.bilateral_nzb_pairs is None:
         raise RuntimeError("Sparse SCC topology is not prepared. Call `SparseSCCPath.prepare()` before solving.")
     pair_wid, pair_row, pair_col, pair_bid, pair_i, pair_j = path.bilateral_nzb_pairs
@@ -1073,7 +1046,6 @@ def _assemble_sparse_bilateral_block(
         inputs=[
             problem.data.njc,
             problem.data.vio,
-            matrix_offsets,
             operator.info.maxdim,
             operator.info.vio,
             state.scratch,
@@ -1101,7 +1073,6 @@ def _assemble_sparse_bilateral_block(
                 pair_i,
                 pair_j,
                 jacobian.nzb_values,
-                matrix_offsets,
                 operator.info.maxdim,
                 operator.info.vio,
                 state.bilateral_preconditioner,
@@ -1264,7 +1235,6 @@ def _solve_sparse_bilateral_block(
                 problem.data.njc,
                 problem.data.v_f,
                 operator.info.dim if active_dim is None else active_dim,
-                operator.info.mio,
                 operator.info.vio,
                 state.bilateral_preconditioner,
                 path.bilateral_inverse,
@@ -1332,7 +1302,6 @@ def _solve_sparse_bilateral_block(
                 path.data.solution.lambdas,
                 compact_coupling,
                 operator.info.dim if active_dim is None else active_dim,
-                operator.info.mio,
                 operator.info.vio,
                 state.bilateral_preconditioner,
                 solver.L,
@@ -1385,7 +1354,6 @@ def _solve_sparse_bilateral_block(
             inputs=[
                 info.dim,
                 solver._stride(),
-                info.mio,
                 info.vio,
                 solver.tile_pattern_offsets,
                 solver.P,
@@ -1407,7 +1375,6 @@ def _solve_sparse_bilateral_block(
             dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
             inputs=[
                 info.dim if active_dim is None else active_dim,
-                info.mio,
                 info.vio,
                 path.bilateral_inverse,
                 state.bilateral_rhs,
@@ -1559,7 +1526,7 @@ def _solve_sparse_with_bilateral_schur_complement(
         path.size.max_of_num_bounded_joint_cts + path.size.max_of_max_limits + 3 * path.size.max_of_max_contacts
     )
     use_permutation = isinstance(path.bilateral_solver, LLTBlockedRCMSolver)
-    permutation = path.bilateral_solver.P if use_permutation else state.projected_mio
+    permutation = path.bilateral_solver.P if use_permutation else state.dummy_permutation
     enable_compact_schur = (
         path.device.is_cuda and path.size.max_of_num_bilateral_joint_cts >= 32 and path.max_alternating_iterations >= 4
     )
@@ -1606,7 +1573,6 @@ def _solve_sparse_with_bilateral_schur_complement(
     if isinstance(path.bilateral_solver, LDLBlockSparseSolver):
         sparse_factor.response_sparse(path, problem, enable_compact_schur)
     else:
-        factor_offsets = path.data.bilateral_operator.info.mio
         factor = path.bilateral_solver.L
         response_kernel = _solve_bilateral_unilateral_response
         response_block_dim = 1
@@ -1623,7 +1589,6 @@ def _solve_sparse_with_bilateral_schur_complement(
                 dim=(path.size.num_worlds, max_joint_rows),
                 inputs=[
                     problem.data.njc,
-                    factor_offsets,
                     path.data.bilateral_operator.info.maxdim,
                     path.data.bilateral_operator.info.vio,
                     factor,
@@ -1651,7 +1616,6 @@ def _solve_sparse_with_bilateral_schur_complement(
                 inputs=[
                     problem.data.dim,
                     problem.data.njc,
-                    factor_offsets,
                     path.data.bilateral_operator.info.maxdim,
                     path.data.bilateral_operator.info.vio,
                     state.bilateral_preconditioner,
@@ -1683,7 +1647,6 @@ def _solve_sparse_with_bilateral_schur_complement(
                 inputs=[
                     problem.data.dim,
                     problem.data.njc,
-                    factor_offsets,
                     path.data.bilateral_operator.info.maxdim,
                     path.data.bilateral_operator.info.vio,
                     state.bilateral_preconditioner,
@@ -1707,7 +1670,6 @@ def _solve_sparse_with_bilateral_schur_complement(
                 inputs=[
                     problem.data.dim,
                     problem.data.njc,
-                    factor_offsets,
                     path.data.bilateral_operator.info.maxdim,
                     path.data.bilateral_operator.info.vio,
                     state.bilateral_preconditioner,
@@ -1831,7 +1793,6 @@ def _solve_sparse_with_bilateral_schur_complement(
             inputs=[
                 info.dim,
                 solver._stride(),
-                info.mio,
                 info.vio,
                 solver.tile_pattern_offsets,
                 solver.P,

@@ -34,11 +34,11 @@ from newton._src.solvers.kamino._src.linalg import LDLBlockSparseSolver, LLTBloc
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.common import tolerance_scaled_residual
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
+from newton.tests.unittest_utils import NewtonTestCase
 from newton.tests.utils import basics
 from newton.tests.utils.basics import build_boxes_fourbar
 from newton.tests.utils.testing import build_binary_revolute_joint_test, build_shape_pairs_test
@@ -377,24 +377,14 @@ def step_solver(
 ###
 
 
-class TestSolverKaminoConfig(unittest.TestCase):
+class TestSolverKaminoConfig(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_default(self):
         """Construct the default solver configuration."""
@@ -402,7 +392,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "twopi")
         self.assertEqual(config.dynamics.linear_solver_type, "LLTB")
-        self.assertEqual(config.scc.bilateral_solver_type, "LLTB")
+        self.assertEqual(config.scc.bilateral_solver_type, "LLTBRCM")
         self.assertEqual(config.padmm.warmstart_mode, "containers")
         self.assertEqual(config.padmm.warmstart_scale, 0.9)
 
@@ -559,6 +549,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
         self.assertEqual(SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau").integrator, "moreau")
         kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="anderson")
+        kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="nesterov")
         kamino_config.LOXSolverConfig(
             contact_compliance=True, contact_implicit_restitution=True, contact_spatial_friction=True
         )
@@ -566,7 +557,6 @@ class TestSolverKaminoConfig(unittest.TestCase):
         invalid_values = (
             ({"contact_warmstart_method": "geom_pair_net_wrench"}, "contact warmstart method is not implemented"),
             ({"projection_acceleration": "invalid"}, "projection_acceleration"),
-            ({"gauss_seidel_max_colors": 4, "projection_acceleration": "apgd"}, "requires gauss_seidel_max_colors=1"),
             ({"gauss_seidel_max_colors": True}, "gauss_seidel_max_colors"),
             ({"max_iterations": 0}, "max_iterations"),
             ({"use_graph_conditionals": 1}, "use_graph_conditionals"),
@@ -576,14 +566,18 @@ class TestSolverKaminoConfig(unittest.TestCase):
             ({"projected_twist_fraction": float("nan")}, "projected_twist_fraction"),
             ({"weight_beta": 0.5}, "weight_beta"),
             ({"max_joint_penalty_ratio": 50.0}, "max_joint_penalty_ratio"),
+            ({"contact_proximal_regularization": -0.01}, "contact_proximal_regularization"),
+            ({"contact_proximal_warmstart_scale": 1.5}, "contact_proximal_warmstart_scale"),
+            ({"contact_proximal_warmstart_window": float("nan")}, "contact_proximal_warmstart_window"),
         )
         for kwargs, message in invalid_values:
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
                 kamino_config.LOXSolverConfig(**kwargs)
 
 
-class TestCollisionCapacityInitialization(unittest.TestCase):
+class TestCollisionCapacityInitialization(NewtonTestCase):
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -841,51 +835,39 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
             warnings.simplefilter("error", DeprecationWarning)
             solver.update_contacts(contacts, model.state())
 
-    def test_update_contacts_warns_only_for_force_export(self):
-        """Keep geometry-only export warning-free and deprecate only legacy forces."""
+    def test_update_contacts_exports_geometry(self):
+        """Export contact geometry without a deprecation warning."""
         for native in (False, True):
-            for export_forces in (False, True):
-                with self.subTest(native=native, export_forces=export_forces):
-                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-                    SolverKamino.register_custom_attributes(builder)
-                    basics.build_sphere_on_plane(builder=builder, z_offset=-0.01)
-                    model = builder.finalize(device=self.default_device, skip_validation_joints=True)
-                    solver = SolverKamino(
-                        model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
-                    )
-                    pipeline = newton.CollisionPipeline(model)
-                    contacts = newton.Contacts(
-                        pipeline.rigid_contact_max,
-                        pipeline.soft_contact_max,
-                        device=self.default_device,
-                        requested_attributes={"force"} if export_forces else None,
-                    )
-                    state_in, state_out = model.state(), model.state()
-                    if not native:
-                        pipeline.collide(state_in, contacts)
-                    solver.step(state_in, state_out, None, None if native else contacts, SIM_DT)
+            with self.subTest(native=native):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                SolverKamino.register_custom_attributes(builder)
+                basics.build_sphere_on_plane(builder=builder, z_offset=-0.01)
+                model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+                solver = SolverKamino(
+                    model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
+                )
+                pipeline = newton.CollisionPipeline(model)
+                contacts = newton.Contacts(
+                    pipeline.rigid_contact_max,
+                    pipeline.soft_contact_max,
+                    device=self.default_device,
+                )
+                state_in, state_out = model.state(), model.state()
+                if not native:
+                    pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, None, None if native else contacts, SIM_DT)
 
-                    if export_forces:
-                        with self.assertWarnsRegex(
-                            DeprecationWarning, r"SolverKamino\.update_contacts\(\) force export.*1\.7"
-                        ) as warning:
-                            solver.update_contacts(contacts, state_in)
-                        self.assertEqual(warning.filename, __file__)
-                    else:
-                        self.assertIsNone(contacts.force)
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("error", DeprecationWarning)
-                            solver.update_contacts(contacts, state_in)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", DeprecationWarning)
+                    solver.update_contacts(contacts, state_in)
 
-                    count = int(contacts.rigid_contact_count.numpy()[0])
-                    self.assertGreater(count, 0)
-                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point0.numpy()[:count])))
-                    self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point1.numpy()[:count])))
-                    np.testing.assert_allclose(
-                        np.linalg.norm(contacts.rigid_contact_normal.numpy()[:count], axis=1), 1.0, atol=1e-6
-                    )
-                    if export_forces:
-                        self.assertGreater(np.linalg.norm(contacts.force.numpy()[:count, :3]), 0.0)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(count, 0)
+                self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point0.numpy()[:count])))
+                self.assertTrue(np.all(np.isfinite(contacts.rigid_contact_point1.numpy()[:count])))
+                np.testing.assert_allclose(
+                    np.linalg.norm(contacts.rigid_contact_normal.numpy()[:count], axis=1), 1.0, atol=1e-6
+                )
 
     def test_step_with_zero_max_contacts(self):
         """Verify SolverKamino.step() succeeds when the model admits no possible contacts."""
@@ -927,9 +909,10 @@ def _eval_tolerance_scaled_residual(
     out[i] = tolerance_scaled_residual(residual[i], tolerance[i])
 
 
-class TestSolverKaminoStatus(unittest.TestCase):
+class TestSolverKaminoStatus(NewtonTestCase):
     def setUp(self):
         """Configure the default Warp device for status tests."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -1131,11 +1114,12 @@ class TestSolverKaminoStatus(unittest.TestCase):
                 self.assertTrue(np.all(status_host["iterations"] <= config.lox.max_iterations))
 
 
-class TestSolverKaminoScratchStateReset(unittest.TestCase):
+class TestSolverKaminoScratchStateReset(NewtonTestCase):
     """Check the assumption that every solver iteration reinitializes the scratch state."""
 
     def setUp(self):
         """Configure the default Warp device for scratch-state tests."""
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
@@ -1188,26 +1172,17 @@ class TestSolverKaminoScratchStateReset(unittest.TestCase):
                 self._assert_step_resets_scratch_state("scc", warmstart_mode)
 
 
-class TestSolverKaminoImpl(unittest.TestCase):
+class TestSolverKaminoImpl(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True to enable verbose output
+
+        setup_test_output(self, verbose=self.verbose)
+
         self.progress = test_context.verbose  # Set to True to show progress bars during long tests
         self.seed = 42
-
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
 
     ###
     # Test Solver Construction
@@ -2291,8 +2266,11 @@ class TestSolverKaminoImpl(unittest.TestCase):
         np.testing.assert_allclose(multi_state_n.dq_j.numpy(), multi_final_dq_j, rtol=rtol, atol=atol)
 
 
-class TestSolverKaminoMasslessBodies(unittest.TestCase):
+class TestSolverKaminoMasslessBodies(NewtonTestCase):
     """Massless bodies are supported when fixed or prescribed and rejected otherwise."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_massless_body_welded_to_world_stays_at_rest(self):
         """Verify a massless body welded to the world stays at rest, along with its welded child.

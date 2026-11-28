@@ -114,7 +114,6 @@ class Example:
             )
             solver_config.use_collision_detector = True
             solver_config.integrator = "moreau"
-            solver_config.scc.bilateral_solver_type = "LLTBRCM"
             configure_ldl(solver_config, args)
             solver_config.scc.max_alternating_iterations = 8
             solver_config.scc.use_schur_complement = True

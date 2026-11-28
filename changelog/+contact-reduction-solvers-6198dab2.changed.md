@@ -1,0 +1,1 @@
+Accept body-pair-reduced Newton contacts across built-in solvers, including solver-owned pipelines and coupled streams. Preserve speculative depth coverage in automatic reduction so post-prediction activation stays stable on curved support; configure native collision backends to consume Newton contacts when using this pipeline feature.

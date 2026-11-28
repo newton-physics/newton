@@ -41,7 +41,7 @@ method details. For symptom-driven diagnosis and parameter tuning, start with
 Choosing a Solver
 -----------------
 
-MuJoCo, Kamino, and VBD currently have dedicated backend guides:
+MuJoCo, Kamino, VBD, and Steel currently have dedicated backend guides:
 
 - :doc:`MuJoCo <mujoco>` — generalized-coordinate rigid-body simulation and
   MuJoCo or MJCF workflows.
@@ -49,6 +49,8 @@ MuJoCo, Kamino, and VBD currently have dedicated backend guides:
   and hard frictional contacts; experimental.
 - :doc:`VBD <vbd>` — unified simulation of cloth, soft bodies, and rigid
   bodies in a single VBD-based solver; experimental.
+- :doc:`Steel <steel>`: Skild AI's generalized-coordinate rigid-body solver,
+  with links to Skild's guides, including porting from PhysX; experimental.
 
 The other solver backends are documented through their linked API references
 and the comparison tables below.
@@ -113,9 +115,9 @@ Supported Features
      - Explicit, Semi-implicit, Implicit-in-velocity
      - ✅ :sup:`1`
      - ✅ generalized coordinates
-     - ❌
-     - ❌
-     - ❌
+     - 🟨 element vertices only :sup:`4`
+     - ✅ :sup:`4`
+     - ✅ :sup:`4`
      - ❌
      - 🟨 CPU only
    * - :class:`~newton.solvers.SolverSemiImplicit`
@@ -171,6 +173,8 @@ Supported Features
 | :sup:`3` Run-to-run determinism with ``deterministic=wp.DeterministicMode.RUN_TO_RUN``
   (MuJoCo's CPU backend is deterministic regardless of that argument);
   see :doc:`/concepts/determinism` for limitations and performance trade-offs.
+| :sup:`4` Simulated as MuJoCo flexes; particles that belong to no spring,
+  triangle, or tetrahedron are not simulated. See :ref:`mujoco-flexes`.
 
 .. experimental::
     :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
@@ -203,7 +207,14 @@ formulation.
 - ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverMuJoCo`, and
-  :class:`~newton.solvers.SolverVBD`.
+  :class:`~newton.solvers.SolverVBD`. :class:`~newton.solvers.SolverSteel`
+  and :class:`~newton.solvers.SolverKamino` also use ``kd / ke`` when
+  :ref:`hydroelastic damping <hydroelastic-contact-damping>` is enabled with
+  ``HydroelasticSDF.Config(generate_damping=True)``; ``kh``
+  still sets hydroelastic stiffness. Enable ``contact_compliance=True``
+  for Steel, ``config.constraints.contact_compliance=True`` for Kamino
+  PADMM/SCC, or ``config.lox.contact_compliance=True`` for Kamino LOX.
+  These options default to ``False``.
 - ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
   :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
   :class:`~newton.solvers.SolverMuJoCo`
@@ -213,8 +224,22 @@ formulation.
   at the start of the step, unless ``enable_restitution=False``),
   :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
   :class:`~newton.solvers.SolverKamino`.
-- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
-  :class:`~newton.solvers.SolverMuJoCo`.
+- ``friction_mode``: every built-in solver makes a contact frictionless when
+  both of its shapes are ``NONE``, and a particle contact when its shape is
+  (except :class:`~newton.solvers.SolverMuJoCo` flexes, see
+  :ref:`mujoco-flexes`). The modes with torsional or rolling friction are
+  supported by
+  :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
+  :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverKamino`
+  with the LOX backend (torsional and rolling friction share its elliptic
+  friction budget). Other solvers apply sliding friction only, and warn if they
+  solve rigid contacts. :class:`~newton.solvers.SolverSteel` provides
+  experimental torsion on shapes whose mode enables torsional friction and that also set
+  ``steel:min_torsional_patch_radius``.
+- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD`,
+  :class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverVBD`,
+  and the LOX backend of :class:`~newton.solvers.SolverKamino`, on contacts
+  whose ``friction_mode`` enables them.
 - ``mu_static``: stored as :attr:`~newton.Model.shape_material_mu_static` and
   carried into :class:`~newton.solvers.SolverKamino`'s material tables, but no
   built-in solver distinguishes static from dynamic friction in its contact
@@ -312,7 +337,7 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - |yes| :sup:`3`
    * - ROD
      - |no|
      - |no|
@@ -320,9 +345,11 @@ constraints, using a compliant augmented-Lagrangian (ALM) formulation.
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`2`
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
+| :sup:`2` See :ref:`kamino-rod-joints` for the supported rod joint properties.
+| :sup:`3` See :ref:`kamino-d6-joints` for the supported D6 axis and forward-kinematics configurations.
 
 **Joint properties**
 
@@ -468,7 +495,7 @@ motion; see :ref:`passive-joint-springs` for details.
      - :class:`~newton.solvers.SolverKamino`
    * - Equality constraints (CONNECT, WELD, JOINT)
      - |no|
-     - |no|
+     - |yes| :sup:`15`
      - |no|
      - |no|
      - |yes|
@@ -493,7 +520,7 @@ motion; see :ref:`passive-joint-springs` for details.
 
 | :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
 | :sup:`4` SemiImplicit enforces joint-owned mimic relationships with penalty springs configured by ``joint_mimic_ke`` and ``joint_mimic_kd``.
-| :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
+| :sup:`5` XPBD enforces joint-owned mimic relationships through coupled maximal-coordinate corrections, one per solver iteration. VBD solves them as implicit finite-stiffness rows in its rigid-body solve, using ``rigid_joint_linear_ke`` and ``rigid_joint_angular_ke``.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 | :sup:`8` Steel rejects models with disabled articulation joints instead of ignoring them; a disabled loop-closing joint starts as a released closure.
@@ -501,9 +528,10 @@ motion; see :ref:`passive-joint-springs` for details.
 | :sup:`10` Steel enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
 | :sup:`11` Steel clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
 | :sup:`12` Steel enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
-| :sup:`13` Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints, loop-closing REVOLUTE joints as point constraints plus two hinge-axis constraints, and loop-closing FIXED joints as point constraints plus three rotation constraints. The propagation contact response (``articulated_contact_response="propagation"``) rejects loop-closing joints and solves mimic rows iteratively.
+| :sup:`13` Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. MuJoCo joint equalities (``model.mujoco.equality_constraint_*`` rows of type ``JOINT``) between two REVOLUTE or PRISMATIC joints of one articulation are enforced the same way, using their constant and linear ``polycoef`` terms. It also enforces loop-closing BALL joints as point constraints, loop-closing REVOLUTE joints as point constraints plus two hinge-axis constraints, and loop-closing FIXED joints as point constraints plus three rotation constraints. The propagation contact response (``articulated_contact_response="propagation"``) rejects loop-closing joints and solves mimic rows iteratively.
 | :sup:`14` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
+| :sup:`15` Steel enforces JOINT equalities between two REVOLUTE or PRISMATIC joints of one articulation, using their constant and linear ``polycoef`` terms, and CONNECT and WELD equalities through the loop joints the MJCF and USD importers convert them to. It rejects any other enabled equality row.
 
 .. _Particle-body attachments:
 
@@ -525,7 +553,7 @@ attachment reaches its spring over several iterations. The penalty affects conve
 A finite ``stiffness`` [N/m] converges to a spring with ``damping`` [N·s/m], so a
 loaded attachment keeps a physical offset. Set ``stiffness=math.inf`` to request
 a hard point constraint; damping is ignored for hard attachments. Multipliers are
-retained across steps, scaled by ``rigid_avbd_gamma``. A finite iteration budget
+retained across steps, scaled by 0.999 per step by default. A finite iteration budget
 can leave constraint error, especially for heavy free bodies at large time steps;
 more iterations or smaller steps reduce it. Incompatible hard attachments cannot
 all be satisfied. Separated initial anchors can cause large correction impulses.
@@ -546,6 +574,78 @@ row whose body or particle is owned by no solver applies no force at all. The
 coupler also warns when both endpoints belong to one entry whose solver does not
 support attachments. Hard attachments require both endpoints in one VBD entry;
 the coupler raises an error for other ownership arrangements.
+
+.. _Runtime model updates:
+
+Runtime Model Updates
+---------------------
+
+Solvers cache data derived from the :class:`~newton.Model`, such as per-world copies of shape
+materials or factored mass matrices. After editing model attributes in place, for example for
+domain randomization, call :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
+:class:`~newton.ModelFlags` that cover them.
+:meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns these
+flags for built-in model attributes and for custom model attributes such as ``"mujoco:solref"``.
+``NONE`` means that solvers read the attribute at every step, and ``None`` means that no flag
+covers the attribute, so solvers that cache it must be recreated. Some model attributes, such as
+:attr:`~newton.Model.joint_target_q`, only provide initial values for new :class:`~newton.State` or
+:class:`~newton.Control` objects, which copy them by default. Editing such a model attribute does not
+change existing objects; edit their copy directly, or create new ones.
+Coupled solvers hold copies of the model arrays in their entry views, so after editing an
+attribute whose flags are ``NONE``, notify them with the flags of the attribute's entity, such as
+:attr:`~newton.ModelFlags.BODY_PROPERTIES` for a per-body attribute.
+
+Whether a notification can be captured in a CUDA graph depends on the solver, its configuration,
+and the model. The experimental
+:meth:`~newton.solvers.SolverBase.is_notify_model_changed_graphable` answers it conservatively for
+given flags:
+
+.. code-block:: python
+
+    flags = model.get_attribute_update_flags("shape_material_mu")
+    if solver.is_notify_model_changed_graphable(flags):
+        with wp.ScopedCapture() as capture:
+            randomize_friction(model)  # writes model.shape_material_mu in place
+            solver.notify_model_changed(flags)
+        randomize_graph = capture.graph
+    else:
+        randomize_friction(model)
+        solver.notify_model_changed(flags)
+
+For example, :class:`~newton.solvers.SolverMuJoCo` can capture every notification with the MuJoCo
+Warp backend and none with the MuJoCo CPU backend (``use_mujoco_cpu=True``), while host-side
+validation or rebuilding makes some notifications of
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverKamino`,
+:class:`~newton.solvers.SolverSteel`, :class:`~newton.solvers.SolverVBD`, and the coupled solvers
+not capturable.
+
+.. _External forces:
+
+External Forces
+---------------
+
+:attr:`State.body_f <newton.State.body_f>` and
+:attr:`State.particle_f <newton.State.particle_f>` hold external forces that the
+caller applies. Every solver reads them from ``state_in`` and never writes them
+in ``state_in`` or ``state_out``; contact, joint, and elastic forces are
+accumulated in solver-owned buffers. Forces therefore persist until the caller
+clears them, so a force written once can act on every substep of a frame, and
+double-buffered states may share their force arrays:
+
+.. code-block:: python
+
+    state_1.body_f = state_0.body_f
+    state_1.particle_f = state_0.particle_f
+
+    state_0.clear_forces()
+    apply_external_forces(state_0)  # written once per frame
+    for _ in range(sim_substeps):
+        solver.step(state_0, state_1, control, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+Forces that are recomputed every substep, such as viewer picking forces, still
+call :meth:`State.clear_forces() <newton.State.clear_forces>` before they are
+reapplied on each substep.
 
 .. _Differentiability:
 

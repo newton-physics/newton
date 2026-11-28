@@ -221,7 +221,7 @@ To generate a coverage report:
 
         .. code-block:: console
 
-            # append the coverage flags and make sure `coverage[toml]` is installed (it comes in `[dev]`)
+            # append the coverage flags and make sure `coverage` is installed (it comes in `[dev]`)
             python -m newton.tests --coverage --coverage-html htmlcov
 
 The file ``htmlcov/index.html`` can be opened with a web browser to view the coverage report.
@@ -232,7 +232,7 @@ Optional dependencies in tests
 The test suite must pass when optional dependencies are not installed, for
 example on platforms without wheels for them; tests that need one skip
 instead. CI runs the suite with only the required dependencies installed. To
-run it the same way locally:
+run it without optional dependencies locally:
 
 .. code-block:: console
 

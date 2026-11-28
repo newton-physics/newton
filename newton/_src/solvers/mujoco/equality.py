@@ -17,9 +17,11 @@ from collections.abc import Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 
 from ...core.types import Transform, Vec3, axis_to_vec3, vec5
+from ...sim.enums import ModelFlags
 from ...sim.model import Model
 from .enums import EqType
 
@@ -32,7 +34,28 @@ class MjcEqualityTargetKind(IntEnum):
 
     NONE = 0  # Pure equality row; no projected Newton object, target is -1.
     JOINT = 1  # Target is a Newton joint, used by converted CONNECT/WELD loop joints.
-    MIMIC = 2  # Target is a Newton mimic constraint, used by converted JOINT equalities.
+
+
+def equality_loop_joint_mask(target_kind: Any, target: Any, joint_count: int) -> np.ndarray:
+    """Mask of the Newton joints that equality rows target, one entry per joint.
+
+    These are the loop joints that converted CONNECT and WELD equalities created
+    (:attr:`MjcEqualityTargetKind.JOINT`); they never place a body, so
+    :class:`~newton.ModelBuilder` keeps them out of its weld groups and
+    :class:`~newton.solvers.SolverMuJoCo` out of its standalone world roots, both through
+    :func:`~newton._src.utils.topology.tree_joint_mask`.
+
+    Args:
+        target_kind: ``equality_constraint_target_kind`` of the rows to consider.
+        target: ``equality_constraint_target`` of the same rows.
+        joint_count: Number of joints the mask covers.
+    """
+    target_kind = np.asarray(target_kind, dtype=np.int64).reshape(-1)
+    target = np.asarray(target, dtype=np.int64).reshape(-1)
+    joints = target[(target_kind == int(MjcEqualityTargetKind.JOINT)) & (target >= 0) & (target < joint_count)]
+    mask = np.zeros(joint_count, dtype=bool)
+    mask[joints] = True
+    return mask
 
 
 # Object kinds an equality row references (mjtObj-aligned).
@@ -96,6 +119,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_anchor",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.vec3,
@@ -106,6 +130,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_torquescale",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.float32,
@@ -116,6 +141,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_relpose",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.transform,
@@ -165,6 +191,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_polycoef",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.float32,
@@ -185,6 +212,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_enabled",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.bool,
@@ -215,9 +243,9 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             namespace="mujoco",
         )
     )
-    # ``target_kind`` / ``target`` link a row to the native entity it was projected onto (loop
-    # joint or mimic) for solver portability; converted MJCF/USD equalities set them, while pure
-    # equality rows keep ``MjcEqualityTargetKind.NONE`` / ``-1``.
+    # ``target_kind`` / ``target`` link a row to the loop joint it was projected onto for solver
+    # portability; converted MJCF/USD equalities set them, while pure equality rows keep
+    # ``MjcEqualityTargetKind.NONE`` / ``-1``.
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_target_kind",
@@ -242,6 +270,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="eq_solref",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.vec2,
@@ -254,6 +283,7 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     builder.add_custom_attribute(
         ca(
             name="eq_solimp",
+            update_flags=ModelFlags.CONSTRAINT_PROPERTIES,
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=vec5,

@@ -13,7 +13,7 @@ from typing import Any
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
-from ..utils.deprecation import RemovedAttribute, warn_deprecation
+from ..utils.deprecation import warn_deprecation
 from .batteries import BatteryBase, BatteryConstantResistance
 from .clamping import (
     ClampingBase,
@@ -90,9 +90,6 @@ class ActuatorParsed:
     """Joint target path (USD prim path of the driven joint)."""
     battery_path: str | None = None
     """USD prim path of the battery the actuator draws from, or ``None``."""
-
-    controller_class = RemovedAttribute("drive_class", removed_in="1.8")
-    controller_kwargs = RemovedAttribute("drive_kwargs", removed_in="1.8")
 
     def __post_init__(self) -> None:
         if self.component_specs is None:
@@ -217,7 +214,7 @@ class SchemaNames:
     """Canonical USD tokens from ``newton-usd-schemas``"""
 
     ACTUATOR = "NewtonActuator"
-    BATTERY = "NewtonBattery"
+    SUPPLY = "NewtonSupply"
     CONSTANT_RESISTANCE_BATTERY = "NewtonConstantResistanceBattery"
 
     PD_CONTROL = "NewtonPDControlAPI"
@@ -309,7 +306,7 @@ def parse_battery_prim(prim) -> BatteryParsed | None:
     selects :class:`~newton.actuators.BatteryConstantResistance`, and the authored
     ``newton:`` attributes become its keyword arguments; the class fills in
     defaults when the battery is added. The actuators that draw from the
-    battery name it in their ``newton:battery`` relationship;
+    battery name it in their ``newton:supply`` relationship;
     :func:`parse_actuator_prim` reports it as :attr:`ActuatorParsed.battery_path`.
 
     Args:
@@ -319,12 +316,12 @@ def parse_battery_prim(prim) -> BatteryParsed | None:
         The parsed battery, or ``None`` if the prim is not a battery.
 
     Raises:
-        ValueError: The prim is derived from ``NewtonBattery`` but its type is
+        ValueError: The prim is derived from ``NewtonSupply`` but its type is
             not supported.
     """
     battery_class = _BATTERY_REGISTRY.get(prim.GetTypeName())
     if battery_class is None:
-        if prim.IsA(SchemaNames.BATTERY):
+        if prim.IsA(SchemaNames.SUPPLY):
             raise ValueError(f"Battery prim '{prim.GetPath()}' has unsupported type '{prim.GetTypeName()}'")
         return None
     return BatteryParsed(battery_class, _read_schema_attrs(prim, prim.GetTypeName()))
@@ -472,7 +469,7 @@ def _parse_actuator_prim(prim, allow_unsafe_torch_checkpoints: bool) -> Actuator
     if drive_class is None:
         raise ValueError(f"Actuator prim '{prim.GetPath()}' has no drive schema (detected schemas: {detected})")
 
-    batteries = _get_relationship_targets(prim, "newton:battery")
+    batteries = _get_relationship_targets(prim, "newton:supply")
     if not drive_schema_registered:
         claimed: set[str] = set()
         for cls, kwargs in component_specs:

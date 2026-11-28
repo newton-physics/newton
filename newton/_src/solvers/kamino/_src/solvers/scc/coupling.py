@@ -40,27 +40,6 @@ return __builtin_ffsll((long long)value) - 1;
 def _first_bit(value: wp.uint64) -> wp.int32: ...
 
 
-@wp.func
-def read_packed_coupling(
-    values: wp.array[wp.float32],
-    masks: wp.array[wp.uint64],
-    w: int,
-    col: int,
-    group: int,
-    local: int,
-    width: int,
-    slots: int,
-) -> wp.float32:
-    """Read a structural coefficient, mapping its group to a packed slot."""
-    mask = masks[w * width + col]
-    bit = wp.uint64(1) << wp.uint64(group)
-    result = wp.float32(0)
-    if (mask & bit) != wp.uint64(0):
-        slot = _count_bits(mask & (bit - wp.uint64(1)))
-        result = values[((w * slots + slot) * 6 + local) * width + col]
-    return result
-
-
 @wp.kernel
 def _assemble(
     dim: wp.array[wp.int32],

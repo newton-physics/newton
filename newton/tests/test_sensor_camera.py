@@ -10,8 +10,8 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import SH_C0
-from newton._src.sensors.sensor_camera_render.types import LightType
-from newton._src.sensors.sensor_camera_render.utils import Utils
+from newton._src.render.types import LightType
+from newton._src.render.utils import Utils
 from newton.sensors import (
     SensorCamera,
 )
@@ -26,7 +26,7 @@ class TestSensorCamera(unittest.TestCase):
     @staticmethod
     def _rays(width: int, height: int, fov: float = math.radians(45.0), device: str = "cpu") -> wp.array4d[wp.vec3f]:
         """Camera-space pinhole rays, shape ``(height, width, 1, 2)``."""
-        return SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device)
+        return SensorCamera.compute_camera_rays_pinhole(width, height, fov=fov, device=device)
 
     @staticmethod
     def _sphere_world_builder() -> newton.ModelBuilder:
@@ -95,7 +95,7 @@ class TestSensorCamera(unittest.TestCase):
 
         width, height = 3, 3
         rays = [
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), device="cpu"),
+            SensorCamera.compute_camera_rays_pinhole(width, height, fov=math.radians(45.0), device="cpu"),
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
@@ -128,7 +128,7 @@ class TestSensorCamera(unittest.TestCase):
         out_rays = wp.zeros((height, width, 1, 2), dtype=wp.vec3f, device="cpu")
 
         rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), out_rays=out_rays, device="cpu"
+            width, height, fov=math.radians(45.0), out_rays=out_rays, device="cpu"
         )
 
         self.assertIs(rays, out_rays)
@@ -137,14 +137,12 @@ class TestSensorCamera(unittest.TestCase):
     def test_camera_ray_helpers_generate_multisamples(self) -> None:
         """Generate distinct subpixel rays from every camera model."""
         width, height = 4, 3
-        default_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), device="cpu"
-        )
+        default_rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov=math.radians(45.0), device="cpu")
         one_sample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), sample_count=1, device="cpu"
+            width, height, fov=math.radians(45.0), sample_count=1, device="cpu"
         )
         multisample_rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, camera_fov=math.radians(45.0), sample_count=4, device="cpu"
+            width, height, fov=math.radians(45.0), sample_count=4, device="cpu"
         )
 
         self.assertEqual(default_rays.shape, (height, width, 1, 2))
@@ -189,16 +187,16 @@ class TestSensorCamera(unittest.TestCase):
             with self.subTest(sample_count=sample_count):
                 with self.assertRaisesRegex(ValueError, "sample_count must be positive"):
                     SensorCamera.compute_camera_rays_pinhole(
-                        width, height, camera_fov=1.0, sample_count=sample_count, device="cpu"
+                        width, height, fov=1.0, sample_count=sample_count, device="cpu"
                     )
 
     def test_camera_multisample_offsets_center_on_pixel(self) -> None:
         """Center the pattern and place its first ray at the center when possible."""
-        center_ray = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, device="cpu").numpy()[0, 0, 0, 1]
+        center_ray = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=1.0, device="cpu").numpy()[0, 0, 0, 1]
         for sample_count in (2, 3, 4, 5, 6, 8, 16):
             with self.subTest(sample_count=sample_count):
                 rays = SensorCamera.compute_camera_rays_pinhole(
-                    1, 1, camera_fov=1.0, sample_count=sample_count, device="cpu"
+                    1, 1, fov=1.0, sample_count=sample_count, device="cpu"
                 ).numpy()[0, 0, :, 1]
                 ray_slopes = -rays[:, :2] / rays[:, 2, None]
                 np.testing.assert_allclose(ray_slopes.mean(axis=0), (0.0, 0.0), atol=1.0e-6)
@@ -218,11 +216,11 @@ class TestSensorCamera(unittest.TestCase):
         """Verify camera ray helpers accept only single-camera parameters."""
         width, height = 4, 3
 
-        with self.assertRaisesRegex(ValueError, "camera_fov cannot be provided with aperture parameters"):
+        with self.assertRaisesRegex(ValueError, "fov cannot be provided with aperture parameters"):
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
-                camera_fov=math.radians(45.0),
+                fov=math.radians(45.0),
                 focal_length=1.0,
                 horizontal_aperture=2.0,
                 vertical_aperture=2.0,
@@ -230,7 +228,7 @@ class TestSensorCamera(unittest.TestCase):
             )
 
         with self.assertRaises(TypeError):
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=[math.radians(45.0)], device="cpu")
+            SensorCamera.compute_camera_rays_pinhole(width, height, fov=[math.radians(45.0)], device="cpu")
 
         with self.assertRaises(TypeError):
             SensorCamera.compute_camera_rays_pinhole(
@@ -244,18 +242,27 @@ class TestSensorCamera(unittest.TestCase):
 
         out_rays = wp.zeros((1, height, width, 2), dtype=wp.vec3f, device="cpu")
         with self.assertRaisesRegex(ValueError, "out_rays must have shape"):
-            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), out_rays=out_rays)
+            SensorCamera.compute_camera_rays_pinhole(width, height, fov=math.radians(45.0), out_rays=out_rays)
 
     def test_pinhole_rays_reject_out_of_range_parameters(self) -> None:
         """Verify pinhole ray generation rejects non-positive focal length and out-of-range fov."""
         width, height = 4, 3
         for bad_fov in (0.0, math.pi, -0.1, math.pi + 0.1):
-            with self.assertRaisesRegex(ValueError, r"camera_fov must be in \(0, pi\)"):
-                SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=bad_fov, device="cpu")
+            with self.assertRaisesRegex(ValueError, r"fov must be in \(0, pi\)"):
+                SensorCamera.compute_camera_rays_pinhole(width, height, fov=bad_fov, device="cpu")
         with self.assertRaisesRegex(ValueError, "must be positive"):
             SensorCamera.compute_camera_rays_pinhole(
                 width, height, focal_length=0.0, horizontal_aperture=2.0, vertical_aperture=2.0, device="cpu"
             )
+
+    def test_pinhole_rays_camera_fov_is_deprecated(self) -> None:
+        """Verify the deprecated camera_fov alias warns and matches fov."""
+        expected = SensorCamera.compute_camera_rays_pinhole(4, 3, fov=0.8, device="cpu").numpy()
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            rays = SensorCamera.compute_camera_rays_pinhole(4, 3, camera_fov=0.8, device="cpu")
+        np.testing.assert_array_equal(rays.numpy(), expected)
+        with self.assertWarns(newton.NewtonDeprecationWarning), self.assertRaises(ValueError):
+            SensorCamera.compute_camera_rays_pinhole(4, 3, fov=0.8, camera_fov=0.8, device="cpu")
 
     def test_update_validates_rays_and_transforms(self) -> None:
         """Verify update rejects mistyped or misshaped rays and camera transforms."""
@@ -430,15 +437,13 @@ class TestSensorCamera(unittest.TestCase):
         camera.create_default_light()
         state = model.state()
         transforms = self._identity_transforms(1)
-        center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
+        center_rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, device="cpu")
         center_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(state, transforms, center_rays, hdr_color_image=center_hdr)
 
         for sample_count in (3, 4, 8):
             with self.subTest(sample_count=sample_count):
-                rays = SensorCamera.compute_camera_rays_pinhole(
-                    1, 1, camera_fov=0.8, sample_count=sample_count, device="cpu"
-                )
+                rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, sample_count=sample_count, device="cpu")
                 msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
                 camera.update(
                     state,
@@ -451,7 +456,7 @@ class TestSensorCamera(unittest.TestCase):
 
     @staticmethod
     def _center_hdr(camera: SensorCamera, model: newton.Model, **update_kwargs) -> np.ndarray:
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, device="cpu")
         hdr = camera.allocate_image_color_hdr(1, 1, 1)
         camera.update(
             model.state(), TestSensorCamera._identity_transforms(1), rays, hdr_color_image=hdr, **update_kwargs
@@ -488,7 +493,7 @@ class TestSensorCamera(unittest.TestCase):
         model = builder.finalize(device="cpu")
         camera = SensorCamera(model)
         camera.set_ambient_light((0.3, 0.3, 0.3))
-        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, camera_fov=0.8, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, fov=0.8, device="cpu")
         hdr = camera.allocate_image_color_hdr(1, 16, 16)
         shape_index = camera.allocate_image_shape_index(1, 16, 16)
         camera.update(
@@ -524,7 +529,7 @@ class TestSensorCamera(unittest.TestCase):
             model = builder.finalize(device="cpu")
             camera = SensorCamera(model)
             camera.create_default_light()
-            rays = SensorCamera.compute_camera_rays_pinhole(24, 24, camera_fov=1.2, device="cpu")
+            rays = SensorCamera.compute_camera_rays_pinhole(24, 24, fov=1.2, device="cpu")
             hdr = camera.allocate_image_color_hdr(1, 24, 24)
             transforms = wp.array([wp.transformf(wp.vec3f(0.0), wp.quatf(q))], dtype=wp.transformf, device="cpu")
             camera.update(model.state(), transforms, rays, hdr_color_image=hdr)
@@ -574,7 +579,7 @@ class TestSensorCamera(unittest.TestCase):
         camera = SensorCamera(model)
         camera.create_default_light()
         transforms = self._identity_transforms(1)
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, sample_count=3, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.8, sample_count=3, device="cpu")
         first_rays = wp.array(rays.numpy()[:, :, 0:1].copy(), dtype=wp.vec3f, device="cpu")
         first_hdr = camera.allocate_image_color_hdr(1, 1, 1)
         msaa_hdr = camera.allocate_image_color_hdr(1, 1, 1)
@@ -646,7 +651,7 @@ class TestSensorCamera(unittest.TestCase):
     def test_update_rejects_multisample_rays_without_anti_aliasing(self) -> None:
         """Reject multisampled rays when the resolve mode is left at NONE."""
         model, camera = self._build_sphere_scene()
-        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=1.0, sample_count=4, device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=1.0, sample_count=4, device="cpu")
         color = camera.allocate_image_color(1, 1, 1)
 
         with self.assertRaisesRegex(ValueError, "anti_aliasing"):
@@ -756,6 +761,27 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(int(shape_index.numpy()[0, 4, 4]), ball)
         self.assertNotIn(helper, np.unique(shape_index.numpy()))
         self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 2.5, delta=0.05)
+
+    def test_camera_inside_box_sees_its_walls(self, device: str = "cpu", backend: str = "warp") -> None:
+        """A camera inside a box sees the box's walls with the default backface culling."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        box = builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=1.0)
+        model = builder.finalize(device=device)
+        if backend == "optix":
+            model.bvh_build_shapes(model.state(), backend="optix")
+        camera = SensorCamera(model, backend=backend)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device=device)
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device=device)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1, device),
+            self._rays(8, 8, fov=math.radians(40.0), device=device),
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+
+        np.testing.assert_array_equal(shape_index.numpy(), box)
+        self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 1.0, delta=0.05)
 
     def test_update_renders_from_camera_transforms(self) -> None:
         """Verify SensorCamera renders from the camera transforms passed to update."""
@@ -989,6 +1015,397 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, camera_transforms, rays, depth_image=depth, world_indices=world_indices)
         center = (height // 2, width // 2)
         self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(2)))
+
+    def test_bound_camera_outputs(self) -> None:
+        """Verify bound-sensor depth for hits and misses in every world across anti-aliasing modes."""
+        # A quad 2 m in front of a global camera, replicated into two worlds: the image center hits
+        # the quad and the corners miss it.
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_camera(-1, fov=math.radians(60.0), label="cam")
+        builder.replicate(world, 2)
+        width, height = 8, 8
+        center, corner = (height // 2, width // 2), (0, 0)
+        modes = (
+            (SensorCamera.AntiAliasing.NONE, 1),
+            (SensorCamera.AntiAliasing.SSAA, 4),
+            (SensorCamera.AntiAliasing.MSAA, 4),
+        )
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            state = model.state()
+            for mode, samples in modes:
+                with self.subTest(device=str(device), anti_aliasing=mode.name):
+                    camera = SensorCamera(
+                        model,
+                        cameras="cam",
+                        width=width,
+                        height=height,
+                        sample_count=samples,
+                        default_render_config=SensorCamera.RenderConfig(anti_aliasing=mode),
+                    )
+                    np.testing.assert_array_equal(camera.view_world.numpy(), [0, 1])
+                    depth = camera.allocate_image_depth()
+                    camera.update(state, depth_image=depth)
+
+                    depth_np = depth.numpy()
+                    for view in range(2):
+                        # Hit: depth to the quad. Miss: the clear value.
+                        self.assertAlmostEqual(float(depth_np[view][center]), 2.0, delta=0.05)
+                        self.assertEqual(float(depth_np[view][corner]), 0.0)
+
+    def test_bound_camera_ray_sources(self) -> None:
+        """Verify projected, given and site rays, clip ranges, view tables, and that given rays are copied."""
+        # A quad 2 m in front of the origin, where every camera and the site sit.
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        world.add_site(-1, label="site")
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        fov = math.radians(60.0)
+        builder.add_camera(-1, fov=fov, label="pinhole")
+        cam_a = builder.add_camera(-1, fov=fov, label="cam_a")
+        builder.add_camera(-1, fov=fov, label="cam_b")
+        builder.replicate(world, 1)
+        width, height = 8, 8
+        center = (height // 2, width // 2)
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            state = model.state()
+
+            def render(camera, state=state):
+                depth = camera.allocate_image_depth()
+                camera.update(state, depth_image=depth)
+                return depth.numpy()
+
+            with self.subTest(device=str(device)):
+                # The in-kernel pinhole generator matches the same camera given precomputed pinhole rays.
+                hit_rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov=fov, device=device)
+                generated = render(SensorCamera(model, cameras="pinhole", width=width, height=height))
+                camera = SensorCamera(model, cameras="pinhole", width=width, height=height)
+                camera.set_camera_rays(hit_rays, cameras="pinhole")
+                given = render(camera)
+                self.assertAlmostEqual(float(generated[0][center]), 2.0, delta=0.05)
+                np.testing.assert_allclose(generated, given, atol=1e-4)
+
+                # A near clip behind the quad and a far clip in front of it both turn the hit into a miss.
+                for clip in ((2.5, 10.0), (0.01, 1.5)):
+                    camera = SensorCamera(model, cameras="pinhole", width=width, height=height, clipping_range=clip)
+                    self.assertEqual(float(render(camera)[0][center]), 0.0, msg=f"clipping_range={clip}")
+
+                # Given rays are copied into the sensor: reusing the caller's buffer after a call must not
+                # change the stored rays, even when a later call re-packs the storage.
+                buffer = wp.clone(hit_rays)
+                camera = SensorCamera(model, cameras="cam_*", width=width, height=height)
+                self.assertIsNone(camera.view_site)
+                camera.set_camera_rays(buffer, cameras="cam_a")
+                storage = camera._camera_rays.ptr
+                camera.set_camera_rays(buffer, cameras="cam_a")
+                self.assertEqual(camera._camera_rays.ptr, storage)
+                buffer.zero_()
+                camera.set_camera_rays(buffer, cameras="cam_b")
+                depth = render(camera)
+                view_a = camera.view_camera.numpy().tolist().index(cam_a)
+                self.assertAlmostEqual(float(depth[view_a][center]), 2.0, delta=0.05)
+                self.assertEqual(float(depth[1 - view_a][center]), 0.0)
+                with self.assertRaises(ValueError):
+                    camera.set_camera_rays(hit_rays, sites="site")
+
+                # Reselecting views reuses free slots without moving the storage, so a graph captured
+                # earlier renders the new rays.
+                if wp.get_device(device).is_cuda and wp.is_mempool_enabled(device):
+                    depth = camera.allocate_image_depth()
+                    camera.update(state, depth_image=depth)
+                    with wp.ScopedCapture(device=device) as capture:
+                        camera.update(state, depth_image=depth)
+                    storage = camera._camera_rays.ptr
+                    for rays, selection, expected in (
+                        (hit_rays, "cam_*", (2.0, 2.0)),  # both views share slot 0; slot 1 becomes free
+                        (wp.zeros_like(hit_rays), "cam_a", (0.0, 2.0)),  # cam_a moves to the free slot 1
+                    ):
+                        camera.set_camera_rays(rays, cameras=selection)
+                        self.assertEqual(camera._camera_rays.ptr, storage, msg=selection)
+                        wp.capture_launch(capture.graph)
+                        center_depth = depth.numpy()[:, center[0], center[1]]
+                        np.testing.assert_allclose(center_depth[[view_a, 1 - view_a]], expected, atol=0.05)
+
+                # Sites have no intrinsics and render only once given rays.
+                camera = SensorCamera(model, sites="site", width=width, height=height)
+                self.assertIsNone(camera.view_camera)
+                self.assertEqual(camera.view_site.numpy().tolist(), [model.shape_label.index("site")])
+                with self.assertRaises(RuntimeError):
+                    render(camera)
+                with self.assertRaises(ValueError):
+                    camera.set_camera_rays(hit_rays, cameras="cam_a")
+                camera.set_camera_rays(hit_rays, sites="site")
+                self.assertAlmostEqual(float(render(camera)[0][center]), 2.0, delta=0.05)
+
+                # Without a selection, set_camera_rays() replaces the rays of every view.
+                camera = SensorCamera(model, cameras="*", width=width, height=height)
+                self.assertEqual(camera.view_count, 3)
+                np.testing.assert_allclose(render(camera)[:, center[0], center[1]], 2.0, atol=0.05)
+                camera.set_camera_rays(wp.zeros_like(hit_rays))
+                np.testing.assert_allclose(render(camera)[:, center[0], center[1]], 0.0)
+
+    def test_site_sensor_without_cameras(self) -> None:
+        """Verify a site-bound sensor renders on a model without cameras in the default ray mode."""
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        world.add_site(-1, label="site")
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, 1)
+        width = height = 8
+        for device in get_test_devices():
+            with self.subTest(device=str(device)):
+                model = builder.finalize(device=device)
+                self.assertEqual(model.camera_count, 0)
+                camera = SensorCamera(model, sites="site", width=width, height=height)
+                camera.set_camera_rays(SensorCamera.compute_camera_rays_pinhole(width, height, fov=1.0, device=device))
+                depth = camera.allocate_image_depth()
+                camera.update(model.state(), depth_image=depth)
+                self.assertAlmostEqual(float(depth.numpy()[0, height // 2, width // 2]), 2.0, delta=0.05)
+
+    def test_bound_pinhole_follows_model_and_state(self) -> None:
+        """Verify bound views follow intrinsics changes and body poses, also in a captured graph."""
+        # A 1 m quad 2 m in front of the camera: a 60-degree corner ray misses it, a 4x longer lens hits it.
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        world.add_camera(-1, fov=math.radians(60.0), label="pinhole")
+        body = world.add_body(xform=wp.transform_identity(), label="body")
+        world.add_camera(body, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()), label="mounted")
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, 1)
+        corner = (0, 0)
+        for device in get_test_devices():
+            with self.subTest(device=str(device)):
+                model = builder.finalize(device=device)
+                state = model.state()
+                camera = SensorCamera(model, cameras="pinhole", width=8, height=8)
+                self.assertEqual(camera._camera_rays.size, 0)
+                depth = camera.allocate_image_depth()
+                focal = model.camera_focal_length.numpy()
+
+                camera.update(state, depth_image=depth)
+                self.assertEqual(float(depth.numpy()[0][corner]), 0.0)
+                model.camera_focal_length.assign(focal * 4.0)
+                camera.update(state, depth_image=depth)
+                self.assertGreater(float(depth.numpy()[0][corner]), 2.0)
+
+                if wp.get_device(device).is_cuda and wp.is_mempool_enabled(device):
+                    model.camera_focal_length.assign(focal)
+                    with wp.ScopedCapture(device=device) as capture:
+                        camera.update(state, depth_image=depth)
+                    wp.capture_launch(capture.graph)
+                    self.assertEqual(float(depth.numpy()[0][corner]), 0.0)
+                    model.camera_focal_length.assign(focal * 4.0)
+                    wp.capture_launch(capture.graph)
+                    self.assertGreater(float(depth.numpy()[0][corner]), 2.0)
+
+                # A camera on a body follows the body pose in the state.
+                mounted = SensorCamera(model, cameras="mounted", width=8, height=8)
+                depth = mounted.allocate_image_depth()
+                center = (4, 4)
+                for height in (0.0, 1.0):
+                    state.body_q.assign([wp.transform((0.0, 0.0, height), wp.quat_identity())])
+                    mounted.update(state, depth_image=depth)
+                    self.assertAlmostEqual(float(depth.numpy()[0][center]), 2.5 + height, delta=0.05)
+
+    def test_camera_aperture_follows_image_aspect(self) -> None:
+        """Verify apertures keep the camera's pixel aspect ratio at any image aspect ratio."""
+        world = newton.ModelBuilder()
+        world.add_shape_sphere(-1, xform=wp.transform((0.0, 0.0, -2.0), wp.quat_identity()), radius=0.5)
+        world.add_camera(-1, focal_length=0.05, horizontal_aperture=0.036, vertical_aperture=0.024, label="square")
+        # Pixels twice as tall as wide: the aperture spans a 36 x 12 px image exactly.
+        world.add_camera(
+            -1,
+            focal_length=0.05,
+            horizontal_aperture=0.036,
+            vertical_aperture=0.024,
+            pixel_aspect_ratio=0.5,
+            label="tall_pixels",
+        )
+        world.add_camera(-1, focal_length=0.05, vertical_aperture=0.024, label="vertical_only")
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 1)
+        # Expected (horizontal, vertical) aperture over focal length, per image size and camera.
+        cases = {
+            (48, 32): {"square": (0.72, 0.48), "tall_pixels": (0.72, 0.96), "vertical_only": (0.72, 0.48)},
+            (64, 64): {"square": (0.72, 0.72), "tall_pixels": (0.72, 1.44), "vertical_only": (0.48, 0.48)},
+            (36, 12): {"square": (1.44, 0.48), "tall_pixels": (0.72, 0.48), "vertical_only": (1.44, 0.48)},
+        }
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            labels = [label.rsplit("/", 1)[-1] for label in model.camera_label]
+            for (width, height), expected in cases.items():
+                with self.subTest(device=str(device), size=(width, height)):
+                    camera = SensorCamera(model, cameras="*", width=width, height=height)
+                    camera._compute_pinhole_params(camera._view_pinhole)
+                    pinhole = camera._view_pinhole.numpy()
+                    for view, camera_index in enumerate(camera.view_camera.numpy()):
+                        name = labels[camera_index]
+                        np.testing.assert_allclose(pinhole[view][:2], expected[name], rtol=1e-5, err_msg=name)
+
+    def test_replicate_and_collapse_move_cameras(self) -> None:
+        """Verify fixed cameras follow replicated copies and cameras on merged bodies follow the merge."""
+        source = newton.ModelBuilder()
+        root = source.add_link(mass=1.0)
+        child = source.add_link(mass=1.0)
+        joints = [
+            source.add_joint_free(root),
+            source.add_joint_fixed(root, child, parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity())),
+        ]
+        source.add_articulation(joints)
+        mounted = source.add_camera(child, xform=wp.transform((0.0, 0.5, 0.0), wp.quat_identity()))
+        fixed_xform = wp.transform((1.0, 0.0, 0.0), wp.quat_rpy(0.3, 0.0, 0.0))
+        fixed = source.add_camera(-1, xform=fixed_xform)
+        source.collapse_fixed_joints()
+        self.assertEqual(source.camera_body[mounted], root)
+        np.testing.assert_allclose(np.asarray(source.camera_transform[mounted])[:3], [0.0, 0.5, 1.0], atol=1e-6)
+
+        xforms = [
+            wp.transform((2.0, 0.0, 0.0), wp.quat_rpy(0.0, 0.0, 0.5 * math.pi)),
+            wp.transform((0.0, 3.0, 0.0), wp.quat_identity()),
+        ]
+        scene = newton.ModelBuilder()
+        scene.replicate(source, len(xforms), xforms=xforms)
+        for copy, xform in enumerate(xforms):
+            with self.subTest(copy=copy):
+                offset = copy * source.camera_count
+                self.assertEqual(scene.camera_body[offset + mounted], copy * source.body_count + root)
+                np.testing.assert_allclose(
+                    np.asarray(scene.camera_transform[offset + mounted]),
+                    np.asarray(source.camera_transform[mounted]),
+                    atol=1e-6,
+                )
+                np.testing.assert_allclose(
+                    np.asarray(scene.camera_transform[offset + fixed]), np.asarray(xform * fixed_xform), atol=1e-6
+                )
+
+    def test_bound_camera_planar_clipping(self) -> None:
+        """Verify projected rays clip on depth along -Z while given rays clip along each ray."""
+        # A wide wall 2 m in front of the cameras. With a 90-degree field of view the corner ray of an
+        # 8 x 8 image reaches the wall about 3.2 m away.
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        wall = np.array([[-50.0, -50.0, -2.0], [50.0, -50.0, -2.0], [50.0, 50.0, -2.0], [-50.0, 50.0, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(wall.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        fov = math.radians(90.0)
+        world.add_camera(-1, fov=fov, clipping_range=(0.1, 2.05), label="pinhole")
+        world.add_camera(-1, fov=fov, clipping_range=(0.1, 2.05), label="given")
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, 1)
+        width = height = 8
+        center, corner = (height // 2, width // 2), (0, 0)
+        for device in get_test_devices():
+            with self.subTest(device=str(device)):
+                model = builder.finalize(device=device)
+                state = model.state()
+                rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov=fov, device=device)
+                expected_corner = float(np.linalg.norm(rays.numpy()[0, 0, 0, 1] * 2.0 / -rays.numpy()[0, 0, 0, 1][2]))
+                camera = SensorCamera(model, cameras="*", width=width, height=height)
+                camera.set_camera_rays(rays, cameras="given")
+                depth = camera.allocate_image_depth()
+                camera.update(state, depth_image=depth)
+                depth_np = depth.numpy()
+                views = camera.view_camera.numpy().tolist()
+                pinhole_view, given_view = views.index(0), views.index(1)
+                # The wall is 2 m deep everywhere, inside the pinhole camera's 2.05 m far plane.
+                self.assertAlmostEqual(float(depth_np[pinhole_view][corner]), expected_corner, delta=0.02)
+                self.assertAlmostEqual(float(depth_np[pinhole_view][center]), 2.0, delta=0.05)
+                # Along the ray, the corner is beyond 2.05 m and clipped; the center is not.
+                self.assertEqual(float(depth_np[given_view][corner]), 0.0)
+                self.assertAlmostEqual(float(depth_np[given_view][center]), 2.0, delta=0.05)
+
+                # Rays passed to one update() call clip along the ray for every view.
+                camera.update(state, camera_rays=rays, depth_image=depth)
+                self.assertEqual(float(depth.numpy()[pinhole_view][corner]), 0.0)
+                self.assertAlmostEqual(float(depth.numpy()[pinhole_view][center]), 2.0, delta=0.05)
+
+    def test_bound_camera_rejects_invalid_arrays(self) -> None:
+        """Verify bound sensors validate caller arrays and define their attributes when unbound."""
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        world.add_camera(-1, fov=1.0, label="cam")
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.replicate(world, 2)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+
+        unbound = SensorCamera(model)
+        for name in ("width", "height", "sample_count", "view_count", "view_camera", "view_site", "view_world"):
+            self.assertIsNone(getattr(unbound, name), name)
+
+        # The image size belongs to the sensor, not the camera.
+        with self.assertRaisesRegex(ValueError, "width and height are required"):
+            SensorCamera(model, cameras="cam", width=4)
+
+        # Several samples per pixel need an anti-aliasing mode that combines them.
+        with self.assertRaisesRegex(ValueError, "sample_count > 1 requires"):
+            SensorCamera(model, cameras="cam", width=4, height=4, sample_count=4)
+
+        camera = SensorCamera(model, cameras="cam", width=4, height=4)
+        depth = camera.allocate_image_depth()
+        with self.assertRaises(ValueError):
+            camera.compute_view_transforms(state, out=wp.zeros(1, dtype=wp.transformf, device="cpu"))
+        with self.assertRaises(ValueError):
+            camera.compute_view_transforms(state, out=wp.zeros(2, dtype=wp.vec3f, device="cpu"))
+        with self.assertRaises(ValueError):
+            camera.update(state, wp.zeros(2, dtype=wp.vec3f, device="cpu"), depth_image=depth)
+        with self.assertRaises(ValueError):
+            camera.update(state, camera_rays=wp.zeros((4, 4), dtype=wp.vec3f, device="cpu"), depth_image=depth)
+        rays = SensorCamera.compute_camera_rays_pinhole(4, 4, fov=1.0, device="cpu")
+        with self.assertRaises(TypeError):
+            camera.set_camera_rays([rays, rays], cameras="cam")
+
+    def test_add_camera_rejects_invalid_input_without_side_effects(self) -> None:
+        """Verify rejected cameras leave the builder unchanged."""
+        values = newton.ModelBuilder()
+        values.add_body()
+        with self.assertRaises(TypeError):
+            values.add_camera(0.9)
+        with self.assertRaises(TypeError):
+            values.add_camera("0")
+        for intrinsics in (
+            {"focal_length": 1.0e39, "vertical_aperture": 0.02},
+            {"focal_length": 1.0e-46, "vertical_aperture": 0.02},
+            {"focal_length": 0.05, "vertical_aperture": 0.02, "horizontal_aperture_offset": 1.0e39},
+        ):
+            with self.assertRaises(ValueError, msg=str(intrinsics)):
+                values.add_camera(0, **intrinsics)
+        self.assertEqual(values.camera_count, 0)
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="tag", namespace="test", frequency=newton.Model.AttributeFrequency.SHAPE, dtype=wp.float32
+            )
+        )
+        builder.add_camera(-1, label="valid")
+        invalid = (
+            (ValueError, {"focal_length": float("nan"), "vertical_aperture": 0.02}),
+            (ValueError, {"horizontal_aperture_offset": float("inf")}),
+            (ValueError, {"clipping_range": (0.1, float("inf"))}),
+            (ValueError, {"pixel_aspect_ratio": 0.0}),
+            (ValueError, {"pixel_aspect_ratio": float("nan")}),
+            (ValueError, {"pixel_aspect_ratio": 1.0e-46}),
+            (AttributeError, {"custom_attributes": {"test:missing": 1.0}}),
+            (ValueError, {"custom_attributes": {"test:tag": 1.0}}),
+            (Exception, {"xform": (1.0, 2.0)}),
+        )
+        for error, kwargs in invalid:
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}), self.assertRaises(error):
+                builder.add_camera(-1, **kwargs)
+        self.assertEqual(builder.camera_count, 1)
+        for name in (
+            "camera_label",
+            "camera_world",
+            "camera_body",
+            "camera_transform",
+            "camera_focal_length",
+            "camera_pixel_aspect_ratio",
+        ):
+            self.assertEqual(len(getattr(builder, name)), 1, name)
 
     @staticmethod
     def _cloth_color_scene(device):
@@ -1335,6 +1752,203 @@ class TestSensorCamera(unittest.TestCase):
 
                 self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
 
+    def test_tiled_render_order_accepts_partial_tiles(self) -> None:
+        """Verify tiled rendering matches view-priority output when tiles do not divide the image."""
+        model, camera = self._build_sphere_scene()
+        state = model.state()
+        width, height = 17, 11
+        rays = self._rays(width, height, fov=math.radians(20.0))
+        transforms = self._identity_transforms(1)
+
+        outputs = []
+        for render_config in (
+            SensorCamera.RenderConfig(render_order=SensorCamera.RenderOrder.VIEW_PRIORITY),
+            SensorCamera.RenderConfig(render_order=SensorCamera.RenderOrder.TILED, tile_width=8, tile_height=5),
+        ):
+            color = camera.allocate_image_color(1, width, height)
+            depth = camera.allocate_image_depth(1, width, height)
+            camera.update(state, transforms, rays, color_image=color, depth_image=depth, render_config=render_config)
+            outputs.append((color.numpy(), depth.numpy()))
+
+        (reference_color, reference_depth), (tiled_color, tiled_depth) = outputs
+        self.assertGreater(int(np.count_nonzero(reference_depth > 0.0)), 0)
+        np.testing.assert_array_equal(tiled_color, reference_color)
+        np.testing.assert_array_equal(tiled_depth, reference_depth)
+
+    def test_renders_flat_heightfield_from_above(self) -> None:
+        """Verify heightfield shapes are rendered and fill the view from above."""
+        # Flat heightfield at z=1 spanning [-2, 2]^2.
+        data = np.full((3, 3), 1.0, dtype=np.float32)
+        heightfield = newton.Heightfield(data=data, nrow=3, ncol=3, hx=2.0, hy=2.0, min_z=1.0, max_z=1.0)
+        res = 16
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                builder.add_shape_heightfield(heightfield=heightfield)
+                model = builder.finalize(device=device)
+                state = model.state()
+
+                camera = SensorCamera(model)
+                # 30-deg fov: the footprint half-extent at depth 4 is 4*tan(15deg)=1.07 < 2,
+                # so the terrain fills the whole frame.
+                rays = self._rays(res, res, fov=math.radians(30.0), device=device)
+                # Camera 5 m above the origin with identity orientation looks straight down (-Z).
+                transforms = wp.array(
+                    [wp.transform(wp.vec3(0.0, 0.0, 5.0), wp.quat_identity())], dtype=wp.transformf, device=device
+                )
+                depth = camera.allocate_image_depth(1, res, res)
+                camera.update(state, transforms, rays, depth_image=depth)
+
+                d = depth.numpy()[0]
+                hit = int(np.count_nonzero(d > 0.0))
+                # The surface sits at min_z, so a bottom cap coplanar with it would make rays miss (issue #4452).
+                self.assertEqual(hit, res * res, msg=f"heightfield should fill the view; only {hit}/{res * res} hit")
+                # Every ray sees the flat surface at z=1 from z=5: depth ~4, up to ~4.25 toward the frame edges.
+                self.assertGreater(float(d.min()), 3.9)
+                self.assertLess(float(d.max()), 4.4)
+                self.assertAlmostEqual(float(d[res // 2, res // 2]), 4.0, delta=0.05)
+
+    def test_multiworld_particles_render_consistently(self) -> None:
+        """Verify particle depth is identical across translated worlds.
+
+        Catches incorrect per-world particle BVH index mapping, which renders
+        wrong depth and, on CUDA, can cause illegal memory accesses.
+        """
+        world_count, spacing = 4, 10.0
+        width, height = 32, 24
+        radius = 0.04
+        blueprint = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        blueprint.default_particle_radius = radius
+        blueprint.add_particle_grid(
+            pos=wp.vec3(-0.4, -0.4, 0.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=8,
+            dim_y=8,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            mass=0.0,
+            jitter=0.0,
+            radius_mean=radius,
+            radius_std=0.0,
+        )
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for world_id in range(world_count):
+            builder.add_world(blueprint, xform=wp.transform(wp.vec3(world_id * spacing, 0.0, 0.0), wp.quat_identity()))
+
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                camera = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(max_distance=10.0))
+                rays = self._rays(width, height, fov=math.radians(60.0), device=device)
+                # One camera per world, placed above that world's particle block.
+                transforms = wp.array(
+                    [wp.transform(wp.vec3(w * spacing, 0.0, 3.0), wp.quat_identity()) for w in range(world_count)],
+                    dtype=wp.transformf,
+                    device=device,
+                )
+                depth = camera.allocate_image_depth(world_count, width, height)
+                camera.update(model.state(), transforms, rays, depth_image=depth)
+
+                depth_np = depth.numpy()
+                self.assertGreater(int(np.count_nonzero(depth_np[0] > 0.0)), 0)
+                for w in range(1, world_count):
+                    # Agreement up to fp32 differences introduced by the world translations.
+                    np.testing.assert_allclose(depth_np[w], depth_np[0], rtol=0.0, atol=1e-4)
+
+    def test_render_config_toggles_particles_beside_cloth(self) -> None:
+        """Verify ``enable_particles`` hides standalone particles but keeps cloth rendered as triangles."""
+        from newton._src.render.raytrace import (  # noqa: PLC0415
+            PARTICLES_SHAPE_ID,
+            TRIANGLE_MESH_SHAPE_ID,
+        )
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_cloth_grid(
+            pos=wp.vec3(2.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            fix_top=True,
+        )
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        camera = SensorCamera(model)
+        rays = self._rays(1, 1, fov=math.radians(30.0))
+        cloth_vertex = model.particle_q.numpy()[0]
+        cloth_transforms = wp.array(
+            [wp.transform(wp.vec3(*cloth_vertex[:2], cloth_vertex[2] + 0.5), wp.quat_identity())],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+
+        def render(transforms, **config):
+            depth = camera.allocate_image_depth(1, 1, 1)
+            shape_index = camera.allocate_image_shape_index(1, 1, 1)
+            camera.update(
+                state,
+                transforms,
+                rays,
+                depth_image=depth,
+                shape_index_image=shape_index,
+                render_config=SensorCamera.RenderConfig(max_distance=10.0, **config),
+            )
+            return float(depth.numpy()[0, 0, 0]), int(shape_index.numpy()[0, 0, 0])
+
+        self.assertEqual(render(self._identity_transforms(1), enable_particles=False)[0], 0.0)
+        depth, shape_index = render(self._identity_transforms(1), enable_particles=True)
+        self.assertGreater(depth, 0.0)
+        self.assertEqual(shape_index, int(PARTICLES_SHAPE_ID))
+        depth, shape_index = render(cloth_transforms, enable_particles=True, enable_backface_culling=False)
+        self.assertGreater(depth, 0.0)
+        self.assertEqual(shape_index, int(TRIANGLE_MESH_SHAPE_ID))
+
+    def test_volume_deformable_renders_surface_not_particles(self) -> None:
+        """Verify a volume deformable renders its surface triangles instead of its particles."""
+        from newton._src.render.raytrace import TRIANGLE_MESH_SHAPE_ID  # noqa: PLC0415
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_soft_grid(
+            pos=wp.vec3(-0.1, -0.1, -2.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=1000.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            particle_radius=0.25,
+        )
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        depth = camera.allocate_image_depth(1, 1, 1)
+        shape_index = camera.allocate_image_shape_index(1, 1, 1)
+        camera.update(
+            model.state(),
+            self._identity_transforms(1),
+            self._rays(1, 1, fov=math.radians(30.0)),
+            depth_image=depth,
+            shape_index_image=shape_index,
+            render_config=SensorCamera.RenderConfig(
+                enable_backface_culling=False, enable_particles=True, max_distance=10.0
+            ),
+        )
+
+        self.assertGreater(float(depth.numpy()[0, 0, 0]), 0.0)
+        self.assertEqual(int(shape_index.numpy()[0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
+
     def test_multiple_sensor_cameras_render_same_model(self) -> None:
         """Verify multiple independent SensorCamera instances can render the same model."""
         width, height = 8, 6
@@ -1356,7 +1970,7 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(float(depth_a.numpy()[0, height // 2, width // 2]), 0.0)
         self.assertGreater(float(depth_b.numpy()[0, height // 2, width // 2]), 0.0)
 
-    # --- Rendering output channels (ported from SensorTiledCamera coverage) ---
+    # --- Rendering output channels ---
 
     @staticmethod
     def _shaded_sphere_model(color: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> newton.Model:
@@ -1694,7 +2308,11 @@ def _optix_variant(test):
     return run
 
 
-for _name in ("test_fully_transparent_shape_does_not_occlude", "test_convex_hull_renders_like_its_mesh"):
+for _name in (
+    "test_fully_transparent_shape_does_not_occlude",
+    "test_convex_hull_renders_like_its_mesh",
+    "test_camera_inside_box_sees_its_walls",
+):
     setattr(TestSensorCamera, f"{_name}_optix", _optix_variant(getattr(TestSensorCamera, _name)))
 
 
@@ -1711,7 +2329,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
 
     @staticmethod
     def _camera_arrays(model, view_count=1):
-        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, device=model.device, camera_fov=math.radians(45))
+        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, device=model.device, fov=math.radians(45))
         transforms = wp.array(
             [wp.transform(wp.vec3(0, 0, 2), wp.quat_identity())] * view_count,
             dtype=wp.transform,

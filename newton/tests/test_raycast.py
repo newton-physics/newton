@@ -14,7 +14,7 @@ from newton._src.geometry.raycast import (
     ray_intersect_shape,
     raycast_kernel,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices, has_module
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestRaycast(unittest.TestCase):
@@ -91,20 +91,26 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
     out_t = wp.zeros(1, dtype=float, device=device)
     out_n = wp.zeros(1, dtype=wp.vec3, device=device)
     size = wp.vec3(1.0, 1.0, 1.0)  # half-extents
-    direction = wp.vec3(1.0, 0.0, 0.0)
+    x = wp.vec3(1.0, 0.0, 0.0)
+    diagonal = wp.normalize(wp.vec3(1.0, 1.0, 0.0))
 
     identity = wp.transform_identity()
-    rot_45_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)
+    rot_45_z = wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0))
+    rot_30_z = wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 6.0))
+    c30, s30 = np.cos(np.pi / 6.0), np.sin(np.pi / 6.0)
 
-    # (name, xform, origin, expected)
+    # (name, xform, origin, direction, expected distance, expected normal or None)
     cases = [
-        ("hit", identity, wp.vec3(-2.0, 0.0, 0.0), 1.0),
-        ("miss", identity, wp.vec3(-2.0, 2.0, 0.0), -1.0),
-        ("inside", identity, wp.vec3(0.0, 0.0, 0.0), 1.0),
-        ("rotated", wp.transform(wp.vec3(0.0, 0.0, 0.0), rot_45_z), wp.vec3(-2.0, 0.0, 0.0), 2.0 - wp.sqrt(2.0)),
+        ("hit", identity, wp.vec3(-2.0, 0.0, 0.0), x, 1.0, (-1.0, 0.0, 0.0)),
+        ("miss", identity, wp.vec3(-2.0, 2.0, 0.0), x, -1.0, None),
+        ("inside", identity, wp.vec3(0.0, 0.0, 0.0), x, 1.0, (1.0, 0.0, 0.0)),
+        ("rotated_edge", rot_45_z, wp.vec3(-2.0, 0.0, 0.0), x, 2.0 - np.sqrt(2.0), None),
+        ("rotated", rot_30_z, wp.vec3(-3.0, 0.0, 0.0), x, 3.0 - 1.0 / c30, (-c30, -s30, 0.0)),
+        # An exact corner hit takes the normal of one face, not a blend of the two.
+        ("corner", identity, wp.vec3(-2.0, -2.0, 0.0), diagonal, np.sqrt(2.0), (-1.0, 0.0, 0.0)),
     ]
 
-    for name, xform, origin, expected in cases:
+    for name, xform, origin, direction, expected, normal in cases:
         with test.subTest(name):
             wp.launch(
                 kernel_test_geom,
@@ -113,6 +119,8 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
+            if normal is not None:
+                np.testing.assert_allclose(out_n.numpy()[0], normal, atol=1e-5)
 
 
 def test_ray_intersect_capsule(test: TestRaycast, device: str):
@@ -1027,14 +1035,20 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
-optix_devices = [d for d in devices if d.is_cuda] if has_module("warp_optix") else []
 for test_func in (
     test_intersect_ray,
     test_intersect_ray_global_world,
     test_intersect_ray_heightfield_uses_finalize_bvh,
     test_intersect_ray_world_planes,
 ):
-    add_function_test(TestRaycast, f"{test_func.__name__}_optix", test_func, devices=optix_devices, backend="optix")
+    add_function_test(
+        TestRaycast,
+        f"{test_func.__name__}_optix",
+        test_func,
+        devices=[d for d in devices if d.is_cuda],
+        requires=("warp_optix",),
+        backend="optix",
+    )
 add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
 add_function_test(TestRaycast, "test_intersect_ray_world_planes", test_intersect_ray_world_planes, devices=devices)
 add_function_test(

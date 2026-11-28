@@ -28,14 +28,14 @@ and configuration details. Runnable workflows are available in the
 Body acceleration
 -----------------
 
-Kamino populates :attr:`~newton.State.body_qdd` when the extended state
-attribute is requested. Values are center-of-mass spatial accelerations in the
-world frame, with linear acceleration followed by angular acceleration. For a
-step of duration ``dt``, Kamino reports the discrete step average
-``(body_qd_out - body_qd_in) / dt``. Consequently, a contact impact reports its
-velocity impulse divided by ``dt`` rather than a continuous midpoint
-acceleration. Resetting a state clears the requested acceleration in each reset
-world.
+Kamino populates :attr:`~newton.solvers.SolverBase.Observables.body_qdd` when
+:attr:`~newton.solvers.SolverBase.ObservableKind.BODY_QDD` is requested
+through :meth:`~newton.solvers.SolverBase.observables`. Values are
+center-of-mass spatial accelerations in the world frame, with linear
+acceleration followed by angular acceleration. For a step of duration ``dt``,
+Kamino reports the discrete step average ``(body_qd_out - body_qd_in) / dt``.
+Consequently, a contact impact reports its velocity impulse divided by ``dt``
+rather than a continuous midpoint acceleration.
 
 Choosing a dynamics solver
 --------------------------
@@ -79,8 +79,8 @@ Set ``sparse_jacobian=False`` for fully dense SCC, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-SCC defaults to ``"LLTB"`` for its bilateral joint solve. Select ``"LDL"``
-explicitly to use the block-sparse backend, which factors the reordered matrix
+Python SCC configurations default to ``"LLTBRCM"`` for the bilateral joint
+solve. Select ``"LDL"`` explicitly to use the block-sparse factorization of the reordered matrix
 as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
 diagonal :math:`D`. It stores only joint
 blocks and symbolic fill, supports CPU and CUDA execution, and reuses its
@@ -113,7 +113,6 @@ parallel factorization:
 
 .. code-block:: python
 
-   config.scc.bilateral_solver_type = "LLTBRCM"
    config.scc.bilateral_solver_kwargs = {
        "block_size": 32,
        "reuse_permutation": True,
@@ -122,7 +121,8 @@ parallel factorization:
 
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
-changes. Keep ``"LLTB"`` for small systems.
+changes. To factor dense tiles without reordering, set
+``config.scc.bilateral_solver_type = "LLTB"``.
 
 The level-scheduled sparse backend can incur more launch overhead on small
 systems or long chains, so benchmark representative workloads when choosing
@@ -164,6 +164,36 @@ PADMM, or an explicitly selected LLT backend. Selecting an ordering never
 silently overrides an explicit ``--bilateral-solver-type LLTBRCM`` or
 ``--linear-solver-type LLTB``.
 
+PADMM closed kinematic loops
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Closed kinematic loops make some joint constraints redundant. By default,
+PADMM handles them with three settings of ``config.padmm``:
+
+* ``detect_redundant_kinematics`` drops the redundant kinematic joint rows of
+  models with closed loops, by a pivoted Cholesky elimination of the joint
+  block, and ``reuse_redundant_kinematics_set`` repeats the elimination only
+  in the worlds where the dropped rows fail a check.
+* ``unpenalized_bilateral_rows`` removes the ALM penalty from the bilateral
+  joint rows.
+* ``dual_residual_mode="delassus"`` measures the dual residual as the change of
+  constraint velocity, which ignores impulse drift along the null space of the
+  Delassus matrix (see `Inspecting terminal status`_).
+
+With the iterative linear solvers ``"CR"`` and ``"CRF"`` of
+``config.dynamics.linear_solver_type``, which sparse dynamics always uses, the
+three settings are turned off
+and PADMM keeps its standard handling of redundant constraints. These solvers
+never factorize the singular Delassus matrix, and are more accurate without them.
+
+The internal stress of a loop is then carried by the kept rows rather than
+split with minimum norm, so reported joint reactions can change when the
+dropped rows change at a singular configuration; the motion does not. The
+elimination runs on one thread block per world, which is slow for a single
+world with thousands of kinematic joint rows. Such models can set
+``detect_redundant_kinematics = False``, together with
+``unpenalized_bilateral_rows = False`` if their joints are redundant.
+
 SCC unilateral subsolvers
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -179,6 +209,27 @@ SCC offers two subsolvers for bounded joint rows, limits, and contacts:
 Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
+
+Configuring Kamino from USD
+---------------------------
+
+SCC scene settings require ``newton-usd-schemas`` 0.8.0 or newer.
+
+Call :meth:`~newton.solvers.SolverKamino.register_custom_attributes` on the
+:class:`~newton.ModelBuilder` before :meth:`~newton.ModelBuilder.add_usd` to read
+the ``NewtonKaminoSceneAPI`` and ``NewtonKaminoSccSceneAPI`` settings from a USD
+``PhysicsScene``. ``SolverKamino(model)`` and ``SolverKamino.Config.from_model()``
+apply them: an authored value takes precedence over the keyword fallbacks passed
+to ``from_model()``, and a config passed to the solver is used unchanged. SCC
+tuning is read only when SCC is selected. SCC ignores the scene's
+preconditioning setting.
+
+Applying ``NewtonKaminoSccSceneAPI`` alone selects SCC and supplies the
+``"lltb"`` bilateral factorization fallback. An authored bilateral solver
+token takes precedence, followed by the factorization in any Python ``scc``
+configuration passed to ``from_model()``. Author
+``newton:kamino:scc:bilateral:numericalSolver = "lltbrcm"`` to select the
+same factorization as the Python default.
 
 Constraint recovery and material compliance
 -------------------------------------------
@@ -285,9 +336,6 @@ This conversion preserves rigid-row recovery. Enabling finite stiffness can
 introduce elastic deflection or bounce, so material gains must suit the intended
 motion rather than reproduce rigid-contact trajectories exactly.
 
-The new settings are configured through Python. USD schema and importer
-extensions for these settings are deferred to a separate change.
-
 The shared recovery/compliance settings currently support PADMM and SCC.
 LOX rejects non-default values for these new settings and retains its existing
 ``config.lox.contact_compliance`` option and recovery controls.
@@ -338,19 +386,35 @@ fully parallel Jacobi sweep, and larger values process up to that many
 approximate constraint colors sequentially. ``config.lox.projection_acceleration``
 optionally accelerates the resulting map:
 
-* ``"none"`` (default) runs plain sweeps.
-* ``"apgd"`` applies restarted Nesterov extrapolation and requires
-  ``gauss_seidel_max_colors=1``.
+* ``"none"`` runs plain sweeps.
+* ``"nesterov"`` (default) applies restarted Nesterov extrapolation after every
+  sweep but the last, for either the Jacobi or the colored map.
 * ``"anderson"`` applies one safeguarded Anderson direction
-  after every sweep, for either the Jacobi or the colored map. Set
-  ``projection_anderson_recycle=False`` to discard the direction between
-  splitting iterations.
+  after every sweep, for either the Jacobi or the colored map.
+
+Both carry their state, the Nesterov momentum and reaction history or the
+Anderson direction, across the splitting iterations of one step. Nesterov applies
+the extrapolation of the last sweep of a splitting iteration at the start of
+the next projection, so that each projection still returns a sweep output. Set
+``projection_acceleration_recycle=False`` to restart it at every splitting
+iteration.
+
+LOX regularizes the local contact solves with
+``config.lox.contact_proximal_regularization`` (default ``0.01``), scaling their
+Delassus diagonals by one plus this value. The contact law retains its mechanical
+response, so converged solutions retain the hard-contact fixed point. For rigid
+contacts without spatial friction, the first splitting iterations
+(``contact_proximal_warmstart_window``) center the proximal term on
+``contact_proximal_warmstart_scale`` (default ``0.9``) times the warm-start
+reaction. Later iterations center it on the current reaction. Set
+``contact_proximal_regularization=0.0`` to disable both terms.
 
 LOX contact extensions
 ----------------------
 
 Enable these features through ``config.lox`` after selecting
-``dynamics_solver="lox"``. They are disabled by default.
+``dynamics_solver="lox"``. They are disabled by default, except spatial
+friction, which follows the shapes' friction modes.
 
 * ``contact_compliance=True`` turns contacts with a positive per-contact
   stiffness ``k`` [N/m] (:attr:`newton.Contacts.rigid_contact_stiffness`) into
@@ -367,11 +431,99 @@ Enable these features through ``config.lox`` after selecting
   velocity, which better preserves energy in speculative impacts. Restitution
   applies either way: by default, the bounce target is fixed at the beginning of
   the step.
-* ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
-  ``mu_rolling`` coefficients, both in metres. Sliding, torsion, and rolling
-  share one elliptic friction budget. Contacts with zero angular coefficients
-  retain the classical 3D contact solve. Kamino's primitive collision pipeline
-  provides no angular coefficients.
+* Spatial friction applies the shape ``mu_torsional`` and ``mu_rolling``
+  coefficients, both in metres, on contacts whose
+  :attr:`~newton.ModelBuilder.ShapeConfig.friction_mode` enables torsional or
+  rolling friction. It is enabled automatically when any shape uses such a
+  mode. Sliding, torsion, and rolling share one elliptic friction budget.
+  Contacts with zero angular coefficients retain the classical 3D contact
+  solve. Kamino's primitive collision pipeline provides no angular
+  coefficients. The ``contact_spatial_friction`` option, which enabled spatial
+  friction on every contact, is deprecated.
+
+Heterogeneous worlds
+--------------------
+
+Kamino supports solving, in a single batch, worlds in a model that differ in
+bodies, joints, and contact capacity. While arbitrarily different worlds
+are supported, Kamino targets worlds that are small variations of the same
+problem, for example the same robot with different payloads, terrain, or
+optional parts. As world dimensions diverge, memory and throughput resources
+are increasingly wasted.
+
+More specifically, dense quantities (constraint Jacobians, Delassus matrices,
+and their factorizations) are stored with one row per world, sized for the
+largest world, and per-world kernels are launched over grids sized by the
+largest world. This design has the following consequences:
+
+* **Memory:** every world reserves dense storage for the largest world.
+  Delassus matrices and their factors grow quadratically with the number of
+  constraints, so a few large worlds among many small ones can multiply the
+  dense memory footprint.
+* **Throughput:** threads assigned to the unused part of a smaller world
+  stay idle, so a single large world slows down the whole batch.
+
+If worlds differ substantially, for example a few large mechanisms among many
+small ones, consider simulating each group with its own model and solver.
+
+The dense storage row of each world is limited to 2\ :sup:`31` bytes by the
+32-bit array strides of Warp, which bounds a single world's dense Delassus
+matrix to about 23,000 constraints. Larger worlds raise an error during
+solver construction; for these, consider sparse Jacobians and dynamics
+(``sparse_jacobian=True`` and ``sparse_dynamics=True``).
+
+.. _kamino-d6-joints:
+
+D6 joints
+---------
+
+SCC, LOX, and PADMM support D6 joints authored with
+:meth:`newton.ModelBuilder.add_joint_d6` or imported from USD. A D6 joint
+has zero to three linear axes and zero to three angular axes. Each family
+must consist of unit-length, mutually orthogonal axes. Both families must
+use the same orthonormal frame, so every linear axis must be parallel or
+perpendicular to every angular axis. Either direction along a frame axis
+is allowed. Omitted degrees of freedom are locked.
+On models with D6 joints, issue ``ModelFlags.JOINT_PROPERTIES`` notifications
+outside CUDA graph capture so Kamino can validate axis updates.
+
+Coordinates and rates follow the authored order, with linear components
+first (meters and meters per second), then angular components (radians and
+radians per second). Angular coordinates are intrinsic angles applied in
+order about successive rotated axes. Two angular axes give universal-joint
+rotation and three give gimbal rotation.
+
+Each active axis supports position limits, direct effort, implicit drives,
+effort limits, armature, damping, and Coulomb friction. With three angular
+axes, individual Euler rates become indeterminate at gimbal lock. Kamino
+uses the minimum-norm rate split at float32 rank loss and the exact coordinate
+derivative at regular poses.
+
+Use ``use_fk_solver=False`` (the default) for general D6 layouts. The
+optional Kamino forward-kinematics solver supports D6 layouts that map to
+its specialized joints: fixed, prismatic, revolute, same-axis cylindrical,
+universal, right-handed Cartesian, and three-axis gimbal. Newton's
+:func:`newton.eval_fk` can initialize articulated D6 body states for any
+supported D6 layout.
+
+.. _kamino-rod-joints:
+
+Rod joints
+----------
+
+All dynamics backends support ``JointType.ROD`` joints between rigid bodies,
+as built by :meth:`newton.ModelBuilder.add_joint_rod`. Each
+rod DOF with nonzero stiffness or damping adds an implicit dynamic constraint on
+one rod strain: shear and stretch along the axes of the joint frame on the
+parent body, then bend and twist. The rest pose
+of each rod is its structural rest, :attr:`newton.Model.joint_rest_q`: its
+translation sets the rest shear and stretch, and its rotation sets the rest bend
+and twist. Builders store zero translation, so the anchors coincide at rest
+unless ``joint_rest_q`` is edited. The constraints are linearized at the beginning
+of each time step. LOX additionally adds the rotational stiffness of the rod tension
+acting at each segment's lever arm, which keeps light segments under high tension
+stable at large time steps. Rod joints require zero armature, joint damping, and joint
+friction, unbounded joint limits, no target mode, and ``use_fk_solver=False``.
 
 Inspecting terminal status
 --------------------------
@@ -386,8 +538,13 @@ residual definitions are backend-specific:
   preconditioner, and ``eta`` and ``rho`` the proximal and penalty parameters.
   ``r_p = ||P (x - y)||_inf`` is the primal consensus residual
   [N·s or N·m·s].
-  ``r_d = ||P^-1 (eta (x - x_prev) + rho (y - y_prev))||_inf`` is the ADMM dual
-  residual [m/s or rad/s]. ``r_c`` is the maximum absolute impulse-velocity
+  ``r_d = ||P^-1 D (x - x_prev)||_inf`` is the change of constraint velocity
+  between iterates [m/s or rad/s], with ``D`` the preconditioned Delassus
+  matrix. With ``dual_residual_mode="standard"`` or an iterative linear solver,
+  it is instead the ADMM dual
+  residual ``r_d = ||P^-1 (eta (x - x_prev) + rho_i (y - y_prev))||_inf``, with
+  ``rho_i`` the penalty of each row, which is zero on unpenalized bilateral
+  joint rows. ``r_c`` is the maximum absolute impulse-velocity
   inner product over inequality blocks [J]. The ``P`` factors
   convert the first two residuals from solver scaling to physical constraint
   units.
@@ -441,8 +598,7 @@ passive armature, damping, and Coulomb friction are likewise configured per
 DoF. Implicit-PD target modes require a non-zero applicable gain: velocity
 mode requires derivative gain, while position-based modes require proportional
 or derivative gain. Coulomb friction supports all non-free joint types, while
-joint dynamics and implicit PD currently support revolute, prismatic, and
-gimbal joint types only.
+joint dynamics and implicit PD support revolute, prismatic, and D6 joints.
 
 The forward-kinematics solver still partitions each joint as entirely passive
 or entirely actuated. Different non-passive target modes are allowed within a

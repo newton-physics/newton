@@ -35,6 +35,8 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...math.spatial import velocity_at_point
+from ...sim.enums import ShapeFrictionMode
+from ..solver import contact_friction_mode
 from .friction import contact_tangent_basis
 
 # Steel orders its own order-dependent atomics; Warp's deterministic lowering would overflow on its loops.
@@ -120,11 +122,13 @@ def _prepare(
     margin1: wp.array[float],
     shape_body: wp.array[int],
     shape_mu: wp.array[float],
+    shape_material_friction_mode: wp.array[wp.int32],
     shape_gap: wp.array[float],
     body_radius: wp.array[float],
     q: wp.array[wp.transform],
     contact_gap_limit: float,
     friction_gap_limit: float,
+    recovery_phi: wp.array[float],
     frame: _PatchFrame,
     patches: FrictionPatches,
 ):
@@ -142,6 +146,8 @@ def _prepare(
     patches.next_contact[c] = -1
     patches.phi[c] = wp.vec2(0.0)
     if count[0] > shape0.shape[0] or c >= count[0] or c >= shape0.shape[0]:
+        return
+    if recovery_phi and wp.isinf(recovery_phi[c]):
         return
     sa = shape0[c]
     sb = shape1[c]
@@ -200,6 +206,9 @@ def _prepare(
         mu_a = shape_mu[sa]
     if sb >= 0:
         mu_b = shape_mu[sb]
+    if contact_friction_mode(shape_material_friction_mode, sa, sb) == int(ShapeFrictionMode.NONE):
+        mu_a = 0.0
+        mu_b = 0.0
     frame.mu[c] = wp.vec2(mu_a, mu_b)
     r = float(1.0e10)
     if a >= 0:
@@ -1411,6 +1420,7 @@ class _FrictionPatchState:
         contact_gap_limit=float("inf"),
         friction_gap_limit=float("inf"),
         frozen_bodies=None,
+        recovery_phi=None,
         dt=0.0,
     ):
         wp.launch(
@@ -1427,11 +1437,13 @@ class _FrictionPatchState:
                 contacts.rigid_contact_margin1,
                 model.shape_body,
                 shape_material_mu,
+                model.shape_material_friction_mode,
                 model.shape_gap,
                 self.body_radius,
                 state.body_q,
                 contact_gap_limit,
                 friction_gap_limit,
+                recovery_phi,
                 self.current,
                 self.view,
             ],

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..core.joints import JointDoFType
+from ..core.joints import D6JointAxes, JointCorrectionMode, JointDoFType
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..kinematics.joints import (
@@ -15,8 +15,10 @@ from ..kinematics.joints import (
     correct_joint_coords_in_place,
     get_joint_coords_mapping_function,
     map_gimbal_angular_velocity_to_rates,
+    rod_joint_relative_twist,
     select_gimbal_coords,
     universal_intermediary_axes,
+    write_d6_joint_motion,
 )
 
 ###
@@ -144,7 +146,7 @@ def _compute_and_write_joint_coords_and_vel(
     elif dof_type == JointDoFType.FIXED:
         pass  # 0 coords and dofs
 
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.FREE))(r_j, q_j, coords_offset, joint_q_ref, joint_q)
         wp.static(make_compute_and_write_joint_vel(JointDoFType.FREE))(q_j, u_j, dofs_offset, joint_u)
 
@@ -290,8 +292,10 @@ def _set_body_q(
 @wp.kernel
 def _reset_joints_state_from_bodies_state(
     # Inputs
+    rotation_correction: int,
     joint_world_id: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
+    joint_d6_axes: wp.array[D6JointAxes],
     joint_coords_offset: wp.array[wp.int32],
     joint_dofs_offset: wp.array[wp.int32],
     joint_dynamic_cts_offset: wp.array[wp.int32],
@@ -355,12 +359,28 @@ def _reset_joints_state_from_bodies_state(
     u_F = body_u[bid_F]
 
     # Compute the relative motion of the follower w.r.t. the base body, in joint frame
-    _, r_j, q_j, u_j = compute_joint_pose_and_relative_motion(T_B, T_F, u_B, u_F, r_B, r_F, X_B, X_F)
+    p_j, r_j, q_j, u_j = compute_joint_pose_and_relative_motion(T_B, T_F, u_B, u_F, r_B, r_F, X_B, X_F)
+    if dof_type == JointDoFType.ROD:
+        u_j = rod_joint_relative_twist(T_B, T_F, u_B, u_F, wp.transform_get_rotation(p_j))
 
     # Evaluate joint coordinates/velocity from relative motion
-    _compute_and_write_joint_coords_and_vel(
-        dof_type, r_j, q_j, u_j, coords_offset, dofs_offset, joint_q_0, joint_q, joint_u
-    )
+    if dof_type == JointDoFType.D6:
+        write_d6_joint_motion(
+            joint_d6_axes[jid],
+            rotation_correction,
+            dofs_offset,
+            coords_offset,
+            r_j,
+            q_j,
+            u_j,
+            joint_q_0,
+            joint_q,
+            joint_u,
+        )
+    else:
+        _compute_and_write_joint_coords_and_vel(
+            dof_type, r_j, q_j, u_j, coords_offset, dofs_offset, joint_q_0, joint_q, joint_u
+        )
     for i in range(num_coords):
         joint_q_prev[coords_offset + i] = joint_q[coords_offset + i]
 
@@ -766,6 +786,8 @@ def reset_joints_state_from_bodies_state(
     model: ModelKamino,
     state: StateKamino,
     world_mask: wp.array[wp.bool] | None = None,
+    *,
+    rotation_correction: int = JointCorrectionMode.CONTINUOUS,
 ):
     """
     Reset joint-based components of the state given body poses and velocities, inferring consistent
@@ -775,13 +797,16 @@ def reset_joints_state_from_bodies_state(
         model: Kamino model.
         state: Kamino state.
         world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
+        rotation_correction: Angular coordinate correction mode for general D6 joints.
     """
     wp.launch(
         _reset_joints_state_from_bodies_state,
         dim=model.size.sum_of_num_joints,
         inputs=[
+            rotation_correction,
             model.joints.wid,
             model.joints.dof_type,
+            model.joints.d6_axes,
             model.joints.coords_offset,
             model.joints.dofs_offset,
             model.joints.dynamic_cts_offset,

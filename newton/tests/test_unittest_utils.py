@@ -143,6 +143,20 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         self.assertTrue(result.wasSuccessful())
 
+    def test_line_anchors_match_crlf_output(self):
+        """Match native CRLF lines on both streams with the same patterns used for LF."""
+
+        class EmitsCRLF(NewtonTestCase):
+            def test_output(self):
+                self.expectOutputRegex(r"^first$\n^second$", stream="stdout")
+                self.allowOutputRegex(r"^warning$", stream="stderr")
+                sys.stdout.buffer.write(b"first\r\nsecond\r\n")
+                sys.stderr.buffer.write(b"warning\r\n")
+
+        result = self._run_test_case(EmitsCRLF)
+
+        self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+
     def test_optional_output_allows_absent_or_present_output(self):
         class AllowsAbsentOutput(NewtonTestCase):
             def test_output(self):
@@ -158,6 +172,28 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         self.assertTrue(absent_result.wasSuccessful())
         self.assertTrue(present_result.wasSuccessful())
+
+    def test_reported_output_is_replayed_after_validation(self):
+        """Replay expected and allowed output registered with ``report=True`` and discard the rest."""
+
+        class ReportsOutput(NewtonTestCase):
+            def test_output(self):
+                """Print reported and unreported expected and allowed output."""
+                self.expectOutputRegex(r"expected output\n", stream="stdout", report=True)
+                self.allowOutputRegex(r"reported output\n", stream="stdout", report=True)
+                self.expectOutputRegex(r"hidden required output\n", stream="stdout")
+                self.allowOutputRegex(r"discarded output\n", stream="stdout")
+                print("expected output")
+                print("reported output")
+                print("hidden required output")
+                print("discarded output")
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = self._run_test_case(ReportsOutput)
+
+        self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+        self.assertEqual(stdout.getvalue(), "expected output\nreported output\n")
 
     def test_output_regex_stream_is_respected(self):
         class ExpectsStderrOutput(NewtonTestCase):

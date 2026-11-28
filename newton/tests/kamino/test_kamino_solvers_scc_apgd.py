@@ -25,14 +25,16 @@ from newton._src.solvers.kamino._src.solvers.scc.apgd import UnilateralAPGD
 from newton._src.solvers.kamino._src.solvers.scc.types import SCCConfigStruct, SCCStatus, convert_config_to_struct
 from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, SCCAPGDConfig, SCCSolverConfig
 from newton.solvers import SolverKamino
+from newton.tests.kamino import setup_test_output, setup_tests
 from newton.tests.kamino.test_kamino_solver_kamino_joint_friction import (
     _run_hold_and_breakaway_test,
     _run_spin_down_test,
 )
 from newton.tests.kamino.test_kamino_solvers_scc import _build_five_box_stack
+from newton.tests.kamino.utils.extract import get_matrix_block
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.solver_configs import make_scc_dense_config, make_scc_sparse_config
-from newton.tests.unittest_utils import requires
+from newton.tests.unittest_utils import NewtonTestCase, requires
 from newton.tests.utils import basics
 from newton.viewer import ViewerNull
 
@@ -46,7 +48,6 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
     """Build independent small unilateral problems in the actual batched storage layout."""
     sizes = [len(b) for b in biases]
     offsets = np.cumsum([0, *[max(1, n) for n in sizes]])
-    matrix_offsets = np.cumsum([0, *[max(1, n * n) for n in sizes]])
     bound_offsets = np.cumsum([0, *[f[0] for f in families]])
     contact_offsets = np.cumsum([0, *[f[2] for f in families]])
 
@@ -58,15 +59,14 @@ def _problem(matrices, biases, families, friction, device, *, options=None, lowe
         """Allocate numerical inputs on the test device."""
         return wp.array(values, dtype=wp.float32, device=device)
 
-    matrix = np.zeros(matrix_offsets[-1])
+    matrix = np.zeros((len(sizes), max(1, max(sizes) ** 2)))
     velocity = np.zeros(offsets[-1])
     for wid, (a, b) in enumerate(zip(matrices, biases, strict=True)):
-        matrix[matrix_offsets[wid] : matrix_offsets[wid] + sizes[wid] ** 2] = np.asarray(a).ravel()
+        matrix[wid, : sizes[wid] ** 2] = np.asarray(a).ravel()
         velocity[offsets[wid] : offsets[wid] + sizes[wid]] = b
     data = SimpleNamespace(
         dim=ints(sizes),
         vio=ints(offsets[:-1]),
-        mio=ints(matrix_offsets[:-1]),
         njc=ints([0] * len(sizes)),
         nbc=ints([f[0] for f in families]),
         nl=ints([f[1] for f in families]),
@@ -146,8 +146,11 @@ def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, ite
     return solver, problem
 
 
-class TestSCCAPGD(unittest.TestCase):
+class TestSCCAPGD(NewtonTestCase):
     """Check Coulomb impulses rather than only the inner cone-QP residual."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_configuration_is_opt_in(self):
         """Retain PGS defaults and accept the APGD backend."""
@@ -841,7 +844,7 @@ class TestSCCAPGD(unittest.TestCase):
                 outputs.append((solver.data.solution.lambdas.numpy()[:n], solver.data.solution.v_plus.numpy()[:n]))
                 self.assertLess(float(np.max(np.abs(outputs[-1][1][:nb]))), 2e-4)
                 if not sparse:
-                    a = data.D.numpy()[: n * n].reshape(n, n).astype(np.float64)
+                    a = get_matrix_block(0, data.D.numpy(), [n]).astype(np.float64)
                     # Existing bilateral factorization regularizes after symmetric scaling.
                     scale = solver.data.state.bilateral_preconditioner.numpy()[:nb].astype(np.float64)
                     regularized_b = a[:nb, :nb] + np.diag(7e-7 / scale**2)
@@ -922,8 +925,11 @@ class TestSCCAPGD(unittest.TestCase):
             np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), expected, atol=2e-5)
 
 
-class TestSCCAPGDDynamics(unittest.TestCase):
+class TestSCCAPGDDynamics(NewtonTestCase):
     """Exercise the actual integration, warmstart, and captured sparse solver paths."""
+
+    def setUp(self):
+        setup_test_output(self)
 
     def test_joint_friction_spin_down(self):
         """Reuse analytical joint-friction deceleration and stopped-pose checks for APGD."""
@@ -1066,4 +1072,5 @@ class TestSCCAPGDDynamics(unittest.TestCase):
 
 if __name__ == "__main__":
     newton.utils.setup_console_logging()
+    setup_tests()
     unittest.main()

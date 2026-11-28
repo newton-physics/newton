@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from newton._src.solvers.kamino._src.solvers.scc.kernels import (
     _solve_bilateral_unilateral_response_compact,
@@ -21,9 +22,15 @@ from newton._src.solvers.kamino._src.solvers.scc.response import (
 from newton._src.solvers.kamino._src.solvers.scc.sparse_kernels import (
     _assemble_compact_unilateral_schur_tiled,
 )
+from newton.tests.kamino import setup_test_output, setup_tests
+from newton.tests.kamino.utils.make import make_row_storage
+from newton.tests.unittest_utils import NewtonTestCase
 
 
-class TestKaminoBlockedResponse(unittest.TestCase):
+class TestKaminoBlockedResponse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_dense_reference(self):
         """Verify partial tiles, permuted scaling, zero tiles, and guarded output."""
         if not wp.get_cuda_device_count():
@@ -60,11 +67,10 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                     inputs=[
                         ints([n + nu]),
                         ints([n]),
-                        ints([0]),
                         ints([n]),
                         ints([0]),
                         floats(scale),
-                        floats(lower),
+                        floats(lower).reshape((1, lower.size)),
                         ints(permutation),
                         ints([0]),
                         ints([stride]),
@@ -80,6 +86,32 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                 result = output.numpy()
                 np.testing.assert_allclose(result[: n * nu].reshape(n, nu), expected, rtol=2e-6, atol=2e-6)
                 np.testing.assert_array_equal(result[n * nu :], -123.0)
+                # World 0 is inactive with a NaN factor row, so world 1 must read its own row.
+                row_factor = np.stack((np.full(n * n, np.nan, dtype=np.float32), lower.ravel()))
+                row_output = wp.full(n * stride + 7, -123.0, device=device)
+                wp.launch(
+                    make_response_kernel(width),
+                    dim=(2 * ((nu + width - 1) // width), 128),
+                    inputs=[
+                        ints([0, n + nu]),
+                        ints([0, n]),
+                        ints([n, n]),
+                        ints([0, 0]),
+                        floats(scale),
+                        wp.array(row_factor, dtype=wp.float32, device=device),
+                        ints(permutation),
+                        ints([0, 0]),
+                        ints([stride, stride]),
+                        floats(coupling_input),
+                        row_output,
+                        ints([0, 0]),
+                        ints(pattern.ravel()),
+                        nu,
+                    ],
+                    block_dim=128,
+                    device=device,
+                )
+                _assert_bits_equal(row_output.numpy(), result)
 
                 # Reuse these whitened columns to update a forward-solved RHS,
                 # then recover the final original-coordinate solution.
@@ -96,9 +128,8 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                         ints([n]),
                         ints([0]),
                         ints([0]),
-                        ints([0]),
                         ints(permutation),
-                        floats(lower),
+                        floats(lower).reshape((1, lower.size)),
                         ints(pattern.ravel()),
                         floats(rhs),
                         y,
@@ -150,9 +181,8 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                         ints([n]),
                         ints([0]),
                         ints([0]),
-                        ints([0]),
                         ints(permutation),
-                        floats(lower),
+                        floats(lower).reshape((1, lower.size)),
                         ints(pattern.ravel()),
                         floats(np.full(n, np.nan)),
                         y,
@@ -169,7 +199,10 @@ class TestKaminoBlockedResponse(unittest.TestCase):
                 np.testing.assert_allclose(x.numpy(), expected_x, rtol=2e-6, atol=2e-6)
 
 
-class TestCooperativeResponse(unittest.TestCase):
+class TestCooperativeResponse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_unpermuted_compact_response(self):
         """Match dense elimination without permutation and with an inactive column."""
         if not wp.get_cuda_device_count():
@@ -198,11 +231,10 @@ class TestCooperativeResponse(unittest.TestCase):
             inputs=[
                 i32([njc + nu]),
                 i32([njc]),
-                i32([0]),
                 i32([njc]),
                 i32([0]),
                 f32(scale),
-                f32(lower),
+                f32(lower).reshape((1, lower.size)),
                 i32([-1] * njc),
                 False,
                 i32([0]),
@@ -227,7 +259,10 @@ def _assert_bits_equal(a, b):
     np.testing.assert_array_equal(a.copy().view(np.uint32), b.copy().view(np.uint32))
 
 
-class TestSplitResponse(unittest.TestCase):
+class TestSplitResponse(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_captured_capacity_boundaries(self):
         """Preserve response accuracy and fallback bits across changing compact capacity."""
         device = wp.get_device()
@@ -274,8 +309,9 @@ class TestSplitResponse(unittest.TestCase):
             return wp.array(np.asarray(x, dtype=np.float32), dtype=wp.float32, device=device)
 
         dim = ints(ns)
-        njc, bmio, bvio, rio, stride, qoffset = map(ints, (ns, mio, vio, offsets, capacities, qio))
-        L, scale, order, prefix = floats(factors), floats(scales), ints(orders), ints(prefixes)
+        njc, bvio, rio, stride, qoffset = map(ints, (ns, vio, offsets, capacities, qio))
+        L = floats(make_row_storage(np.asarray(factors, dtype=np.float32), mio, ns * ns))
+        scale, order, prefix = floats(scales), ints(orders), ints(prefixes)
         total = int(np.sum(sizes + guard) + guard)
         coupling = wp.zeros(total, dtype=wp.float32, device=device)
         outputs = [wp.zeros_like(coupling) for _ in range(2)]
@@ -288,7 +324,7 @@ class TestSplitResponse(unittest.TestCase):
                     _solve_bilateral_unilateral_response_compact,
                     dim=(len(ns), 128),
                     block_dim=128,
-                    inputs=[dim, njc, bmio, njc, bvio, scale, L, order, rio, stride, coupling, outputs[index], prefix],
+                    inputs=[dim, njc, njc, bvio, scale, L, order, rio, stride, coupling, outputs[index], prefix],
                     device=device,
                 )
             wp.launch(
@@ -298,7 +334,6 @@ class TestSplitResponse(unittest.TestCase):
                 inputs=[
                     dim,
                     njc,
-                    bmio,
                     njc,
                     bvio,
                     scale,
@@ -387,3 +422,9 @@ class TestSplitResponse(unittest.TestCase):
             np.testing.assert_array_equal(sb[gap_mask], -123.0)
             np.testing.assert_array_equal(q[1].numpy(), expected_q)
             np.testing.assert_array_equal(q[0].numpy(), expected_q)
+
+
+if __name__ == "__main__":
+    newton.utils.setup_console_logging()
+    setup_tests()
+    unittest.main()

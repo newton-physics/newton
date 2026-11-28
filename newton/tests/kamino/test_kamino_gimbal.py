@@ -22,9 +22,9 @@ from newton._src.solvers.kamino._src.kinematics.joints import (
     select_gimbal_coords,
 )
 from newton.solvers import SolverKamino, SolverMuJoCo
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
-from newton.tests.unittest_utils import MUJOCO_MODULES, requires
+from newton.tests.unittest_utils import MUJOCO_MODULES, NewtonTestCase, requires
 
 _RH_AXES = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
 _LH_AXES = (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
@@ -54,6 +54,14 @@ def _evaluate_gimbal_chart(
     basis_product[0] = wp.transpose(reciprocal) @ gimbal_transported_axes(selected[0], third_axis_sign)
     rates = map_gimbal_angular_velocity_to_rates(selected[0], omega[0], third_axis_sign)
     power[0] = wp.vec2f(wp.dot(effort[0], rates), wp.dot(reciprocal @ effort[0], omega[0]))
+
+
+@wp.kernel
+def _evaluate_reciprocal_rates(coords: wp.vec3f, sign: float, rates: wp.array[wp.vec3f]):
+    axes = gimbal_transported_axes(coords, sign)
+    reciprocal = wp.transpose(gimbal_reciprocal_axes(coords, sign))
+    rates[0] = reciprocal @ (axes @ wp.vec3f(1.0, 0.2, -1.0))
+    rates[1] = reciprocal @ wp.vec3f(axes[:, 0])
 
 
 def _build_rotational_d6(
@@ -242,16 +250,14 @@ def _run(
     )
 
 
-class TestGimbal(unittest.TestCase):
+class TestGimbal(NewtonTestCase):
     """Verify the rotational D6 representation."""
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
-
-    def tearDown(self):
-        self.default_device = None
 
     def test_rotational_d6_converts_to_gimbal(self):
         """Convert a three-angular-axis D6 joint to GIMBAL."""
@@ -307,10 +313,10 @@ class TestGimbal(unittest.TestCase):
             SolverKamino(model)
 
     def test_cartesian_rejects_invalid_axes(self):
-        """Reject three translational axes that are not orthonormal or form a left-handed set."""
+        """Accept both handednesses for translation and reject nonorthogonal axes."""
         cases = {
             "right-handed": (1.0, None),
-            "left-handed": (-1.0, "three translational axes must form a right-handed set"),
+            "left-handed": (-1.0, None),
             "not orthogonal": (1.0, "Cartesian, and gimbal axes must be unit length and orthogonal"),
         }
         for name, (sign, error) in cases.items():
@@ -337,7 +343,8 @@ class TestGimbal(unittest.TestCase):
                     model.joint_axis.assign(axes)
                 if error is None:
                     solver = SolverKamino(model)
-                    self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], JointDoFType.CARTESIAN)
+                    expected = JointDoFType.CARTESIAN if sign > 0.0 else JointDoFType.D6
+                    self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], expected)
                 else:
                     with self.assertRaisesRegex(ValueError, error):
                         SolverKamino(model)
@@ -390,6 +397,30 @@ class TestGimbal(unittest.TestCase):
         )
         np.testing.assert_allclose(product.numpy()[0], np.eye(3), atol=1.0e-5)
         np.testing.assert_allclose(power.numpy()[0, 0], power.numpy()[0, 1], atol=1.0e-5)
+
+        # Inside the former damping cutoff, a regular chart must still map
+        # the derivative of its rotation to the authored Euler rates.
+        rates = wp.empty(2, dtype=wp.vec3f, device=self.default_device)
+        for sign, side in ((1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)):
+            with self.subTest(sign=sign, side=side):
+                wp.launch(
+                    _evaluate_reciprocal_rates,
+                    dim=1,
+                    inputs=[wp.vec3f(0.8, side * (np.pi / 2 - 5.0e-4), 0.6), sign],
+                    outputs=[rates],
+                    device=self.default_device,
+                )
+                np.testing.assert_allclose(rates.numpy()[0], (1.0, 0.2, -1.0), atol=3.0e-4)
+                wp.launch(
+                    _evaluate_reciprocal_rates,
+                    dim=1,
+                    inputs=[wp.vec3f(0.8, side * np.pi / 2, 0.6), sign],
+                    outputs=[rates],
+                    device=self.default_device,
+                )
+                result = rates.numpy()
+                self.assertTrue(np.isfinite(result).all())
+                np.testing.assert_allclose(result[1], (0.5, 0.0, 0.5 * side * sign), atol=2.0e-6)
 
     def test_built_gimbal_jacobians_map_body_twists_to_rates(self):
         """Map body twists to authored rates through dense and sparse gimbal Jacobians."""
@@ -500,10 +531,11 @@ class TestGimbal(unittest.TestCase):
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
 @requires(*MUJOCO_MODULES)
-class TestGimbalMJWarp(unittest.TestCase):
+class TestGimbalMJWarp(NewtonTestCase):
     """Compare Kamino and MJWarp through the public Newton state layout."""
 
     def setUp(self):
+        setup_test_output(self)
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)

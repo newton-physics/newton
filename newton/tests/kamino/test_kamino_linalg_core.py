@@ -13,12 +13,13 @@ import newton
 from newton._src.solvers.kamino._src.linalg.core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
+    dense_matrix_layout,
     make_dtype_tolerance,
     prefix_offsets,
     segment_local_indices,
 )
-from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import setup_test_output, setup_tests, test_context
+from newton.tests.unittest_utils import NewtonTestCase
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,10 @@ logger = logging.getLogger(__name__)
 ###
 
 
-class TestLinAlgCorePrefixOffsets(unittest.TestCase):
+class TestLinAlgCorePrefixOffsets(NewtonTestCase):
+    def setUp(self):
+        setup_test_output(self)
+
     def test_prefix_offsets_of_list(self):
         """Return the offset of each block followed by the total size."""
         offsets = prefix_offsets([6, 0, 4, 3], validate_dtype=np.int16)
@@ -52,27 +56,22 @@ class TestLinAlgCorePrefixOffsets(unittest.TestCase):
                 np.testing.assert_array_equal(segment_local_indices(counts), expected)
                 np.testing.assert_array_equal(segment_local_indices(counts, prefix_offsets(counts)), expected)
 
-    def test_dense_offset_overflow(self):
-        """Reject overflowing dense offsets for rectangular and square systems."""
-        cases = (
-            (DenseRectangularMultiLinearInfo, [(46341, 46341), (1, 1)], [(1, 1), (182, 182)]),
-            (DenseSquareMultiLinearInfo, [46341, 1], [1, 182]),
-        )
-        for info_type, dims, int16_dims in cases:
-            with self.subTest(info_type=info_type.__name__):
-                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
-                    info_type().finalize(dimensions=dims, itype=wp.int32)
-                # Every block starts within the index range, but the last one ends past it
-                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
-                    info_type().finalize(dimensions=dims[::-1], itype=wp.int32)
-                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
-                    info_type().finalize(dimensions=int16_dims, itype=wp.int16)
-                info = info_type()
-                info.finalize(dimensions=dims, itype=wp.int64)
-                self.assertEqual(info.mio.numpy()[1], 46341 * 46341)
+    def test_dense_matrix_rows(self):
+        """Check matrix row shapes and vector offset overflow."""
+        for sizes, shape in (([], (0, 0)), ([0], (1, 0)), ([4, 9, 4], (3, 32)), ([2**28] * 8, (8, 2**28))):
+            self.assertEqual(dense_matrix_layout(sizes), shape)
+        for info_type, dims in (
+            (DenseRectangularMultiLinearInfo, [(46341, 46341), (1, 1)]),
+            (DenseSquareMultiLinearInfo, [46341, 1]),
+        ):
+            info = info_type()
+            info.finalize(dimensions=dims, itype=wp.int32)
+            self.assertEqual(info.matrix_shape[0], 2)
+            with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
+                info_type().finalize(dimensions=dims, itype=wp.int16)
 
 
-class TestLinAlgCoreMakeTolerance(unittest.TestCase):
+class TestLinAlgCoreMakeTolerance(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -81,17 +80,7 @@ class TestLinAlgCoreMakeTolerance(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_tolerance_from_defaults(self):
         tol = make_dtype_tolerance()
@@ -138,7 +127,7 @@ class TestLinAlgCoreMakeTolerance(unittest.TestCase):
         self.assertAlmostEqual(tol, wp.float32(np.finfo(np.float32).eps), places=7)
 
 
-class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
+class TestLinAlgCoreDenseMultiLinearRectangularInfo(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -147,17 +136,7 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_single_rectangular_default(self):
         dims = (3, 4)
@@ -166,7 +145,6 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         logger.debug("info:\n%s", info)
         logger.debug("info.maxdim: %s", info.maxdim)
         logger.debug("info.dim: %s", info.dim)
-        logger.debug("info.mio: %s", info.mio)
         logger.debug("info.rvio: %s", info.rvio)
         logger.debug("info.ivio: %s", info.ivio)
         self.assertEqual(info.num_blocks, 1)
@@ -179,14 +157,12 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         self.assertEqual(info.itype, wp.int32)
         self.assertEqual(info.maxdim.shape, (1,))
         self.assertEqual(info.dim.shape, (1,))
-        self.assertEqual(info.mio.shape, (1,))
         self.assertEqual(info.rvio.shape, (1,))
         self.assertEqual(info.ivio.shape, (1,))
         self.assertEqual(info.maxdim.numpy()[0][0], 3)
         self.assertEqual(info.maxdim.numpy()[0][1], 4)
         self.assertEqual(info.dim.numpy()[0][0], 3)
         self.assertEqual(info.dim.numpy()[0][1], 4)
-        self.assertEqual(info.mio.numpy()[0], 0)
         self.assertEqual(info.rvio.numpy()[0], 0)
         self.assertEqual(info.ivio.numpy()[0], 0)
 
@@ -197,7 +173,6 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         logger.debug("info:\n%s", info)
         logger.debug("info.maxdim: %s", info.maxdim)
         logger.debug("info.dim: %s", info.dim)
-        logger.debug("info.mio: %s", info.mio)
         logger.debug("info.rvio: %s", info.rvio)
         logger.debug("info.ivio: %s", info.ivio)
         self.assertEqual(info.num_blocks, 1)
@@ -210,14 +185,12 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         self.assertEqual(info.itype, wp.int64)
         self.assertEqual(info.maxdim.shape, (1,))
         self.assertEqual(info.dim.shape, (1,))
-        self.assertEqual(info.mio.shape, (1,))
         self.assertEqual(info.rvio.shape, (1,))
         self.assertEqual(info.ivio.shape, (1,))
         self.assertEqual(info.maxdim.numpy()[0][0], 3)
         self.assertEqual(info.maxdim.numpy()[0][1], 4)
         self.assertEqual(info.dim.numpy()[0][0], 3)
         self.assertEqual(info.dim.numpy()[0][1], 4)
-        self.assertEqual(info.mio.numpy()[0], 0)
         self.assertEqual(info.rvio.numpy()[0], 0)
         self.assertEqual(info.ivio.numpy()[0], 0)
 
@@ -228,7 +201,6 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         logger.debug("info:\n%s", info)
         logger.debug("info.maxdim: %s", info.maxdim)
         logger.debug("info.dim: %s", info.dim)
-        logger.debug("info.mio: %s", info.mio)
         logger.debug("info.rvio: %s", info.rvio)
         logger.debug("info.ivio: %s", info.ivio)
         self.assertEqual(info.num_blocks, len(dims))
@@ -241,7 +213,6 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
         self.assertEqual(info.itype, wp.int32)
         self.assertEqual(info.maxdim.shape, (len(dims),))
         self.assertEqual(info.dim.shape, (len(dims),))
-        self.assertEqual(info.mio.shape, (len(dims),))
         self.assertEqual(info.rvio.shape, (len(dims),))
         self.assertEqual(info.ivio.shape, (len(dims),))
         for i, (m, n) in enumerate(dims):
@@ -249,12 +220,11 @@ class TestLinAlgCoreDenseMultiLinearRectangularInfo(unittest.TestCase):
             self.assertEqual(info.maxdim.numpy()[i][1], n)
             self.assertEqual(info.dim.numpy()[i][0], m)
             self.assertEqual(info.dim.numpy()[i][1], n)
-            self.assertEqual(info.mio.numpy()[i], sum(d[0] * d[1] for d in dims[:i]))
             self.assertEqual(info.rvio.numpy()[i], sum(d[0] for d in dims[:i]))
             self.assertEqual(info.ivio.numpy()[i], sum(d[1] for d in dims[:i]))
 
 
-class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
+class TestLinAlgCoreDenseMultiLinearSquareInfo(NewtonTestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -263,17 +233,7 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            set_log_level(logging.DEBUG)
-            logger.debug("\n")  # Add newline before test output for better readability
-        else:
-            reset_log_level()
-
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            reset_log_level()
+        setup_test_output(self, verbose=self.verbose)
 
     def test_00_make_single_square_default(self):
         dims = 4
@@ -282,7 +242,6 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         logger.debug("info:\n%s", info)
         logger.debug("info.maxdim: %s", info.maxdim)
         logger.debug("info.dim: %s", info.dim)
-        logger.debug("info.mio: %s", info.mio)
         logger.debug("info.vio: %s", info.vio)
         self.assertEqual(info.num_blocks, 1)
         self.assertEqual(info.dimensions[0], dims)
@@ -293,11 +252,9 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         self.assertEqual(info.itype, wp.int32)
         self.assertEqual(info.maxdim.shape, (1,))
         self.assertEqual(info.dim.shape, (1,))
-        self.assertEqual(info.mio.shape, (1,))
         self.assertEqual(info.vio.shape, (1,))
         self.assertEqual(info.maxdim.numpy()[0], dims)
         self.assertEqual(info.dim.numpy()[0], dims)
-        self.assertEqual(info.mio.numpy()[0], 0)
         self.assertEqual(info.vio.numpy()[0], 0)
 
     def test_01_make_single_square_wp_float64_int64(self):
@@ -307,7 +264,6 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         logger.debug("info:\n%s", info)
         logger.debug("info.maxdim: %s", info.maxdim)
         logger.debug("info.dim: %s", info.dim)
-        logger.debug("info.mio: %s", info.mio)
         logger.debug("info.vio: %s", info.vio)
         self.assertEqual(info.num_blocks, 1)
         self.assertEqual(info.dimensions[0], dims)
@@ -318,11 +274,9 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         self.assertEqual(info.itype, wp.int64)
         self.assertEqual(info.maxdim.shape, (1,))
         self.assertEqual(info.dim.shape, (1,))
-        self.assertEqual(info.mio.shape, (1,))
         self.assertEqual(info.vio.shape, (1,))
         self.assertEqual(info.maxdim.numpy()[0], dims)
         self.assertEqual(info.dim.numpy()[0], dims)
-        self.assertEqual(info.mio.numpy()[0], 0)
         self.assertEqual(info.vio.numpy()[0], 0)
 
     def test_02_make_multiple_square(self):
@@ -332,7 +286,6 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         logger.debug("info:\n%s", info)
         logger.debug("info.maxdim: %s", info.maxdim)
         logger.debug("info.dim: %s", info.dim)
-        logger.debug("info.mio: %s", info.mio)
         logger.debug("info.vio: %s", info.vio)
         self.assertEqual(info.num_blocks, len(dims))
         self.assertEqual(info.dimensions, dims)
@@ -343,13 +296,35 @@ class TestLinAlgCoreDenseMultiLinearSquareInfo(unittest.TestCase):
         self.assertEqual(info.itype, wp.int32)
         self.assertEqual(info.maxdim.shape, (len(dims),))
         self.assertEqual(info.dim.shape, (len(dims),))
-        self.assertEqual(info.mio.shape, (len(dims),))
         self.assertEqual(info.vio.shape, (len(dims),))
         for i, n in enumerate(dims):
             self.assertEqual(info.maxdim.numpy()[i], n)
             self.assertEqual(info.dim.numpy()[i], n)
-            self.assertEqual(info.mio.numpy()[i], sum(d * d for d in dims[:i]))
             self.assertEqual(info.vio.numpy()[i], sum(d for d in dims[:i]))
+
+    def test_03_reject_strided_arrays(self):
+        """Reject arrays whose elements are not adjacent along the last dimension."""
+        dims = [4, 3]
+        for info_type, finalize_dims in (
+            (DenseSquareMultiLinearInfo, dims),
+            (DenseRectangularMultiLinearInfo, [(n, n) for n in dims]),
+        ):
+            with self.subTest(info_type=info_type.__name__):
+                info = info_type()
+                info.finalize(dimensions=finalize_dims, device=self.default_device)
+                rows, cols = info.matrix_shape
+                matrix = wp.zeros((rows + 1, 2 * cols), dtype=wp.float32, device=self.default_device)
+                vector = wp.zeros(2 * sum(dims), dtype=wp.float32, device=self.default_device)
+
+                # Views with a larger row stride remain compatible.
+                self.assertTrue(info.is_matrix_compatible(matrix[:, :cols]))
+                self.assertTrue(info.is_rhs_compatible(vector[: sum(dims)]))
+                self.assertTrue(info.is_input_compatible(vector[: sum(dims)]))
+
+                # Strided views would be misread by raw-pointer block views.
+                self.assertFalse(info.is_matrix_compatible(matrix[:, ::2]))
+                self.assertFalse(info.is_rhs_compatible(vector[::2]))
+                self.assertFalse(info.is_input_compatible(vector[::2]))
 
 
 ###

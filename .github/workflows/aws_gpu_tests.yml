@@ -266,7 +266,8 @@ jobs:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
+        # Bound the host memory that workers accumulate over a run.
+        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 5400 --max-tasks-per-child 10 --no-cache-clear --junit-report-xml rspec.xml ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
 
       - name: Stop CUDA MPS
         if: always() && steps.cuda-mps.outputs.pipe-directory != ''

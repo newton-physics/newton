@@ -17,11 +17,92 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import MUJOCO_MODULES, requires
+from newton.tests.unittest_utils import MUJOCO_MODULES, count_initial_contacts, requires
 from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
 
 
 class TestImportUsdJoints(unittest.TestCase):
+    @requires("pxr.Usd", *MUJOCO_MODULES)
+    def test_scene_filterparent_flag_sets_joint_parent_filter(self):
+        """Honor the PhysicsScene's mjc:flag:filterparent on joints that do not author collisionEnabled (#4693).
+
+        Five parent-child sphere pairs: a fully locked generic joint (a weld, so it keeps its filter
+        under the flag), a generic joint with one free axis, a plain revolute joint, a revolute joint
+        that authors ``physics:collisionEnabled=false`` (an explicit choice wins over the flag), and two
+        revolute joints between one body pair that merge into a D6, one authoring ``collisionEnabled=true``
+        and one unauthored (the flag decides for the unauthored sibling, and the merged joint filters if
+        either does). Newton's pipeline and MuJoCo then agree on which pairs touch.
+        """
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        assets = ("Locked", "Hinged", "Plain", "Authored", "Merged")
+
+        def add_joint(stage, asset, name, joint_type, *, axis=None, free_axes=None, collision_enabled=None):
+            joint = joint_type.Define(stage, f"/{asset}/{name}")
+            joint.CreateBody0Rel().SetTargets([f"/{asset}/Parent"])
+            joint.CreateBody1Rel().SetTargets([f"/{asset}/Child"])
+            joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.1))
+            if free_axes is not None:
+                # a generic joint: every axis not listed is locked
+                for limit_axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
+                    limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), limit_axis)
+                    free = limit_axis in free_axes
+                    limit.CreateLowAttr().Set(-1.0 if free else 1.0)
+                    limit.CreateHighAttr().Set(1.0 if free else -1.0)
+            else:
+                joint.CreateAxisAttr().Set(axis or UsdGeom.Tokens.z)
+            if collision_enabled is not None:
+                joint.CreateCollisionEnabledAttr(collision_enabled)
+
+        def make_stage(scene_flag):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+            if scene_flag is not None:
+                scene.GetPrim().CreateAttribute("mjc:flag:filterparent", Sdf.ValueTypeNames.Bool).Set(scene_flag)
+            for i, asset in enumerate(assets):
+                root = UsdGeom.Xform.Define(stage, f"/{asset}")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                for body, z in (("Parent", 1.0), ("Child", 1.1)):
+                    sphere = UsdGeom.Sphere.Define(stage, f"/{asset}/{body}")
+                    sphere.CreateRadiusAttr(0.2)
+                    UsdGeom.Xformable(sphere).AddTranslateOp().Set(Gf.Vec3d(5.0 * i, 0.0, z))
+                    UsdPhysics.RigidBodyAPI.Apply(sphere.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+            add_joint(stage, "Locked", "Joint", UsdPhysics.Joint, free_axes=())
+            add_joint(stage, "Hinged", "Joint", UsdPhysics.Joint, free_axes=("rotZ",))
+            add_joint(stage, "Plain", "Joint", UsdPhysics.RevoluteJoint)
+            add_joint(stage, "Authored", "Joint", UsdPhysics.RevoluteJoint, collision_enabled=False)
+            add_joint(stage, "Merged", "JointZ", UsdPhysics.RevoluteJoint, collision_enabled=True)
+            add_joint(stage, "Merged", "JointX", UsdPhysics.RevoluteJoint, axis=UsdGeom.Tokens.x)
+            return stage
+
+        def filters(builder):
+            result = {}
+            for i, label in enumerate(builder.joint_label):
+                asset = label.strip("/").split("/")[0]
+                if asset in assets and builder.joint_type[i] != newton.JointType.FREE:
+                    result[asset] = bool(builder.joint_collision_filter_parent[i])
+            return result
+
+        for scene_flag in (False, True, None):
+            with self.subTest(scene_flag=scene_flag):
+                builder = newton.ModelBuilder()
+                builder.add_usd(make_stage(scene_flag))
+                locked = builder.joint_label.index("/Locked/Joint")
+                self.assertEqual(tuple(builder.joint_dof_dim[locked]), (0, 0))
+                opted_out = {"Hinged", "Plain", "Merged"} if scene_flag is False else set()
+                self.assertEqual(filters(builder), {asset: asset not in opted_out for asset in assets})
+                model = builder.finalize(device="cpu")
+                self.assertEqual(len(model.shape_collision_filter_pairs), len(assets) - len(opted_out))
+                # exactly the opted-out pairs touch, in Newton's pipeline and in MuJoCo alike
+                self.assertEqual(count_initial_contacts(model)[:2], (len(opted_out), len(opted_out)))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(make_stage(False), parse_mujoco_options=False)
+        self.assertEqual(filters(builder), dict.fromkeys(assets, True))
+
     @requires("pxr.Usd")
     def test_scene_drive_scale_and_per_import_joint_defaults(self):
         """Use scene drive scaling and keep joint defaults scoped to each import."""
@@ -1642,6 +1723,17 @@ def Xform "Articulation" (
     @requires("pxr.Usd")
     def test_joint_filtering(self):
         """Filter ignored joints and bodies and rebuild the affected articulations."""
+        from pxr import Usd, UsdPhysics
+
+        asset = os.path.join(os.path.dirname(__file__), "assets", "four_link_chain_articulation.usda")
+
+        def disable_joint(joint_path):
+            stage = Usd.Stage.Open(asset)
+            stage.SetEditTarget(stage.GetSessionLayer())
+            UsdPhysics.Joint(stage.GetPrimAtPath(joint_path)).CreateJointEnabledAttr(False)
+            return stage
+
+        joint_disabled = disable_joint("/Articulation/Joint2")
 
         def test_filtering(
             msg,
@@ -1651,12 +1743,16 @@ def Xform "Articulation" (
             expected_joint_types,
             expected_body_keys,
             expected_joint_keys,
+            expected_articulation_keys=None,
+            source=asset,
+            **kwargs,
         ):
             builder = newton.ModelBuilder()
             builder.add_usd(
-                os.path.join(os.path.dirname(__file__), "assets", "four_link_chain_articulation.usda"),
+                source,
                 ignore_paths=ignore_paths,
                 bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                **kwargs,
             )
             self.assertEqual(
                 builder.joint_count,
@@ -1683,6 +1779,8 @@ def Xform "Articulation" (
                 expected_joint_keys,
                 f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_label}",
             )
+            if expected_articulation_keys is not None:
+                self.assertEqual(builder.articulation_label, expected_articulation_keys, msg)
 
         for bodies_follow_joint_ordering in [True, False]:
             test_filtering(
@@ -1779,6 +1877,111 @@ def Xform "Articulation" (
                 expected_joint_types=[newton.JointType.FREE, newton.JointType.REVOLUTE, newton.JointType.REVOLUTE],
                 expected_body_keys=["/Articulation/Body1", "/Articulation/Body2", "/Articulation/Body3"],
                 expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3"],
+            )
+
+            # A path without ".*" is excluded by the USD parser but must filter like a regular expression.
+            test_filtering(
+                "filter out the first body by its path",
+                ignore_paths=["/Articulation/Body0"],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.FREE, newton.JointType.REVOLUTE, newton.JointType.REVOLUTE],
+                expected_body_keys=["/Articulation/Body1", "/Articulation/Body2", "/Articulation/Body3"],
+                expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3"],
+            )
+
+            # a missing joint in the middle of the chain splits off a floating articulation
+            for msg, ignore_paths, source in (
+                ("filter out a middle joint", [".*Joint2"], asset),
+                ("filter out a middle joint by its path", ["/Articulation/Joint2"], asset),
+                ("disable a middle joint", [], joint_disabled),
+            ):
+                test_filtering(
+                    msg,
+                    ignore_paths=ignore_paths,
+                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                    expected_articulation_count=2,
+                    expected_joint_types=[
+                        newton.JointType.FIXED,
+                        newton.JointType.REVOLUTE,
+                        newton.JointType.FREE,
+                        newton.JointType.REVOLUTE,
+                    ],
+                    expected_body_keys=[
+                        "/Articulation/Body0",
+                        "/Articulation/Body1",
+                        "/Articulation/Body2",
+                        "/Articulation/Body3",
+                    ],
+                    expected_joint_keys=[
+                        "/Articulation/Joint0",
+                        "/Articulation/Joint1",
+                        "joint_3",
+                        "/Articulation/Joint3",
+                    ],
+                    expected_articulation_keys=["/Articulation", "/Articulation/Body2"],
+                    source=source,
+                )
+
+            # USD does not list a link that only has a joint to the world among the articulated bodies
+            test_filtering(
+                "disable the joint behind the first body",
+                ignore_paths=[],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=2,
+                expected_joint_types=[
+                    newton.JointType.FIXED,
+                    newton.JointType.FREE,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.REVOLUTE,
+                ],
+                expected_body_keys=[
+                    "/Articulation/Body0",
+                    "/Articulation/Body1",
+                    "/Articulation/Body2",
+                    "/Articulation/Body3",
+                ],
+                expected_joint_keys=["/Articulation/Joint0", "joint_2", "/Articulation/Joint2", "/Articulation/Joint3"],
+                expected_articulation_keys=["/Articulation", "/Articulation/Body1"],
+                source=disable_joint("/Articulation/Joint1"),
+            )
+
+            # a missing body in the middle of the chain leaves the body behind it floating
+            for ignore_paths in ([".*Body2"], ["/Articulation/Body2"]):
+                test_filtering(
+                    "filter out a middle body",
+                    ignore_paths=ignore_paths,
+                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                    expected_articulation_count=2,
+                    expected_joint_types=[newton.JointType.FIXED, newton.JointType.REVOLUTE, newton.JointType.FREE],
+                    expected_body_keys=["/Articulation/Body0", "/Articulation/Body1", "/Articulation/Body3"],
+                    expected_joint_keys=["/Articulation/Joint0", "/Articulation/Joint1", "joint_3"],
+                    expected_articulation_keys=["/Articulation", "/Articulation/Body3"],
+                )
+
+        # The temporary legacy flag keeps the joint to a body ignored by its path, attached to the world,
+        # and drops the body behind an ignored one.
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            test_filtering(
+                "legacy: filter out the first body by its path",
+                ignore_paths=["/Articulation/Body0"],
+                bodies_follow_joint_ordering=True,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.REVOLUTE] * 3,
+                expected_body_keys=["/Articulation/Body1", "/Articulation/Body2", "/Articulation/Body3"],
+                expected_joint_keys=["/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/Joint3"],
+                legacy_ignore_paths=True,
+            )
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            test_filtering(
+                "legacy: filter out a middle body",
+                ignore_paths=[".*Body2"],
+                bodies_follow_joint_ordering=True,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.FIXED, newton.JointType.REVOLUTE],
+                expected_body_keys=["/Articulation/Body0", "/Articulation/Body1"],
+                expected_joint_keys=["/Articulation/Joint0", "/Articulation/Joint1"],
+                legacy_ignore_paths=True,
             )
 
     @requires("pxr.Usd")

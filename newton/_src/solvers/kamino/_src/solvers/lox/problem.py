@@ -22,7 +22,7 @@ import warp as wp
 from ......sim import BodyFlags, JointType
 from ...core.bodies import update_body_inertias
 from ...core.data import DataKamino
-from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode
+from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode, JointDoFType
 from ...core.model import ModelKamino
 from ...core.types import to_warp_int32_array, vec6f
 from ...geometry.contacts import ContactsKamino
@@ -31,6 +31,7 @@ from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.joints import compute_joints_data
 from ...kinematics.limits import LimitsKamino
 from ...linalg import prefix_offsets, segment_local_indices
+from ...utils.graph import connected_component_labels
 from .problem_kernels import (
     _accumulate_aligned_joint_wrenches,
     _accumulate_block_structural_effective_mass,
@@ -92,26 +93,6 @@ wp.set_module_options({"enable_backward": False})
 ###
 # Functions
 ###
-
-
-def _connected_component_labels(
-    count: int,
-    bid_a: np.ndarray,
-    bid_b: np.ndarray,
-) -> np.ndarray:
-    """Compute minimum-vertex component labels with vectorized label propagation."""
-    labels = np.arange(count, dtype=np.int32)
-    if bid_a.size == 0:
-        return labels
-    while True:
-        endpoint_labels = np.minimum(labels[bid_a], labels[bid_b])
-        updated = labels.copy()
-        np.minimum.at(updated, bid_a, endpoint_labels)
-        np.minimum.at(updated, bid_b, endpoint_labels)
-        updated = updated[updated]
-        if np.array_equal(updated, labels):
-            return labels
-        labels = updated
 
 
 def _welded_body_paths(
@@ -239,6 +220,7 @@ class LOXProblem:
         self.contact_compliance = contact_compliance
         self.contact_implicit_restitution = contact_implicit_restitution
         self.contact_spatial_friction = contact_spatial_friction
+        self._has_rod_joints = bool(np.any(model.joints.dof_type.numpy() == JointDoFType.ROD))
 
         if jacobians._J_cts is None or jacobians._J_dofs is None:
             raise RuntimeError("Sparse Jacobians must be finalized before constructing the LOX problem.")
@@ -568,6 +550,23 @@ class LOXProblem:
             joint_translation_dead_zone=self._joint_translation_dead_zone,
             joint_rotation_dead_zone=self._joint_rotation_dead_zone,
         )
+        # The tension of stretched rods stiffens the rotation of their bodies
+        if self._has_rod_joints and self._data.dynamic_rows.count > 0:
+            self.system.add_rod_geometric_stiffness(
+                self.model.joints.wid,
+                self.model.joints.dof_type,
+                self.model.joints.dofs_offset,
+                self.model.joints.coords_offset,
+                self.model.joints.bid_B,
+                self.model.joints.bid_F,
+                data.joints.q_j,
+                self.model.joints.q_j_rest,
+                data.joints.p_j,
+                data.bodies.q_i,
+                self._data.dynamic_rows,
+                time_step,
+                prescribed_twist=self.body_velocity_begin,
+            )
 
     def prepare_patch_schur(self) -> None:
         """Build the joint neighbors and joint rows of each body for the patch Schur weights.
@@ -680,10 +679,10 @@ class LOXProblem:
                 data.body_block,
                 data.body_local,
                 data.info.dim,
-                data.info.mio,
                 data.info.vio,
                 system.inverse_permutation,
                 system.matrix,
+                system.single_body_matrix,
                 self._incidence_offset,
                 self._incidence_kind,
                 self._incidence_row,
@@ -700,10 +699,10 @@ class LOXProblem:
                 data.body_block,
                 data.body_local,
                 data.info.dim,
-                data.info.mio,
                 data.info.vio,
                 system.inverse_permutation,
                 system.matrix,
+                system.single_body_matrix,
                 self._data.body_weight_enabled,
                 self._diagonal_block,
                 self._diagonal_lower,
@@ -727,7 +726,6 @@ class LOXProblem:
                 data.body_block,
                 data.body_local,
                 data.info.dim,
-                data.info.mio,
                 data.info.vio,
                 system.inverse_permutation,
                 self._data.body_weight_enabled,
@@ -738,7 +736,13 @@ class LOXProblem:
                 sigma,
                 matrix_scale,
             ],
-            outputs=[system.matrix, data.weight, data.inverse_weight, data.single_body_inverse],
+            outputs=[
+                system.matrix,
+                system.single_body_matrix,
+                data.weight,
+                data.inverse_weight,
+                data.single_body_inverse,
+            ],
             device=self.device,
         )
 
@@ -803,6 +807,7 @@ class LOXProblem:
                 rotation_tolerance,
                 joints.wid,
                 joints.dof_type,
+                joints.d6_axes,
                 joints.coords_offset,
                 joints.dofs_offset,
                 joints.kinematic_cts_offset,
@@ -1111,7 +1116,7 @@ class LOXProblem:
         fixed_joint = tree_joint & (joint_type == int(JointType.FIXED)) & (joint_child >= 0)
         fixed_to_world = joint_child[fixed_joint & (joint_parent < 0)]
         fixed_pair = fixed_joint & (joint_parent >= 0)
-        labels = _connected_component_labels(body_count, joint_parent[fixed_pair], joint_child[fixed_pair])
+        labels = connected_component_labels(body_count, joint_parent[fixed_pair], joint_child[fixed_pair])
         welded_to_world = np.isin(labels, labels[fixed_to_world])
 
         # Bodies welded to a kinematic body move rigidly with the first kinematic body of their island
@@ -1152,7 +1157,7 @@ class LOXProblem:
         if dynamic_np.size == 0:
             return ()
         edges_np = np.asarray(body_edges, dtype=np.int32).reshape((-1, 2))
-        labels = _connected_component_labels(
+        labels = connected_component_labels(
             self.model.size.sum_of_num_bodies,
             edges_np[:, 0],
             edges_np[:, 1],

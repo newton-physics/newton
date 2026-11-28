@@ -12,18 +12,21 @@ from functools import cache
 import warp as wp
 
 from .....sim.articulation import transform_3d_rotational_axes
+from ....rod_kernels import compute_geometric_rod_kappa_cached_z, measure_rod_bend_twist_z
 from ..core.data import DataKamino
 from ..core.joints import (
+    D6JointAxes,
     DofActuationPath,
     JointActuationType,
     JointCorrectionMode,
     JointDoFType,
     clamp_joint_effort_wp,
 )
-from ..core.math import FLOAT32_MAX, quat_log, quat_twist_angle
+from ..core.math import FLOAT32_MAX, quat_left_jacobian_inverse, quat_log, quat_positive, quat_twist_angle
 from ..core.model import ModelKamino
 from ..core.types import (
     vec1f,
+    vec6f,
     vec7f,
 )
 
@@ -224,7 +227,7 @@ def correct_joint_coords_in_place(
         return
     elif dof_type == JointDoFType.CYLINDRICAL:
         _correct_rotational_coord_in_place(coords, coords_ref, offset + 1)
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         _correct_quat_coord_in_place(coords, coords_ref, offset + 3)
     elif dof_type == JointDoFType.REVOLUTE:
         _correct_rotational_coord_in_place(coords, coords_ref, offset)
@@ -284,13 +287,140 @@ def gimbal_reciprocal_axes(coords: wp.vec3f, third_axis_sign: wp.float32) -> wp.
         coords[1],
     )
     c12 = wp.cross(a1, a2)
+    det = wp.dot(a0, c12)
+    if wp.abs(det) < 1.0e-7:
+        # At float32 rank loss, use the minimum-norm rate split. Regular
+        # charts retain their exact inverse, including near the singularity.
+        sign = wp.sign(wp.dot(a0, a2))
+        shared = (a0 + sign * a2) / wp.length_sq(a0 + sign * a2)
+        return wp.matrix_from_cols(shared, a1, sign * shared)
     c02 = wp.cross(a0, a2)
     c01 = wp.cross(a0, a1)
     return wp.matrix_from_cols(
-        c12 / wp.dot(a0, c12),
+        c12 / det,
         c02 / wp.dot(a1, c02),
         c01 / wp.dot(a2, c01),
     )
+
+
+@wp.func
+def d6_dof_axis(linear_count: int, dof: int) -> int:
+    return dof if dof < linear_count else 3 + dof - linear_count
+
+
+@wp.func
+def d6_locked_axis(linear_count: int, angular_count: int, row: int) -> int:
+    axis = linear_count + row
+    return axis if axis < 3 else axis + angular_count
+
+
+@wp.func
+def d6_angular_coordinates(
+    axes: D6JointAxes, relative_q: wp.quatf, reference: wp.vec3f, use_reference: bool
+) -> tuple[wp.vec3f, wp.mat33f]:
+    """Return angular coordinates and the columns that map angular velocity to their rates.
+
+    The active angular coordinates precede the locked residuals. The returned
+    covectors are expressed in the authored parent anchor frame.
+    """
+    count = axes.angular_count
+    if count == 0:
+        return quat_log(relative_q), wp.transpose(quat_left_jacobian_inverse(relative_q))
+
+    basis_q = wp.quat_from_matrix(axes.angular)
+    q = wp.quat_inverse(basis_q) * relative_q * basis_q
+    if count == 1:
+        q = quat_positive(q)
+        twist_norm_sq = q.x * q.x + q.w * q.w
+        twist_axis = wp.vec3f(1.0, 0.0, 0.0)
+        inverse_twist = wp.quat_identity(dtype=wp.float32)
+        angle = float(0.0)
+        twist_gradient = wp.vec3f(0.0)
+        if twist_norm_sq > 1.0e-8:
+            inv_norm = 1.0 / wp.sqrt(twist_norm_sq)
+            inverse_twist = wp.quatf(-q.x * inv_norm, 0.0, 0.0, q.w * inv_norm)
+            angle = 2.0 * wp.atan2(q.x, q.w)
+            # Differentiate 2 atan2(q.x, q.w) under a left perturbation of q.
+            twist_gradient = wp.vec3f(
+                1.0,
+                (q.w * q.z + q.x * q.y) / twist_norm_sq,
+                (q.x * q.z - q.w * q.y) / twist_norm_sq,
+            )
+        elif use_reference:
+            # The twist is indeterminate when the hinge axes are antiparallel.
+            # Freeze it at the reference angle and let the swing rows restore alignment.
+            angle = reference[0]
+            inverse_twist = wp.quat_from_axis_angle(twist_axis, -angle)
+        if use_reference:
+            angle = correct_rotational_coord(angle, reference[0])
+        swing = q * inverse_twist
+        # With R = R_swing R_twist, subtract the transported twist rate
+        # before differentiating the swing log. The log keeps a usable
+        # gradient as the swing angle approaches pi.
+        swing_velocity = wp.identity(3, dtype=wp.float32) - wp.outer(wp.quat_rotate(swing, twist_axis), twist_gradient)
+        swing_gradient = quat_left_jacobian_inverse(swing) @ swing_velocity
+        residual = quat_log(swing)
+        covectors = wp.matrix_from_cols(twist_gradient, wp.vec3f(swing_gradient[1]), wp.vec3f(swing_gradient[2]))
+        return wp.vec3f(angle, residual[1], residual[2]), axes.angular @ covectors
+
+    coords = wp.quat_to_euler(q, 2, 1, 0)
+    if count == 2:
+        # Keep the locked middle angle on its principal branch.
+        covectors = axes.angular @ gimbal_reciprocal_axes(coords, 1.0)
+        angles = wp.vec3f(coords[0], coords[2], coords[1])
+        if use_reference:
+            angles[0] = correct_rotational_coord(angles[0], reference[0])
+            angles[1] = correct_rotational_coord(angles[1], reference[1])
+        return angles, wp.matrix_from_cols(
+            wp.vec3f(covectors[:, 0]), wp.vec3f(covectors[:, 2]), wp.vec3f(covectors[:, 1])
+        )
+    coords[2] *= axes.third_axis_sign
+    if use_reference:
+        coords = select_gimbal_coords(q, reference, axes.third_axis_sign)
+    return coords, axes.angular @ gimbal_reciprocal_axes(coords, axes.third_axis_sign)
+
+
+@wp.func
+def d6_angular_reference(axes: D6JointAxes, coords_offset: int, joint_q: wp.array[wp.float32]) -> wp.vec3f:
+    reference = wp.vec3f(0.0)
+    for i in range(axes.angular_count):
+        reference[i] = joint_q[coords_offset + axes.linear_count + i]
+    return reference
+
+
+@wp.func
+def write_d6_joint_motion(
+    axes: D6JointAxes,
+    correction: int,
+    dofs_offset: int,
+    coords_offset: int,
+    position: wp.vec3f,
+    orientation: wp.quatf,
+    twist: wp.spatial_vectorf,
+    reference_q: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
+    joint_qd: wp.array[wp.float32],
+) -> tuple[vec6f, vec6f]:
+    """Write authored coordinates and rates and return the full six-axis measurement."""
+    reference = d6_angular_reference(axes, coords_offset, reference_q)
+    angles, angular_covectors = d6_angular_coordinates(
+        axes, orientation, reference, correction != JointCorrectionMode.NONE
+    )
+    linear_covectors_t = wp.transpose(axes.linear)
+    translation = linear_covectors_t @ position
+    linear_rates = linear_covectors_t @ wp.spatial_top(twist)
+    angular_rates = wp.transpose(angular_covectors) @ wp.spatial_bottom(twist)
+    values = vec6f(*translation, *angles)
+    rates = vec6f(*linear_rates, *angular_rates)
+    count = axes.linear_count + axes.angular_count
+    for i in range(count):
+        axis = d6_dof_axis(axes.linear_count, i)
+        value = values[axis]
+        if i >= axes.linear_count and correction == JointCorrectionMode.TWOPI:
+            value = wp.mod(value, wp.tau)
+        joint_q[coords_offset + i] = value
+        joint_qd[dofs_offset + i] = rates[axis]
+    return values, rates
 
 
 @wp.func
@@ -606,6 +736,8 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
     def _write_joint_data(
         # Inputs:
         dof_type: wp.int32,
+        d6_axes: wp.array[D6JointAxes],
+        joint_id: wp.int32,
         cts_offset: wp.int32,
         dofs_offset: wp.int32,
         coords_offset: wp.int32,
@@ -624,6 +756,8 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
 
         Args:
             dof_type: The type of joint DoF.
+            d6_axes: Precomputed bases for general D6 joints.
+            joint_id: The index of the joint.
             cts_offset: Index offset of the joint constraints.
             dofs_offset: Index offset of the joint DoFs.
             coords_offset: Index offset of the joint coordinates.
@@ -631,13 +765,32 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
             j_q_j: 4D unit-quaternion of the joint-local relative rotation.
             j_u_j: 6D vector of the joint-local relative twist.
             data_r_j: Flat array of joint constraint residuals.
-            data_dr_j: Flat array of joint constraint residuals.
+            data_dr_j: Flat array of joint constraint residual rates.
             data_q_j: Flat array of joint DoF coordinates.
             data_dq_j: Flat array of joint DoF velocities.
         """
         # TODO: Use wp.static to include conditionals at compile time based on the joint types present in the builder
 
-        if dof_type == JointDoFType.REVOLUTE:
+        if dof_type == JointDoFType.D6:
+            axes = d6_axes[joint_id]
+            values, rates = write_d6_joint_motion(
+                axes,
+                wp.static(int(correction)),
+                dofs_offset,
+                coords_offset,
+                j_r_j,
+                j_q_j,
+                j_u_j,
+                q_j_p,
+                data_q_j,
+                data_dq_j,
+            )
+            if cts_offset >= 0:
+                for i in range(6 - axes.linear_count - axes.angular_count):
+                    axis = d6_locked_axis(axes.linear_count, axes.angular_count, i)
+                    data_r_j[cts_offset + i] = values[axis]
+                    data_dr_j[cts_offset + i] = rates[axis]
+        elif dof_type == JointDoFType.REVOLUTE:
             wp.static(make_typed_write_joint_data(JointDoFType.REVOLUTE, correction))(
                 cts_offset,
                 dofs_offset,
@@ -772,7 +925,7 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
                 data_dq_j,
             )
 
-        elif dof_type == JointDoFType.FREE:
+        elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
             wp.static(make_typed_write_joint_data(JointDoFType.FREE))(
                 cts_offset,
                 dofs_offset,
@@ -869,6 +1022,34 @@ def compute_joint_pose_and_relative_motion(
 
 
 @wp.func
+def rod_joint_relative_twist(
+    T_B_j: wp.transformf,
+    T_F_j: wp.transformf,
+    u_B_j: wp.spatial_vectorf,
+    u_F_j: wp.spatial_vectorf,
+    q_Bj: wp.quatf,
+) -> wp.spatial_vectorf:
+    """Return the joint velocity of a rod joint in Newton's convention.
+
+    The linear part is the velocity of the Follower center of mass relative to the Base body at that
+    point, and the angular part is the relative angular velocity, both in the joint frame on the Base
+    body, as :func:`newton.eval_ik` defines for ``JointType.ROD``.
+
+    Args:
+        T_B_j: The absolute center-of-mass pose of the Base body, in world coordinates.
+        T_F_j: The absolute center-of-mass pose of the Follower body, in world coordinates.
+        u_B_j: The absolute twist of the Base body, in world coordinates.
+        u_F_j: The absolute twist of the Follower body, in world coordinates.
+        q_Bj: The rotation of the joint frame on the Base body, in world coordinates.
+    """
+    omega_B_j = wp.spatial_bottom(u_B_j)
+    r_BF = wp.transform_get_translation(T_F_j) - wp.transform_get_translation(T_B_j)
+    v_j = wp.quat_rotate_inv(q_Bj, wp.spatial_top(u_F_j) - wp.spatial_top(u_B_j) - wp.cross(omega_B_j, r_BF))
+    omega_j = wp.quat_rotate_inv(q_Bj, wp.spatial_bottom(u_F_j) - omega_B_j)
+    return wp.spatial_vectorf(*v_j, *omega_j)
+
+
+@wp.func
 def joint_pd_spherical_position_error(
     coords_offset: wp.int32,
     data_joint_q_j: wp.array[wp.float32],
@@ -891,6 +1072,42 @@ def joint_pd_spherical_position_error(
 
 
 @wp.func
+def joint_rod_strain_error(
+    coords_offset: wp.int32,
+    data_joint_q_j: wp.array[wp.float32],
+    joint_q_rest: wp.array[wp.float32],
+) -> vec6f:
+    """Return the 6D strain error of a rod joint, from its relative pose to its structural rest pose.
+
+    The shear and stretch errors are the differences of the joint translations in the joint frame
+    of the base body. The bend and twist errors are the discrete rod bend and twist, relative to
+    those of the rest rotation.
+    """
+    q_j = wp.quatf(
+        data_joint_q_j[coords_offset + 3],
+        data_joint_q_j[coords_offset + 4],
+        data_joint_q_j[coords_offset + 5],
+        data_joint_q_j[coords_offset + 6],
+    )
+    q_j_rest = wp.quatf(
+        joint_q_rest[coords_offset + 3],
+        joint_q_rest[coords_offset + 4],
+        joint_q_rest[coords_offset + 5],
+        joint_q_rest[coords_offset + 6],
+    )
+    rest = measure_rod_bend_twist_z(wp.quat_identity(dtype=wp.float32), wp.normalize(q_j_rest))
+    kappa = compute_geometric_rod_kappa_cached_z(wp.quat_identity(dtype=wp.float32), q_j, rest.kb_world, rest.twist)
+    return vec6f(
+        joint_q_rest[coords_offset + 0] - data_joint_q_j[coords_offset + 0],
+        joint_q_rest[coords_offset + 1] - data_joint_q_j[coords_offset + 1],
+        joint_q_rest[coords_offset + 2] - data_joint_q_j[coords_offset + 2],
+        -kappa[0],
+        -kappa[1],
+        -kappa[2],
+    )
+
+
+@wp.func
 def compute_and_write_joint_implicit_dynamics(
     # Constants:
     dt: wp.float32,
@@ -908,6 +1125,7 @@ def compute_and_write_joint_implicit_dynamics(
     model_joint_tau_j_max: wp.array[wp.float32],
     model_joint_dof_act_types: wp.array[wp.int32],
     model_joint_dof_act_paths: wp.array[wp.int32],
+    model_joint_q_j_rest: wp.array[wp.float32],
     data_joint_q_j: wp.array[wp.float32],
     data_joint_dq_j: wp.array[wp.float32],
     data_joint_tau_j: wp.array[wp.float32],
@@ -924,6 +1142,10 @@ def compute_and_write_joint_implicit_dynamics(
     q_j_err_spherical = wp.vec3f(0.0)
     if dof_type == JointDoFType.SPHERICAL:
         q_j_err_spherical = joint_pd_spherical_position_error(coords_offset, data_joint_q_j, data_joint_q_j_ref)
+    q_j_err_rod = vec6f(0.0)
+    if dof_type == JointDoFType.ROD:
+        # Rods measure their strain from the structural rest pose of the model
+        q_j_err_rod = joint_rod_strain_error(coords_offset, data_joint_q_j, model_joint_q_j_rest)
 
     for j in range(num_dynamic_cts):
         dynamic_cts_offset_j = dynamic_cts_offset + j
@@ -951,13 +1173,20 @@ def compute_and_write_joint_implicit_dynamics(
         pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
         if dof_type == JointDoFType.SPHERICAL:
             q_j_err = q_j_err_spherical[axis]
+        elif dof_type == JointDoFType.ROD:
+            q_j_err = q_j_err_rod[axis]
         else:
             coord = coords_offset + axis
             q_j_err = data_joint_q_j_ref[coord] - data_joint_q_j[coord]
 
         m_j = a_j + dt * b_j
         tau_j_tot = 0.0
-        if include_actuation:
+        if dof_type == JointDoFType.ROD:
+            # Rod rows are implicit elastic and damping elements on the rod strain, loaded by the
+            # bounded external joint force as on the rod DoFs without rows
+            m_j += dt * k_d_j + dt * dt * k_p_j
+            tau_j_tot = clamp_joint_effort_wp(tau_j, model_joint_tau_j_max[dofs_offset_j]) + k_p_j * q_j_err
+        elif include_actuation:
             tau_j_tot = tau_j
             if act_type == JointActuationType.FORCE:
                 tau_j_tot += pd_tau_j_ff
@@ -1092,6 +1321,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_time_dt: wp.array[wp.float32],
         model_joint_wid: wp.array[wp.int32],
         model_joint_dof_type: wp.array[wp.int32],
+        model_joint_d6_axes: wp.array[D6JointAxes],
         model_joint_dof_act_types: wp.array[wp.int32],
         model_joint_coords_offset: wp.array[wp.int32],
         model_joint_dofs_offset: wp.array[wp.int32],
@@ -1113,6 +1343,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_joint_dynamic_cts_axis: wp.array[wp.int32],
         model_joint_effort_cts_axis: wp.array[wp.int32],
         model_joint_dof_act_paths: wp.array[wp.int32],
+        model_joint_q_j_rest: wp.array[wp.float32],
         data_body_q_i: wp.array[wp.transformf],
         data_body_u_i: wp.array[wp.spatial_vectorf],
         data_joint_tau_j: wp.array[wp.float32],
@@ -1175,6 +1406,8 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         p_j, j_r_j, j_q_j, j_u_j = compute_joint_pose_and_relative_motion(
             T_B_j, T_F_j, u_B_j, u_F_j, B_r_Bj, F_r_Fj, X_Bj, X_Fj
         )
+        if dof_type == JointDoFType.ROD:
+            j_u_j = rod_joint_relative_twist(T_B_j, T_F_j, u_B_j, u_F_j, wp.transform_get_rotation(p_j))
 
         # Store the absolute pose of the joint frame in world coordinates
         data_joint_p_j[jid] = p_j
@@ -1182,6 +1415,8 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # Store the joint constraint residuals and motion
         wp.static(make_write_joint_data(correction))(
             dof_type,
+            model_joint_d6_axes,
+            jid,
             kinematic_cts_offset,
             dofs_offset,
             coords_offset,
@@ -1212,6 +1447,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
             model_joint_tau_j_max,
             model_joint_dof_act_types,
             model_joint_dof_act_paths,
+            model_joint_q_j_rest,
             data_joint_q_j,
             data_joint_dq_j,
             data_joint_tau_j,
@@ -1383,6 +1619,7 @@ def compute_joints_data(
             model.time.dt,
             model.joints.wid,
             model.joints.dof_type,
+            model.joints.d6_axes,
             model.joints.dof_act_types,
             model.joints.coords_offset,
             model.joints.dofs_offset,
@@ -1404,6 +1641,7 @@ def compute_joints_data(
             model.joints.dynamic_cts_axis,
             model.joints.effort_cts_axis,
             model.joints.dof_act_paths,
+            model.joints.q_j_rest,
             data.bodies.q_i,
             data.bodies.u_i,
             data.joints.tau_j,

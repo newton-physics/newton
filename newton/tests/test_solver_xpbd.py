@@ -365,6 +365,72 @@ def test_prismatic_joint_retains_extension_in_parent_moment_arm(test, device):
     )
 
 
+def test_revolute_joint_frame_axis_does_not_change_motion(test, device):
+    """Drive the same two-link arm through joint frames with different hinge axes."""
+    half_length = 0.1
+    axes = {
+        "X": (1.0, 0.0, 0.0),
+        "-X": (-1.0, 0.0, 0.0),
+        "Y": (0.0, 1.0, 0.0),
+        "Z": (0.0, 0.0, 1.0),
+        "oblique": (-1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0),
+    }
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for axis in axes.values():
+        # every arm lies along world X and hinges about world Z
+        frame = wp.quat_between_vectors(wp.vec3(*axis), wp.vec3(0.0, 0.0, 1.0))
+        parent = -1
+        parent_anchor = wp.vec3(0.0)
+        joints = []
+        for link, mass in enumerate((0.067, 1.0)):
+            inertia = mass * half_length**2 / 3.0
+            body = builder.add_link(
+                xform=wp.transform(wp.vec3((2.0 * link + 1.0) * half_length, 0.0, 0.0)),
+                mass=mass,
+                inertia=wp.mat33(np.diag((0.01 * inertia, inertia, inertia))),
+            )
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    body,
+                    parent_xform=wp.transform(parent_anchor, frame),
+                    child_xform=wp.transform(wp.vec3(-half_length, 0.0, 0.0), frame),
+                    axis=axis,
+                    target_ke=20.0,
+                    target_kd=0.05,
+                )
+            )
+            parent = body
+            parent_anchor = wp.vec3(half_length, 0.0, 0.0)
+        builder.add_articulation(joints)
+
+    model = builder.finalize(device=device)
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state0)
+    control.joint_target_q.assign(np.tile(np.array((-0.8, 0.6), dtype=np.float32), len(axes)))
+
+    solver = newton.solvers.SolverXPBD(model)
+    body_q = []
+    for step in range(100):
+        solver.step(state0, state1, control, None, 0.002)
+        state0, state1 = state1, state0
+        if step in (0, 99):
+            body_q.append(state0.body_q.numpy().reshape(len(axes), 2, 7).copy())
+
+    for name, first_q, last_q in zip(axes, *body_q, strict=True):
+        with test.subTest(axis=name):
+            # the links start unrotated, so quaternion x and y hold the rotation out of the hinge plane
+            test.assertLess(np.abs(first_q[:, 3:5]).max(), 1.0e-5, msg="Joint rows pushed the arm out of its plane")
+            if name == "oblique":
+                # the unconverged solve depends on how the frame is rolled about the hinge
+                continue
+            test.assertLess(np.abs(last_q[:, 3:5]).max(), 1.0e-4, msg="Arm left its hinge plane")
+            np.testing.assert_allclose(last_q, body_q[1][0], atol=1.0e-4, err_msg="Arm moved unlike the X-axis arm")
+
+
 def test_optional_control_and_contacts(test, device):
     """Test that XPBD accepts omitted control and contact data.
 
@@ -781,38 +847,46 @@ def test_particle_shape_restitution_does_not_launch_resting_particle(test, devic
     test.assertAlmostEqual(vy, 0.0, delta=1.0e-6)
 
 
-def test_compute_body_velocity_from_position_delta_legacy_path(test, device):
-    """Retain the deprecated full-step angular-velocity reconstruction."""
+def test_slow_body_velocities_are_preserved(test, device):
+    """Keep slow free and jointed rigid-body velocities instead of zeroing them.
+
+    Without gravity, contacts, or drives, a free body and a hinge spinning about
+    an axis through its center of mass must keep their initial velocities.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = builder.add_body()
-    builder.add_shape_sphere(body, radius=0.1)
+    free_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(free_body, hx=0.2, hy=0.1, hz=0.05)
+    hinge_body = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(hinge_body, hx=0.2, hy=0.1, hz=0.05)
+    hinge = builder.add_joint_revolute(
+        parent=-1,
+        child=hinge_body,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 1.0), wp.quat_identity()),
+    )
+    builder.add_articulation([hinge])
     model = builder.finalize(device=device)
 
-    solver_incremental = newton.solvers.SolverXPBD(model)
-    solver_legacy = newton.solvers.SolverXPBD(model)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        solver_legacy.compute_body_velocity_from_position_delta = True
-
-    state_incremental_in = model.state()
-    state_incremental_out = model.state()
-    state_legacy_in = model.state()
-    state_legacy_out = model.state()
+    # Speeds below 1e-4 m/s and 1e-4 rad/s, e.g. slow drift in zero gravity.
+    speed = 5.0e-5
     qd = np.zeros((model.body_count, 6), dtype=np.float32)
-    qd[body, 5] = 10.0
-    state_incremental_in.body_qd.assign(qd)
-    state_legacy_in.body_qd.assign(qd)
+    qd[free_body] = (speed, 0.0, 0.0, 0.0, 0.0, speed)
+    qd[hinge_body] = (0.0, 0.0, 0.0, 0.0, 0.0, speed)
 
-    dt = 0.1
-    state_incremental_in.clear_forces()
-    state_legacy_in.clear_forces()
-    solver_incremental.step(state_incremental_in, state_incremental_out, None, None, dt)
-    solver_legacy.step(state_legacy_in, state_legacy_out, None, None, dt)
+    state_0 = model.state()
+    state_1 = model.state()
+    state_0.body_qd.assign(qd)
+    solver = newton.solvers.SolverXPBD(model, angular_damping=0.0)
 
-    wz_incremental = float(state_incremental_out.body_qd.numpy()[body, 5])
-    wz_legacy = float(state_legacy_out.body_qd.numpy()[body, 5])
-    test.assertAlmostEqual(wz_incremental, 10.0, delta=1.0e-4)
-    test.assertAlmostEqual(wz_legacy, 8.944272, delta=1.0e-4)
+    for _ in range(10):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, None, None, 1.0e-2)
+        state_0, state_1 = state_1, state_0
+
+    body_qd = state_0.body_qd.numpy()
+    np.testing.assert_allclose(body_qd[free_body], qd[free_body], rtol=0.0, atol=1.0e-3 * speed)
+    # joint frames turned onto the hinge axis round by a few 1e-8 rad per step on CUDA
+    np.testing.assert_allclose(body_qd[hinge_body], qd[hinge_body], rtol=0.0, atol=0.2 * speed)
 
 
 def test_restitution_flag_does_not_change_body_integration(test, device):
@@ -1786,30 +1860,6 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     )
 
 
-def test_xpbd_update_contacts_requires_force_attribute(test, device):
-    """update_contacts should raise ValueError when contacts.force is not allocated."""
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.25), wp.quat_identity()))
-    builder.add_shape_sphere(body=body, radius=0.25)
-    model = builder.finalize(device=device)
-
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
-    state_in = model.state()
-    state_out = model.state()
-    control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
-    contacts = collision_pipeline.contacts()
-
-    state_in.clear_forces()
-    collision_pipeline.collide(state_in, contacts)
-    solver.step(state_in, state_out, control, contacts, 1.0 / 60.0)
-
-    test.assertIsNone(contacts.force)
-    with test.assertWarns(DeprecationWarning), test.assertRaises(ValueError):
-        solver.update_contacts(contacts)
-
-
 def _build_single_body_pendulum(joint_kind: str, parent_kinematic: bool, gravity: float):
     """Build a single dynamic body suspended from world (or a kinematic body).
 
@@ -2661,6 +2711,52 @@ def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
 devices = get_test_devices()
 
 
+def test_xpbd_body_pair_reduction_on_curved_support(test, device):
+    """Settle a compound sole on curved support without losing post-prediction contact coverage."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, mu=0.6, gap=0.02)
+    body = builder.add_body(
+        xform=wp.transform((0.0, 0.0, 0.014), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3) * 0.001),
+    )
+    for i in range(9):
+        for j in range(9):
+            builder.add_shape_sphere(
+                body,
+                xform=wp.transform(((i - 4) * 0.012, (j - 4) * 0.012, 0.0), wp.quat_identity()),
+                radius=0.01,
+                cfg=cfg,
+            )
+    ground = builder.add_shape_sphere(-1, xform=wp.transform((0.0, 0.0, -0.3), wp.quat_identity()), radius=0.3, cfg=cfg)
+    model = builder.finalize(device=device)
+    pairs = wp.array([(ground, i) for i in range(ground)], dtype=wp.vec2i, device=device)
+    outcomes = []
+    for reduced in (False, True):
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=pairs,
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig() if reduced else None,
+        )
+        contacts = pipeline.contacts()
+        state, out = model.state(), model.state()
+        control = model.control()
+        solver = newton.solvers.SolverXPBD(model, iterations=8)
+        angular_tail = wp.empty(60, dtype=wp.spatial_vector, device=device)
+        for step in range(240):
+            state.clear_forces()
+            pipeline.collide(state, contacts)
+            solver.step(state, out, control, contacts, 1.0 / 240)
+            state, out = out, state
+            if step >= 180:
+                wp.copy(angular_tail, state.body_qd, dest_offset=step - 180, src_offset=body, count=1)
+        angular_speeds = np.linalg.norm(angular_tail.numpy()[:, 3:], axis=1)
+        outcomes.append((float(state.body_q.numpy()[body, 2]), float(np.mean(angular_speeds, dtype=np.float64))))
+    test.assertLess(abs(outcomes[1][0] - outcomes[0][0]), 1e-5)
+    test.assertLess(outcomes[1][1], max(2 * outcomes[0][1], 0.01))
+
+
 class TestSolverXPBD(unittest.TestCase):
     def test_restitution_is_disabled_by_default(self):
         """Keep restitution disabled by default without a deprecation warning."""
@@ -2678,19 +2774,6 @@ class TestSolverXPBD(unittest.TestCase):
         builder.add_rod(rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1))
         with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
-
-    def test_compute_body_velocity_from_position_delta_is_deprecated(self):
-        model = newton.ModelBuilder().finalize()
-        solver = newton.solvers.SolverXPBD(model)
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            self.assertFalse(solver.compute_body_velocity_from_position_delta)
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            solver.compute_body_velocity_from_position_delta = True
-
-        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
-            self.assertTrue(solver.compute_body_velocity_from_position_delta)
 
 
 add_function_test(
@@ -2729,6 +2812,14 @@ add_function_test(
     TestSolverXPBD,
     "test_prismatic_joint_retains_extension_in_parent_moment_arm",
     test_prismatic_joint_retains_extension_in_parent_moment_arm,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_revolute_joint_frame_axis_does_not_change_motion",
+    test_revolute_joint_frame_axis_does_not_change_motion,
     devices=devices,
     check_output=False,
 )
@@ -2808,16 +2899,16 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
-    "test_compute_body_velocity_from_position_delta_legacy_path",
-    test_compute_body_velocity_from_position_delta_legacy_path,
+    "test_particle_shape_restitution_does_not_launch_resting_particle",
+    test_particle_shape_restitution_does_not_launch_resting_particle,
     devices=devices,
     check_output=False,
 )
 
 add_function_test(
     TestSolverXPBD,
-    "test_particle_shape_restitution_does_not_launch_resting_particle",
-    test_particle_shape_restitution_does_not_launch_resting_particle,
+    "test_slow_body_velocities_are_preserved",
+    test_slow_body_velocities_are_preserved,
     devices=devices,
     check_output=False,
 )
@@ -2934,14 +3025,6 @@ add_function_test(
     check_output=False,
 )
 
-add_function_test(
-    TestSolverXPBD,
-    "test_xpbd_update_contacts_requires_force_attribute",
-    test_xpbd_update_contacts_requires_force_attribute,
-    devices=devices,
-    check_output=False,
-)
-
 for _joint_kind in ("revolute", "ball", "fixed"):
     for _parent in ("world", "kinematic"):
         _name = f"test_xpbd_parent_force_{_joint_kind}_to_{_parent}"
@@ -3037,6 +3120,15 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_mimic_warns_for_unsupported_joint_types",
     test_xpbd_mimic_warns_for_unsupported_joint_types,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_body_pair_reduction_on_curved_support",
+    test_xpbd_body_pair_reduction_on_curved_support,
     devices=devices,
     check_output=False,
 )

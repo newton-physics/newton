@@ -616,20 +616,20 @@ def guard_convergence(status: wp.array[SCCStatus]):
 @wp.kernel
 def dense_matvec(
     dim: wp.array[wp.int32],
-    mio: wp.array[wp.int32],
     vio: wp.array[wp.int32],
-    matrix: wp.array[wp.float32],
+    matrix_storage: wp.array2d[wp.float32],
     mask: wp.array[wp.bool],
     x: wp.array[wp.float32],
     y: wp.array[wp.float32],
 ):
     """Apply the existing dense Delassus matrix to active worlds."""
     wid, row = wp.tid()
+    matrix = matrix_storage[wid]
     if not mask[wid] or row >= dim[wid]:
         return
     value = wp.float32(0.0)
     for column in range(dim[wid]):
-        value += matrix[mio[wid] + row * dim[wid] + column] * x[vio[wid] + column]
+        value += matrix[row * dim[wid] + column] * x[vio[wid] + column]
     y[vio[wid] + row] = value
 
 

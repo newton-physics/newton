@@ -434,8 +434,9 @@ The bit layout is:
      - Newton generated more rigid contacts than ``contacts.rigid_contact_max``.
    * - 17
      - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`
-     - Newton generated more rigid contacts than the solver's shared
-       ``naconmax`` buffer can consume.
+     - Newton contacts exceeded the solver's shared ``naconmax`` capacity.
+       When the solver packs eligible rows, expired thin-wall recovery
+       contacts do not count toward this limit.
 
 The Newton flags describe shared contact buffers and are repeated in every
 world's mask when the global count exceeds capacity. They do not identify which
@@ -489,10 +490,8 @@ container, and pass it through the step:
 
 .. code-block:: python
 
-   imu = newton.sensors.SensorIMU(model, sites="imu_*", request_state_attributes=False)
-   contact_sensor = newton.sensors.SensorContact(
-       model, sensing_shapes="foot_*", request_contact_attributes=False
-   )
+   imu = newton.sensors.SensorIMU(model, sites="imu_*")
+   contact_sensor = newton.sensors.SensorContact(model, sensing_shapes="foot_*")
 
    kinds = imu.solver_observable_kinds | contact_sensor.solver_observable_kinds
    # Use contacts from a pipeline configured with a compatible capacity.
@@ -563,8 +562,7 @@ forces are not frame-averaged forces; averaging or integration requires sampling
 the relevant substeps. Contact rows may change between collision updates.
 
 Selection controls observable writes and optional diagnostic work, not calculations
-needed by the dynamics or other requested fields. Legacy extended attributes
-can still request their own work. MuJoCo currently keeps its post-constraint RNE
+needed by the dynamics or other requested fields. MuJoCo currently keeps its post-constraint RNE
 stage enabled after its first request, so omitting those observables does not
 necessarily avoid that internal computation on subsequent steps.
 
@@ -586,7 +584,8 @@ contacts, and rigid-soft particle, edge, and face records against rigid shapes -
    or pass a selection without ``CONTACT_F`` to skip reporting on earlier substeps.
 3. Rows ``[0, rigid_contact_max)`` hold the body-body contacts (``i < rigid_contact_count``) when
    VBD integrates the rigid bodies: the force on body 0 by body 1 with its torque about body 0's
-   center of mass, the convention shared by every solver writing ``contact_f``. With
+   center of mass, the convention shared by every solver writing ``contact_f``. The torque
+   includes any torsional and rolling friction couple. With
    ``integrate_with_external_rigid_solver=True``, VBD's rigid rows are zero: request and consume
    the external solver's forces through its own observable container. Rows
    ``rigid_contact_max + i`` for ``i < soft_contact_count`` hold the rigid-soft records. Rows
@@ -611,8 +610,7 @@ by the iterations.
 
 Soft self-contact forces are not exported. :class:`~newton.sensors.SensorContact` reads the
 rigid-contact rows, so it reports VBD's body-body contacts, but it does not read the soft rows.
-Construct it with ``request_contact_attributes=False`` and pass the container as
-``sensor.update(state_out, contacts, observables=observables)``.
+Pass the container as ``sensor.update(state_out, contacts, observables=observables)``.
 
 .. testcode::
 
@@ -667,21 +665,22 @@ Construct it with ``request_contact_attributes=False`` and pass the container as
 
    True True 1 True True
 
-Deprecated extended attributes
-------------------------------
+Migrating from extended attributes
+----------------------------------
 
-.. deprecated:: 1.7
+.. versionchanged:: 1.9
 
-   Request solver-produced arrays from the solver instead of extending
-   ``State`` or ``Contacts``.
+   The extended ``State`` and ``Contacts`` attributes deprecated in Newton 1.7
+   were removed.
 
-The following compatibility paths remain available for a deprecation period:
+Solver-produced arrays are no longer allocated on ``State`` or ``Contacts``.
+Replace each removed API as follows:
 
 .. list-table::
    :header-rows: 1
    :widths: 37 63
 
-   * - Deprecated destination
+   * - Removed API
      - Replacement
    * - ``State.body_qdd``
      - ``SolverBase.ObservableKind.BODY_QDD`` and ``observables.body_qdd``
@@ -698,27 +697,16 @@ The following compatibility paths remain available for a deprecation period:
    * - ``Model.request_contact_attributes()`` and
        ``ModelBuilder.request_contact_attributes()``
      - ``solver.observables(kinds={...}, contacts=contacts)``
-   * - ``solver.update_contacts()``
+   * - Force export through ``solver.update_contacts()``
      - Pass contact observables to ``solver.step(..., observables=observables)``
+   * - ``SensorIMU(request_state_attributes=...)`` and
+       ``SensorContact(request_contact_attributes=...)``
+     - Omit the argument and pass ``observables=`` to the sensor's ``update()``
 
-The request methods and legacy force export via ``update_contacts()`` emit
-:class:`DeprecationWarning`. MuJoCo and Kamino keep geometry-only ``update_contacts()``
-supported without a warning when ``contacts.force`` is ``None``.
-``SensorIMU`` and ``SensorContact`` retain their legacy
-``request_state_attributes=True`` and ``request_contact_attributes=True`` defaults
-during the deprecation period; explicitly pass ``False`` when using solver observables.
-Setting either option to ``True`` is deprecated in Newton 1.7 and emits one
-sensor-specific warning at the caller's location. Passing ``False`` does not
-emit a warning or request legacy fields.
+MuJoCo and Kamino keep geometry-only ``update_contacts()`` for their native
+contact detection.
 
-``Contacts.EXTENDED_ATTRIBUTES`` and direct ``requested_attributes={"force"}``
-remain compatibility APIs. New integrations should not allocate
-``Contacts.force``.
-
-``State.EXTENDED_ATTRIBUTES`` remains a compatibility registry for the three
-deprecated state destinations listed above.
-
-This deprecation does not affect custom attributes registered with
+This removal does not affect custom attributes registered with
 :meth:`ModelBuilder.add_custom_attribute <newton.ModelBuilder.add_custom_attribute>`.
 Existing custom model, state, and control data remain supported; the migration
 only covers built-in solver-produced diagnostics. The new ``CONTACT*`` frequencies

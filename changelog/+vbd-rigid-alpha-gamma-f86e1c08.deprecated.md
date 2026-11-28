@@ -1,0 +1,1 @@
+Deprecate the `SolverVBD` argument `rigid_avbd_gamma`; an explicit value is still applied and emits a `NewtonDeprecationWarning`. Omit it: rigid-constraint multipliers are retained across steps with the default factor of 0.999.
