@@ -14,7 +14,6 @@ import warp as wp
 
 import newton
 import newton.usd
-from newton import NewtonDeprecationWarning
 from newton.sensors import SensorCamera
 from newton.tests.unittest_utils import (
     assert_np_equal,
@@ -247,7 +246,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
                 model = builder.finalize(device="cpu")
                 sensor = SensorCamera(model)
                 transforms = wp.array([wp.transform(wp.vec3(0.25, 0.25, 2.0), wp.quat_identity())], dtype=wp.transformf)
-                rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.5)
+                rays = SensorCamera.compute_camera_rays_pinhole(1, 1, fov=0.5)
                 image = sensor.allocate_image_normal(1, 1, 1)
                 sensor.update(model.state(), transforms, rays, normal_image=image)
                 normal = image.numpy()[0, 0, 0]
@@ -354,23 +353,6 @@ class TestUsdMeshHelpers(unittest.TestCase):
             stage.GetRootLayer().Save()
 
             mesh = newton.usd.get_mesh(stage_path, root_path="/Root", compute_inertia=False)
-            # The positional shim maps arguments by position; a new trailing option must not shift them.
-            for source in (stage_path, stage.GetPrimAtPath("/Root/A")):
-                with self.subTest(source=type(source).__name__), self.assertWarns(NewtonDeprecationWarning):
-                    positional = newton.usd.get_mesh(
-                        source,
-                        False,
-                        False,
-                        None,
-                        "vertex_splitting",
-                        25.0,
-                        False,
-                        False,
-                        "/Root",
-                        compute_inertia=False,
-                    )
-                np.testing.assert_array_equal(positional.vertices, mesh.vertices)
-                np.testing.assert_array_equal(positional.indices, mesh.indices)
 
         self.assertEqual(len(mesh.vertices), 6)
         assert_np_equal(mesh.indices, np.array([0, 1, 2, 3, 4, 5], dtype=np.int32))
@@ -444,17 +426,58 @@ class TestUsdMeshHelpers(unittest.TestCase):
                         else:
                             self.assertIsNone(uv_indices)
                         if not load_uvs:
-                            # No split: include even the unused point in the identity map.
-                            np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
+                            # No split: the identity map without the point no face references.
+                            np.testing.assert_array_equal(point_indices, [0, 1, 2, 3])
 
         mesh, uv_indices, point_indices = newton.usd.get_mesh(
             prim=source.GetPrim(), return_uv_indices=True, return_source_point_indices=True, compute_inertia=False
         )
         self.assertIsNone(uv_indices)
-        np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
+        np.testing.assert_array_equal(point_indices, [0, 1, 2, 3])
         mesh, uv_indices = newton.usd.get_mesh(source.GetPrim(), return_uv_indices=True, compute_inertia=False)
         self.assertIsNone(uv_indices)
         np.testing.assert_array_equal(mesh.indices, [2, 1, 0, 3, 2, 0])
+
+    def test_get_mesh_drops_points_no_face_references(self):
+        """Drop points no face references with their per-point data, but keep a face-less point cloud."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        source = UsdGeom.Mesh.Define(stage, "/Quad")
+        points = np.array([(0, 0, 0), (9, 9, 9), (1, 0, 0), (1, 1, 0), (0, 1, 0)], dtype=np.float32)
+        normals = np.array([(0, 0, 1), (1, 0, 0), (0, 1, 0), (0, 0, -1), (0, -1, 0)], dtype=np.float32)
+        uvs = np.array([(0, 0), (0.5, 0.5), (1, 0), (1, 1), (0, 1)], dtype=np.float32)
+        source.CreatePointsAttr(points)
+        source.CreateFaceVertexCountsAttr([4])
+        source.CreateFaceVertexIndicesAttr([0, 2, 3, 4])
+        source.CreateNormalsAttr(normals)
+        source.SetNormalsInterpolation("vertex")
+        UsdGeom.PrimvarsAPI(source).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "vertex").Set(uvs)
+
+        mesh, uv_indices, point_indices = newton.usd.get_mesh(
+            source.GetPrim(),
+            load_normals=True,
+            load_uvs=True,
+            return_uv_indices=True,
+            return_source_point_indices=True,
+        )
+
+        used = [0, 2, 3, 4]
+        np.testing.assert_array_equal(point_indices, used)
+        np.testing.assert_array_equal(mesh.vertices, points[used])
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 2, 3])
+        np.testing.assert_array_equal(mesh.normals, normals[used])
+        np.testing.assert_array_equal(mesh.uvs, uvs[used])
+        np.testing.assert_array_equal(uv_indices, mesh.indices)
+
+        source.GetFaceVertexIndicesAttr().Set([0, 2, 3, -1])
+        with self.assertRaisesRegex(ValueError, "negative index -1"):
+            newton.usd.get_mesh(source.GetPrim(), compute_inertia=False)
+
+        source.GetFaceVertexCountsAttr().Set([])
+        source.GetFaceVertexIndicesAttr().Set([])
+        mesh = newton.usd.get_mesh(source.GetPrim(), compute_inertia=False)
+        np.testing.assert_array_equal(mesh.vertices, points)
 
     def test_get_mesh_applies_root_relative_transform_and_stage_units(self):
         """Apply root-relative transforms and authored stage units."""

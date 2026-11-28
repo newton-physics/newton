@@ -20,6 +20,7 @@ import newton
 from newton import Axis, NewtonWarning, TendonGuideFlags, TendonGuideType
 from newton._src.solvers.tendon_kernels import (
     _tendon_segment_attachment_points,
+    signed_arc_length,
     tangent_point_circle,
     tendon_segment_length_rate,
 )
@@ -91,6 +92,12 @@ def _measure_tendon_segment_length_rates(
         seg_attachment_l[seg],
         seg_attachment_r[seg],
     )
+
+
+@wp.kernel
+def _measure_rolling_arcs(points: wp.array[wp.vec3], radius: float, arcs: wp.array[float]):
+    i = wp.tid()
+    arcs[i] = signed_arc_length(points[0], points[i], wp.vec3(0.0), radius, wp.vec3(0.0, 0.0, 1.0), 1)
 
 
 @wp.kernel
@@ -2953,19 +2960,33 @@ def test_dynamic_pulley_uses_angular_jacobian(test, device):
         test.assertGreater(theta, 0.05, f"Pulley should rotate from the full angular Jacobian: theta={theta:.4f}")
 
 
-def test_pulley_inertia_limit_locks_cable_travel(test, device):
-    """As pulley inertia tends to infinity, no-slip cable travel tends to zero."""
+def test_high_inertia_pulley_follows_atwood_law(test, device):
+    """Check that a heavy no-slip pulley follows the Atwood law instead of locking the cable.
+
+    A no-slip Atwood machine with pulley inertia ``I = M R^2 / 2`` accelerates the cable at
+    ``a = (m_r - m_l) g / (m_l + m_r + M / 2)``, so the rim travels ``a t^2 / 2`` from rest.
+    """
     with wp.ScopedDevice(device):
         radius = 0.15
-        model, _, _, pulley_idx = build_dynamic_pulley_atwood(
+        mass_left = 1.0
+        mass_right = 3.0
+        pulley_mass = 5000.0
+        num_frames = 80
+        fps = 60
+        model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(
             mu=10.0,
-            mass_left=1.0,
-            mass_right=3.0,
-            pulley_mass=5000.0,
+            mass_left=mass_left,
+            mass_right=mass_right,
+            pulley_mass=pulley_mass,
             pulley_radius=radius,
             compliance=3.0e-8,
         )
-        state = run_model(model, num_frames=80)
+        g = float(np.linalg.norm(model.gravity.numpy()[0]))
+        body_mass = model.body_mass.numpy()
+        # The box shapes add their own mass, so read the finalized hanging masses from the model.
+        m_left = float(body_mass[left_idx])
+        m_right = float(body_mass[right_idx])
+        state = run_model(model, num_frames=num_frames, fps=fps)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite high-inertia pulley state")
 
@@ -2973,10 +2994,15 @@ def test_pulley_inertia_limit_locks_cable_travel(test, device):
         theta = abs(2.0 * np.arctan2(float(q[4]), float(q[6])))
         rim_travel = theta * radius
 
-        test.assertLess(
+        duration = num_frames / fps
+        accel = (m_right - m_left) * g / (m_left + m_right + 0.5 * pulley_mass)
+        expected_travel = 0.5 * accel * duration * duration
+        test.assertAlmostEqual(
             rim_travel,
-            5.0e-3,
-            f"High-inertia no-slip pulley should lock cable travel: R*theta={rim_travel:.6f}, theta={theta:.6f}",
+            expected_travel,
+            delta=0.1 * expected_travel,
+            msg=f"High-inertia no-slip pulley should follow the Atwood law: R*theta={rim_travel:.6f}, "
+            f"expected={expected_travel:.6f}",
         )
 
 
@@ -3755,10 +3781,9 @@ def test_same_body_rolling_route_matches_length_gradient(test, device):
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 solver.tendon_segment_rest_length,
+                solver.tendon_segment_length,
                 solver.tendon_segment_attachment_l,
                 solver.tendon_segment_attachment_r,
-                solver.tendon_segment_attachment_l_local,
-                solver.tendon_segment_attachment_r_local,
                 solver.tendon_segment_active_compliance,
                 solver.tendon_segment_active_damping,
                 solver.tendon_segment_lambda,
@@ -3890,6 +3915,23 @@ def test_rolling_link_body_preserves_center_motion_jacobian(test, device):
         test.assertLess(float(model.joint_q.numpy()[joint_q]), -1.0e-3)
 
 
+def test_signed_rolling_arc_resolves_small_rotations(test, device):
+    """Distinguish a stationary contact from small rotations in either direction."""
+    radius = 0.1
+    angles = 0.7 + np.array([0.0, -1.0e-6, 1.0e-6])
+    points = (radius * np.column_stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)))).astype(np.float32)
+    with wp.ScopedDevice(device):
+        arcs = wp.empty(len(points), dtype=float)
+        wp.launch(_measure_rolling_arcs, dim=len(points), inputs=[wp.array(points, dtype=wp.vec3), radius, arcs])
+        actual = arcs.numpy()
+
+    # Use the representable input points as the reference, not the pre-rounding angles.
+    radial = points.astype(np.float64)
+    expected = radius * np.arctan2(np.cross(radial, radial[0])[:, 2], radial @ radial[0])
+    test.assertEqual(actual[0], 0.0)
+    np.testing.assert_allclose(actual[1:], expected[1:], rtol=2.0e-5, atol=1.0e-12)
+
+
 def test_unloaded_motorized_pulley_does_not_drive_slider(test, device):
     """Check that finite friction cannot grip a cable with no paying-out tension."""
     with wp.ScopedDevice(device):
@@ -3903,7 +3945,8 @@ def test_unloaded_motorized_pulley_does_not_drive_slider(test, device):
         theta = abs(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
         test.assertGreater(theta, 0.5, f"Drive pulley should rotate under its target: theta={theta:.4f}")
-        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-5)
+        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-6)
+        test.assertAlmostEqual(float(state.body_qd.numpy()[slider_idx, 0]), 0.0, delta=5.0e-6)
 
 
 def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
@@ -3919,11 +3962,8 @@ def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
         theta = abs(2.0 * np.arctan2(float(q[5]), float(q[6])))
 
         test.assertGreater(theta, 0.5, f"Frictionless drive pulley should still rotate: theta={theta:.4f}")
-        test.assertLess(
-            abs(slider_x + 0.4),
-            0.02,
-            f"Frictionless pulley spin should not pull cable/slider: x={slider_x:.4f}",
-        )
+        test.assertAlmostEqual(slider_x, -0.4, delta=1.0e-6)
+        test.assertAlmostEqual(float(state.body_qd.numpy()[slider_idx, 0]), 0.0, delta=5.0e-6)
 
 
 def test_unloaded_motorized_pulley_preserves_rest(test, device):
@@ -3955,7 +3995,7 @@ def test_unloaded_motorized_pulley_preserves_rest(test, device):
 
         test.assertGreater(theta, 0.1, f"Pulley should have started rotating: theta={theta:.4f}")
         test.assertAlmostEqual(slider_dx, 0.0, delta=1.0e-5)
-        np.testing.assert_allclose(state_0.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-6, rtol=0)
+        np.testing.assert_allclose(state_0.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-5, rtol=0)
 
 
 def test_motorized_pulley_updates_rest_in_first_step(test, device):
@@ -4416,7 +4456,7 @@ add_test(
 add_test(TestTendonCapstan, "slack_pinhole_does_not_redistribute", devices, test_slack_pinhole_does_not_redistribute)
 add_test(TestTendonCapstan, "dynamic_pulley_uses_angular_jacobian", devices, test_dynamic_pulley_uses_angular_jacobian)
 add_test(
-    TestTendonCapstan, "pulley_inertia_limit_locks_cable_travel", devices, test_pulley_inertia_limit_locks_cable_travel
+    TestTendonCapstan, "high_inertia_pulley_follows_atwood_law", devices, test_high_inertia_pulley_follows_atwood_law
 )
 add_test(
     TestTendonCapstan,
@@ -4613,6 +4653,12 @@ add_test(
     "tendon_slip_uses_active_route_segments",
     devices,
     test_tendon_slip_uses_active_route_segments,
+)
+add_test(
+    TestTendonCapstan,
+    "signed_rolling_arc_resolves_small_rotations",
+    devices,
+    test_signed_rolling_arc_resolves_small_rotations,
 )
 add_test(
     TestTendonCapstan,

@@ -59,8 +59,10 @@ The importer reverses a swapped D6 joint, or single-axis joints merged into one
 D6 joint, the same way when the joint has no rotational axis, or one rotational
 axis with every translational axis parallel to it. Negating three translational
 axes flips their handedness, so a swapped D6 joint with X, Y, and Z translational
-axes gets a left-handed axis set, which :class:`~newton.solvers.SolverKamino`
-rejects. Newton cannot reverse any other swapped D6 or merged joint. It keeps
+axes gets a left-handed axis set. :class:`~newton.solvers.SolverKamino` supports
+this layout with its default ``use_fk_solver=False`` setting; its optional
+forward-kinematics solver requires a right-handed Cartesian axis set.
+Newton cannot reverse any other swapped D6 or merged joint. It keeps
 the authored axes and emits a :class:`~newton.NewtonWarning`, because
 any limits, drives, or initial state may act in the mirrored direction. Author
 the joint with the rigid body as ``physics:body1`` to avoid this. A swapped spherical joint keeps its axes, so its ``joint_q`` holds the
@@ -207,10 +209,9 @@ That is the full extent of the vendor support -- the resolver does not translate
 OmniPhysics/PhysX applied schemas (such as ``PhysxDeformableSurfaceAPI``), renamed attributes,
 concrete attachment prims, pose purposes, or hierarchy conventions. A native Omni/PhysX
 deformable asset that does not apply the AOUSD simulation APIs is not recognized as a
-deformable and imports as ordinary (static) geometry. One temporary exception: a TetMesh
-material that authors its values only under the vendor namespaces is still read without a
-resolver, with a ``DeprecationWarning``, so existing assets keep their stiffness and density
-during the deprecation window.
+deformable and imports as ordinary (static) geometry. A TetMesh material that authors its
+values only under the vendor namespaces is not read without a resolver; ``add_usd()`` warns
+about it when the material does not apply ``PhysicsVolumeDeformableMaterialAPI``.
 
 Supported subset
 ~~~~~~~~~~~~~~~~

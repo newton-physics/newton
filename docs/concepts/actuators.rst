@@ -697,15 +697,17 @@ computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
 Newton solver that provides one. MuJoCo's free and ball joints use different
 coordinates from Newton's, so pass the state as well; the response then
-converts them at that pose.
+converts them at that pose. The solver's step does not factorize its inertia by
+default, so factorize it before refreshing the response.
 
 .. code-block:: python
 
    def solve_inverse(x, y):
-       # x = M^-1 y, using the factorization the solver already built
+       # x = M^-1 y, using the factorization of the solver's inertia
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
    # Simulation loop, in place of response.refresh(sim_state)
+   mujoco_warp.factor_m(solver.mjw_model, solver.mjw_data)
    response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the
@@ -718,8 +720,10 @@ solve's iteration count, line-search length and convergence tolerances.
 The following built-in drives support the implicit mode:
 :class:`~newton.actuators.DrivePD`,
 :class:`~newton.actuators.DrivePID`,
-:class:`~newton.actuators.DriveNeuralMLP` and
-:class:`~newton.actuators.DriveNeuralLSTM`.
+:class:`~newton.actuators.DriveNeuralMLP`,
+:class:`~newton.actuators.DriveNeuralLSTM` and
+:class:`~newton.actuators.DriveNeuralGRU`.
+
 The neural drives enter the solve as a per-step linearization of the
 network, whose slopes come from a Warp autodiff pass over the loaded network.
 
@@ -727,7 +731,7 @@ Limitations of the implicit mode.  In the cases marked *error*,
 :meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
 ``NotImplementedError`` instead of falling back silently:
 
-* **Other drives** (error), e.g. :class:`~newton.actuators.DriveNeuralGRU`:
+* **Other drives** (error):
   they define no :attr:`~newton.actuators.DriveBase.evaluate_force` law for
   the solve.
 * **Motors** (error): the solve does not model the motor stage, e.g.
@@ -989,7 +993,7 @@ Each applied API schema becomes one component:
    * - ``NewtonActuatorDelayAPI``, ``NewtonActuatorEncoderAPI`` with ``newton:outputJoint``
      - :class:`InputProcessorDelay`, :class:`InputProcessorEncoder`
    * - A ``NewtonConstantResistanceBattery`` prim, targeted by the actuator's
-       ``newton:battery`` relationship
+       ``newton:supply`` relationship
      - :class:`BatteryConstantResistance`, added with
        :meth:`~newton.ModelBuilder.add_battery`
 

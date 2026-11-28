@@ -1,0 +1,1 @@
+Fix `newton.usd.get_mesh()` and `ModelBuilder.add_usd()` keeping the points of a USD mesh that no face references. Such points extended the convex hull, bounding box, bounding sphere, and collision radius of the imported shape; they are now dropped when the mesh has faces.

@@ -17,6 +17,8 @@ Success criteria:
   between them initially.
 - The weights move under gravity and all three pulleys rotate as the cable travels without explosive
   stretching or disconnection.
+- The box lands on the ground before the sphere reaches P1; the sphere stays below P1 and settles
+  hanging from it instead of being thrown over the pulley.
 
 Runs:
 - `python -m newton.examples tendon_3d_routing`
@@ -55,7 +57,10 @@ class Example:
         self.p2_pos = wp.vec3(0.0, 0.0, 2.25)
         self.p3_pos = wp.vec3(self.r3, -self.r3, 3.55)
         self.left_start_pos = wp.vec3(-2.0 * self.r1, self.r1, 1.55)
-        self.right_start_pos = wp.vec3(2.0 * self.r3, -self.r3, 1.55)
+        # Start the heavier box low enough that it lands before the rising sphere
+        # reaches P1. Otherwise the sphere's momentum, and the spinning pulleys,
+        # throw it over P1, which the fixed-winding roller cannot represent.
+        self.right_start_pos = wp.vec3(2.0 * self.r3, -self.r3, 0.6)
 
         s = np.sin(np.pi / 4)
         c = np.cos(np.pi / 4)
@@ -294,6 +299,9 @@ class Example:
     def test_post_step(self):
         self._record_motion_sample()
         assert_tendon_total_length(self, rel_tol=0.06, allow_slack=True)
+        sphere_top = float(self.state_0.body_q.numpy()[3][2]) + 0.10
+        p1_bottom = float(self.p1_pos[2]) - self.r1
+        assert sphere_top < p1_bottom, f"Sphere was thrown up to P1: top z={sphere_top:.3f}"
         if self.sim_time < self.frame_dt * 1.5:
             att_l, att_r = get_tendon_attachment_worlds(self.solver, self.model, self.state_0)
             for i in range(self.model.tendon_segment_count):

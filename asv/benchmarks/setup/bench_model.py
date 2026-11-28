@@ -399,6 +399,9 @@ class FastInitializeViewerGL:
 
 class FastInitializeModelSensorCamera(_InitializeModelSensorCamera):
     params = (["franka_cabinet", "quadruped"], [256])
+    # The time differs more between processes than between samples, so sample two processes.
+    rounds = 2
+    repeat = 2
 
 
 class FastInitializeModelStackedBoxes:

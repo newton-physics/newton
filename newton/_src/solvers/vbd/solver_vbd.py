@@ -44,8 +44,14 @@ from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
 from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
-from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
+from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
+from .joint_mimic_kernels import (
+    JointMimicData,
+    accumulate_joint_mimics,
+    seed_joint_mimic_rho,
+    update_joint_mimic_duals,
+)
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -66,6 +72,7 @@ from .particle_vbd_kernels import (
     solve_elasticity,
     step_particle_body_attachment_lambda_rho,
     update_velocity,
+    vbd_apply_particle_kinematic_targets,
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
@@ -257,7 +264,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           is read live. After changing enable flags, call
           :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact
-          conditioning. Structural-slot material (``rigid_joint_linear_ke``/
+          conditioning and clear mimic history. Structural-slot material (``rigid_joint_linear_ke``/
           ``rigid_joint_angular_ke``), constraint layout, and non-ROD drive/limit
           rest-angle offsets are captured at construction; rebuild ``SolverVBD``
           after changing them.
@@ -281,8 +288,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           including six-component world-frame wrenches for ROD joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
-          :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
+          :attr:`~newton.Model.joint_target_mode`, and equality constraints.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
+          They contribute implicit finite-stiffness rows to the body solve, using
+          ``rigid_joint_linear_ke`` or ``rigid_joint_angular_ke`` for each follower coordinate.
+          Rows whose follower or reference coordinate is within about 6 degrees of a multi-axis D6
+          gimbal lock are softened to stay finite, including linear followers of angular references.
+          After changing mimic properties, call :meth:`notify_model_changed` with
+          :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to clear mimic history.
+          If the solver was constructed without supported mimics, rebuild it after adding the first one.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -297,7 +311,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         - Attachments are compliant-ALM rows with a limit-row penalty: a finite
           ``stiffness`` keeps its physical spring offset under load, while infinite
           stiffness is the hard limit of the same row and ignores ``damping``.
-          Multipliers are retained across steps with ``rigid_avbd_gamma``. Finite
+          Multipliers are retained across steps, scaled by 0.999 per step by default. Finite
           iterations can leave residual error, especially for conflicting constraints.
         - Both endpoints must be integrated by this solver. Attachments are not supported
           with ``integrate_with_external_rigid_solver=True``.
@@ -453,7 +467,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_avbd_alpha: float | None = None,  # Shared alpha override; None uses zero
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override
         rigid_avbd_contact_alpha: float | None = None,  # Body-body contact alpha override
-        rigid_avbd_gamma: float = 0.999,  # Per-step decay for persisted lambda
+        rigid_avbd_gamma: float | None = None,  # Per-step decay for persisted lambda; None uses 0.999
         # Rigid body - contacts
         rigid_contact_history: bool | None = None,  # Body-body contact numeric warm-start
         rigid_contact_damping_bidirectional: bool = False,  # Body-body contact damping also while separating
@@ -561,19 +575,32 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``None`` raises :class:`TypeError`.
 
                 .. deprecated:: 1.9
-            rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
-                Controls both joints and body-body contacts when neither class-specific
+            rigid_avbd_alpha: Deprecated; omit it. C0 stabilization strength (``C_stab = C - alpha * C0``).
+                Range: [0, 1]. Controls both joints and body-body contacts when neither class-specific
                 override (``rigid_avbd_joint_alpha`` / ``rigid_avbd_contact_alpha``) is set.
                 ``None`` uses ``0.0`` for both constraint classes (the raw material residual).
-            rigid_avbd_joint_alpha: Joint-specific alpha override. ``None`` falls back to
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
+            rigid_avbd_joint_alpha: Deprecated; omit it. Joint-specific alpha override. ``None`` falls back to
                 ``rigid_avbd_alpha`` when set, otherwise to ``0.0``.
-            rigid_avbd_contact_alpha: Body-body contact alpha override. ``None`` falls back
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
+            rigid_avbd_contact_alpha: Deprecated; omit it. Body-body contact alpha override. ``None`` falls back
                 to ``rigid_avbd_alpha`` when set, otherwise ``0.0`` (authored
                 contact stiffness applies to the raw residual).
                 Alpha is stabilization only; retention is set separately by
                 ``rigid_avbd_gamma``.
-            rigid_avbd_gamma: Per-step retention factor for persisted lambda in joints,
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
+            rigid_avbd_gamma: Deprecated; omit it. Per-step retention factor for persisted lambda in joints,
                 particle-body attachments, and validated contacts. Lower values discard history faster.
+                ``None`` uses ``0.999``.
+                An explicit value is still applied and emits a :class:`~newton.NewtonDeprecationWarning`.
+
+                .. deprecated:: 1.9
             rigid_contact_history: Whether to persist body-body numeric contact state
                 across steps using ``Contacts.rigid_contact_match_index``. Matched rows
                 restore their normal multiplier. With latest
@@ -607,11 +634,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_soft_contact_use_log_barrier: Whether body-particle normal contacts use the same C2
                 log-barrier law as particle self-contact. When ``False`` (default), they use the quadratic
                 penalty law.
-            rigid_joint_linear_ke: Material stiffness for non-rod structural linear joint slots [N/m].
+            rigid_joint_linear_ke: Material stiffness for non-rod structural linear joint slots and linear mimic
+                coordinates [N/m].
                 ``None`` (default) reads ``model.vbd.rigid_joint_linear_ke`` when
                 registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
                 non-negative.
-            rigid_joint_angular_ke: Material stiffness for non-rod structural angular joint slots [N·m/rad].
+            rigid_joint_angular_ke: Material stiffness for non-rod structural angular joint slots and angular mimic
+                coordinates [N·m/rad].
                 ``None`` (default) reads ``model.vbd.rigid_joint_angular_ke`` when
                 registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
                 non-negative.
@@ -1054,11 +1083,32 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._attachment_particle_body_rho = wp.zeros(attachment_count, dtype=float, device=self.device)
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
-        self._mimic_body_deltas = None
+        self._joint_mimics = None
         if self._has_joint_mimics:
-            for kernel in (xpbd_kernels.solve_joint_mimics, xpbd_kernels.apply_joint_mimic_deltas):
-                self._set_module_options(options, module=kernel.module)
-            self._mimic_body_deltas = wp.zeros_like(model.body_qd)
+            self._joint_mimics = JointMimicData()
+            for name in (
+                "joint_type",
+                "joint_enabled",
+                "joint_parent",
+                "joint_child",
+                "joint_X_p",
+                "joint_X_c",
+                "joint_qd_start",
+                "joint_dof_dim",
+                "joint_axis",
+                "joint_mimic_joint",
+                "joint_mimic_coeffs",
+                "body_com",
+            ):
+                setattr(self._joint_mimics, name, getattr(model, name))
+            # Use the colors VBD solves by; model.body_colors may be unset when groups are assigned directly.
+            self._joint_mimics.body_colors = self._body_color
+            self._joint_mimics.linear_ke = self.rigid_joint_linear_ke
+            self._joint_mimics.angular_ke = self.rigid_joint_angular_ke
+            self._joint_mimics.lambda_ = wp.zeros((model.joint_count, 6), dtype=float, device=self.device)
+            self._joint_mimics.rho = wp.zeros((model.joint_count, 6), dtype=float, device=self.device)
+            self._joint_mimics.joint_angle_prev = self.joint_angle_prev
+            self._set_module_options(options, module=accumulate_joint_mimics.module)
 
         # Initialize rigid penetration-free (DAT) truncation state
         self._init_rigid_penetration_free(model, rigid_soft_dat_use_interval_arithmetic)
@@ -1079,6 +1129,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 NewtonDeprecationWarning,
                 stacklevel=_external_warning_stacklevel(),
             )
+        for name, value in (
+            ("rigid_avbd_alpha", rigid_avbd_alpha),
+            ("rigid_avbd_joint_alpha", rigid_avbd_joint_alpha),
+            ("rigid_avbd_contact_alpha", rigid_avbd_contact_alpha),
+            ("rigid_avbd_gamma", rigid_avbd_gamma),
+        ):
+            if value is not None:
+                warnings.warn(
+                    f"SolverVBD({name}=...) is deprecated as of Newton 1.9 and will be removed in a "
+                    "future release; omit the argument.",
+                    NewtonDeprecationWarning,
+                    stacklevel=_external_warning_stacklevel(),
+                )
 
     def _init_particle_system(
         self,
@@ -1193,7 +1256,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self,
         model: Model,
         rigid_avbd_alpha: float | None,
-        rigid_avbd_gamma: float,
+        rigid_avbd_gamma: float | None,
         rigid_avbd_joint_alpha: float | None,
         rigid_avbd_contact_alpha: float | None,
         rigid_contact_history: bool,
@@ -1217,7 +1280,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError(f"rigid_avbd_joint_alpha must be in [0, 1], got {rigid_avbd_joint_alpha}")
         if rigid_avbd_contact_alpha is not None and not (0.0 <= rigid_avbd_contact_alpha <= 1.0):
             raise ValueError(f"rigid_avbd_contact_alpha must be in [0, 1], got {rigid_avbd_contact_alpha}")
-        if not (0.0 <= rigid_avbd_gamma <= 1.0):
+        if rigid_avbd_gamma is None:
+            rigid_avbd_gamma = 0.999
+        elif not (0.0 <= rigid_avbd_gamma <= 1.0):
             raise ValueError(f"rigid_avbd_gamma must be in [0, 1], got {rigid_avbd_gamma}")
         if rigid_joint_linear_ke < 0:
             raise ValueError(f"rigid_joint_linear_ke must be >= 0, got {rigid_joint_linear_ke}")
@@ -1495,9 +1560,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Refresh solver caches affected by the specified model-property flags.
 
+        Joint-owned mimic references and coefficients use
+        :attr:`~newton.ModelFlags.JOINT_PROPERTIES` in VBD. This flag refreshes
+        their array bindings and clears their multipliers.
+
         Shape-material validation is skipped during CUDA graph capture. Validate
         host-side edits outside capture; captured updates must preserve finite,
         nonnegative material coefficients.
+
+        Args:
+            flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits
+                indicating which model properties changed.
         """
         self._apply_module_options()
         if flags & ModelFlags.SHAPE_PROPERTIES:
@@ -1535,6 +1608,38 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._refresh_structural_k()
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES):
             self._refresh_rod_rest_bend_twist_cache()
+        if self._has_joint_mimics:
+            if flags & ModelFlags.JOINT_PROPERTIES:
+                for name in (
+                    "joint_enabled",
+                    "joint_X_p",
+                    "joint_X_c",
+                    "joint_axis",
+                    "joint_mimic_joint",
+                    "joint_mimic_coeffs",
+                ):
+                    setattr(self._joint_mimics, name, getattr(self.model, name))
+                self._joint_mimics.lambda_.zero_()
+            if flags & ModelFlags.JOINT_DOF_PROPERTIES:
+                self._joint_mimics.joint_axis = self.model.joint_axis
+            if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
+                self._joint_mimics.body_com = self.model.body_com
+
+    @override
+    def _non_graphable_model_flags(self) -> int:
+        flags = 0
+        if self.model.tendon_count > 0:
+            # The tendon refresh validates on the host and rebuilds the tendon reset state.
+            flags |= ModelFlags.TENDON_PROPERTIES
+        if self._integrates_rigid_bodies and self.model.joint_count > 0:
+            dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            if self.rigid_compliant_alm:
+                # Compliant ALM validates the joint drive and limit coefficients on the host.
+                flags |= dof_force
+            if self.model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+                # Rod material axes and rest bend/twist invariants are checked and computed on the host.
+                flags |= dof_force | ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+        return int(flags)
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -2325,7 +2430,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
-        positive; the attributes default to zero.
+        positive; the attributes default to zero. The solver skips Dahl friction
+        entirely when no joint enables it at construction, so reconstruct the
+        solver after making them positive.
 
         Args:
             builder: Model builder to register attributes on.
@@ -2647,11 +2754,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._validate_dat_collision_schedules()
 
-        if self._pre_initialization_detection(state_in, dt):
-            update_rigid = True
-
         if control is None:
             control = self.model.control(clone_variables=False)
+
+        self._apply_particle_kinematic_prologue(state_in, control)
+
+        if self._pre_initialization_detection(state_in, dt):
+            update_rigid = True
 
         # Must run BEFORE _initialize_rigid_bodies: the dynamic routing activation
         # decision has to see the accepted pose, but the inertial predictor inside
@@ -2759,6 +2868,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._finalize_rigid_bodies(state_in, state_out, dt)
         if update_tendon_diagnostics:
             self._update_tendon_segment_diagnostics(state_out, dt)
+        if self.iterations == 0 and self.model.particle_count > 0:
+            wp.copy(state_out.particle_q, state_in.particle_q)
         self._finalize_particles(state_out, dt)
         self._save_tendon_history(state_out)
 
@@ -2954,6 +3065,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.joint_lambda_ang,
                 self.joint_drive_lambda,
                 self.joint_limit_lambda,
+                self._joint_mimics.lambda_ if self._has_joint_mimics else None,
                 self._rigid_pose_rebaseline_mask,
                 self._contact_history_reset_mask,
                 self._contact_history_reset_pending,
@@ -3425,6 +3537,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 device=self.device,
             )
 
+    def _apply_particle_kinematic_prologue(self, state_in: State, control: Control) -> None:
+        """Record particle start positions and move kinematic particles to their targets before detection."""
+        if self.model.particle_count == 0:
+            return
+        wp.launch(
+            kernel=vbd_apply_particle_kinematic_targets,
+            dim=self.model.particle_count,
+            inputs=[self.model.particle_flags, control.particle_target_q],
+            outputs=[state_in.particle_q, self.particle_q_prev],
+            device=self.device,
+        )
+
     def _initialize_particles(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
@@ -3447,7 +3571,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 dt,
                 model.gravity,
                 model.particle_world,
-                self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,
                 self.model.particle_inv_mass,
@@ -3563,6 +3686,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             model.shape_material_mu,
                             model.shape_material_mu_torsional,
                             model.shape_material_mu_rolling,
+                            model.shape_material_friction_mode,
                             restore_compliant_tangent_warmstart,
                             contacts.rigid_contact_match_index,
                             contacts.rigid_contact_match_generation,
@@ -3597,6 +3721,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             model.shape_material_mu,
                             model.shape_material_mu_torsional,
                             model.shape_material_mu_rolling,
+                            model.shape_material_friction_mode,
                         ],
                         outputs=[
                             self.body_body_contact_material_kd,
@@ -3679,6 +3804,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 model.shape_material_ke,
                 model.shape_material_kd,
                 model.shape_material_mu,
+                model.shape_material_friction_mode,
             ],
             outputs=[
                 self.body_particle_contact_material_ke,
@@ -3957,6 +4083,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.joint_angle_prev,
                     ],
                     block_dim=self._rigid_joint_block_dim,
+                    device=self.device,
+                )
+
+            if self._has_joint_mimics:
+                wp.launch(
+                    seed_joint_mimic_rho,
+                    dim=model.joint_count,
+                    inputs=[
+                        self._joint_mimics,
+                        state_in.body_q,
+                        self.body_inv_mass_effective,
+                        self.body_inv_inertia_effective,
+                        1.0 / (dt * dt),
+                        self.rigid_avbd_gamma,
+                    ],
                     device=self.device,
                 )
 
@@ -4484,6 +4625,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
+            if self._has_joint_mimics:
+                wp.launch(
+                    accumulate_joint_mimics,
+                    dim=model.joint_count,
+                    inputs=[self._joint_mimics, state_in.body_q, self.body_inv_mass_effective, color],
+                    outputs=[
+                        self.body_forces,
+                        self.body_torques,
+                        self.body_hessian_ll,
+                        self.body_hessian_al,
+                        self.body_hessian_aa,
+                    ],
+                    device=self.device,
+                )
+
             # Accumulate body-particle contact forces/hessians for bodies in this color
             if model.particle_count > 0 and contacts is not None:
                 wp.launch(
@@ -4615,6 +4771,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_constraint_start,
                     self.joint_rho,
                     self.joint_material_k,
+                    self.rigid_joint_linear_ke,
+                    self.rigid_joint_angular_ke,
                     self.joint_penalty_kd,
                     self.joint_sigma_start,
                     self.joint_C_fric,
@@ -4674,14 +4832,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._rigid_penetration_free_truncation(state_in, contacts)
 
         if self._has_joint_mimics:
-            project_joint_mimics(
-                model,
-                state_in.body_q,
-                state_in.body_qd,
-                self.body_inv_mass_effective,
-                self.body_inv_inertia_effective,
-                self._mimic_body_deltas,
-                dt,
+            wp.launch(
+                update_joint_mimic_duals,
+                dim=model.joint_count,
+                inputs=[self._joint_mimics, state_in.body_q],
+                device=self.device,
             )
 
         if contacts is not None and contacts.rigid_contact_max > 0 and model.shape_count > 0:

@@ -3,7 +3,6 @@
 
 import builtins
 import hashlib
-import inspect
 import logging
 import math
 import os
@@ -49,9 +48,6 @@ from newton.tests.unittest_utils import (
 devices = get_test_devices()
 
 
-_MIRRORED_BODY_WARNING = (
-    r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
-)
 _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ values but frequency"
 
 
@@ -1846,6 +1842,53 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
 
+    @requires("pxr.Usd")
+    def test_physics_scene_declaration_keeps_solver_update_flags(self):
+        """Merge a PhysicsScene declaration of a solver attribute with its registration, in either order."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+    custom float newton:mujoco:gravcomp = 0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "Collision" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+        for register_first in (True, False):
+            with self.subTest(register_first=register_first):
+                builder = newton.ModelBuilder()
+                if register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage)
+                if not register_first:
+                    SolverMuJoCo.register_custom_attributes(builder)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(
+                    model.get_attribute_update_flags("mujoco:gravcomp"), newton.ModelFlags.BODY_INERTIAL_PROPERTIES
+                )
+
     @requires("pxr.Usd", *MUJOCO_MODULES)
     def test_unauthored_usd_solreflimit_uses_mujoco_default(self):
         """Preserve MuJoCo's implicit limit response for an unauthored USD joint."""
@@ -2964,6 +3007,217 @@ def Xform "Root" (
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_label[joint_id], "my_custom_joint")
+
+    @requires("pxr.Usd")
+    def test_cameras_import_with_render_product_resolution(self):
+        """Import UsdGeom.Camera prims and resolve render-product resolutions through RenderSettings."""
+        from pxr import Usd
+
+        from newton._src.utils.import_usd import _usd_render_product_resolutions  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float physics:mass = 1
+
+        def Xform "Mount"
+        {
+            double3 xformOp:translate = (0.5, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Camera "Inherited"
+            {
+                float focalLength = 24
+                float horizontalAperture = 36
+                float verticalAperture = 24
+                float2 clippingRange = (0.05, 20)
+            }
+        }
+    }
+
+    def Camera "Overridden" {}
+    def Camera "Standalone" {}
+    def Camera "Unauthored" {}
+    def Camera "Elsewhere" {}
+    def Camera "Shared" {}
+    def Camera "Agreeing" {}
+    def Camera "WidePixels" {}
+    def Camera "Stretched" {}
+}
+
+def Scope "Render"
+{
+    def RenderSettings "Settings"
+    {
+        rel camera = </World/Inherited>
+        int2 resolution = (320, 240)
+        rel products = [</Render/Inherits>, </Render/Overrides>]
+    }
+
+    def RenderProduct "Inherits"
+    {
+        rel camera = </World/Body/Mount/Inherited>
+    }
+
+    def RenderProduct "Overrides"
+    {
+        rel camera = </World/Overridden>
+        int2 resolution = (64, 48)
+        uniform token aspectRatioConformPolicy = "adjustApertureWidth"
+    }
+
+    def RenderProduct "Alone"
+    {
+        rel camera = </World/Standalone>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "NoResolution"
+    {
+        rel camera = </World/Unauthored>
+    }
+
+    def RenderProduct "SharedSmall"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (640, 480)
+        uniform token aspectRatioConformPolicy = "cropAperture"
+    }
+
+    def RenderProduct "SharedLarge"
+    {
+        rel camera = </World/Shared>
+        int2 resolution = (1920, 1080)
+    }
+
+    def RenderProduct "AgreeingA"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "AgreeingB"
+    {
+        rel camera = </World/Agreeing>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "Wide"
+    {
+        rel camera = </World/WidePixels>
+        int2 resolution = (100, 100)
+        float pixelAspectRatio = 2
+    }
+
+    def RenderProduct "Stretch"
+    {
+        rel camera = </World/Stretched>
+        int2 resolution = (100, 100)
+        uniform token aspectRatioConformPolicy = "adjustPixelAspectRatio"
+    }
+}
+
+def Scope "Elsewhere"
+{
+    def RenderProduct "Product"
+    {
+        rel camera = </World/Elsewhere>
+        int2 resolution = (32, 16)
+    }
+}
+"""
+        )
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as logs:
+            builder.add_usd(stage)
+        cameras = {label: index for index, label in enumerate(builder.camera_label)}
+        several = [line for line in logs.output if "several RenderProducts" in line]
+        self.assertEqual(len(several), 1)
+        self.assertIn("/World/Shared", several[0])
+
+        mounted = cameras["/World/Body/Mount/Inherited"]
+        self.assertEqual(builder.camera_body[mounted], 0)
+        np.testing.assert_allclose(np.asarray(builder.camera_transform[mounted])[:3], [0.5, 0.0, 0.0], atol=1e-6)
+        # Lens lengths are tenths of a scene unit; the clip range is in scene units.
+        self.assertAlmostEqual(builder.camera_focal_length[mounted], 2.4, places=5)
+        # The 36 x 24 aperture is expanded to the 4:3 product resolution (expandAperture fallback).
+        np.testing.assert_allclose(builder.camera_aperture[mounted], (3.6, 2.7), atol=1e-6)
+        np.testing.assert_allclose(builder.camera_clipping_range[mounted], (0.05, 20.0), atol=1e-6)
+
+        # A product inherits an unauthored resolution from its settings, authored product values take
+        # precedence, standalone products use their own values, and schema fallbacks are ignored. Render
+        # products are found anywhere in the stage, not only below /Render.
+        formats = _usd_render_product_resolutions(stage)
+        self.assertEqual(formats["/World/Body/Mount/Inherited"][0], (320, 240))
+        self.assertEqual(formats["/World/Overridden"][0], (64, 48))
+        self.assertEqual(formats["/World/Standalone"][0], (200, 100))
+        self.assertNotIn("/World/Unauthored", formats)
+        self.assertEqual(formats["/World/Elsewhere"][0], (32, 16))
+        # The resolution only conforms the aperture; the model stores the product's pixel shape.
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Elsewhere"]], (3.05816, 1.52908), rtol=1e-5)
+        for label, index in cameras.items():
+            if label not in ("/World/WidePixels", "/World/Stretched"):
+                self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[index], 1.0, places=5, msg=label)
+
+        # Apertures are conformed to the product's image format with its conform policy; without a
+        # resolution the authored (here fallback) aperture is kept.
+        fallback = (2.0955, 1.52908)
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Overridden"]], (fallback[1] * 4.0 / 3.0, fallback[1]), rtol=1e-5
+        )
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Standalone"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
+        )
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Unauthored"]], fallback, rtol=1e-5)
+
+        # Products with different image formats leave the authored aperture and no resolution; products
+        # that agree are used like one product.
+        self.assertIsNone(formats["/World/Shared"])
+        np.testing.assert_allclose(builder.camera_aperture[cameras["/World/Shared"]], fallback, rtol=1e-5)
+        self.assertEqual(formats["/World/Agreeing"][0], (200, 100))
+        np.testing.assert_allclose(
+            builder.camera_aperture[cameras["/World/Agreeing"]], (fallback[1] * 2.0, fallback[1]), rtol=1e-5
+        )
+
+        # An authored pixelAspectRatio is stored, and the conformed aperture spans the image with it.
+        # adjustPixelAspectRatio keeps the aperture and stretches the pixels instead.
+        wide = cameras["/World/WidePixels"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[wide], 2.0, places=5)
+        np.testing.assert_allclose(builder.camera_aperture[wide], (fallback[1] * 2.0, fallback[1]), rtol=1e-5)
+        stretched = cameras["/World/Stretched"]
+        self.assertAlmostEqual(builder.camera_pixel_aspect_ratio[stretched], fallback[0] / fallback[1], places=5)
+        np.testing.assert_allclose(builder.camera_aperture[stretched], fallback, rtol=1e-5)
+
+        # An unauthored clippingRange keeps the USD fallback (1, 1e6) in scene units.
+        np.testing.assert_allclose(builder.camera_clipping_range[cameras["/World/Shared"]], (1.0, 1.0e6), rtol=1e-6)
+
+    def test_conform_usd_aperture_policies(self):
+        """Conform a 3:2 aperture to a 1:1 image under each UsdRender aspect-ratio policy."""
+        from newton._src.utils.import_usd import _conform_usd_aperture  # noqa: PLC0415
+
+        expected = {
+            "expandAperture": (36.0, 36.0),
+            "cropAperture": (24.0, 24.0),
+            "adjustApertureWidth": (24.0, 24.0),
+            "adjustApertureHeight": (36.0, 36.0),
+            "adjustPixelAspectRatio": (36.0, 24.0),
+        }
+        for policy, aperture in expected.items():
+            with self.subTest(policy=policy):
+                np.testing.assert_allclose(_conform_usd_aperture(36.0, 24.0, (64, 64), policy, 1.0), aperture)
+        # Pixels twice as wide as tall make a square pixel grid a 2:1 image.
+        np.testing.assert_allclose(_conform_usd_aperture(36.0, 24.0, (64, 64), "expandAperture", 2.0), (48.0, 24.0))
 
 
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
@@ -4405,6 +4659,55 @@ def Xform "NotPSD" (
         self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
 
     @requires("pxr.Usd")
+    def test_newton_inertia_empty_is_no_opinion(self):
+        """An authored empty newton:inertia defers to physics:diagonalInertia without a warning."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "EmptyTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 3.0
+    float3 physics:diagonalInertia = (0.5, 1.0, 1.5)
+    double[] newton:inertia = []
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        warning_messages = [str(w.message) for w in caught]
+        self.assertFalse(any("newton:inertia" in m for m in warning_messages), warning_messages)
+
+        body_id = builder.body_label.index("/EmptyTensor")
+        self.assertAlmostEqual(builder.body_mass[body_id], 3.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(inertia, np.diag([0.5, 1.0, 1.5]), atol=1e-5)
+
+    @requires("pxr.Usd")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
         from pxr import Sdf, Usd, UsdPhysics
@@ -5040,7 +5343,6 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
 
                 model = builder.finalize()
                 self.assertEqual(model.mujoco.equality_constraint_count, 3)
-                self.assertEqual(model.constraint_mimic_count, int(convert_equalities))
                 self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), int(register_mujoco))
 
                 if register_mujoco:
@@ -5960,6 +6262,92 @@ def Xform "Articulation" (
         # Check rolling friction
         rolling = model.shape_material_mu_rolling.numpy()[shape_idx]
         self.assertAlmostEqual(rolling, 0.08, places=4)
+
+    @requires("pxr.Usd")
+    def test_shape_friction_mode_parsing(self):
+        """Select the shape friction mode from authored MuJoCo, PhysX, and Newton attributes."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        from newton._src.usd.schemas import (  # noqa: PLC0415
+            SchemaResolverMjc,
+            SchemaResolverNewton,
+            SchemaResolverPhysx,
+        )
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_material(name, attributes):
+            material = UsdShade.Material.Define(stage, f"/Materials/{name}")
+            UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+            material.GetPrim().ApplyAPI("NewtonMaterialAPI")
+            for attribute, value in attributes.items():
+                material.GetPrim().CreateAttribute(attribute, Sdf.ValueTypeNames.Float).Set(value)
+            return material
+
+        materials = {
+            "torsional": define_material("Torsional", {"newton:torsionalFriction": 0.02}),
+            "rolling": define_material("Rolling", {"newton:rollingFriction": 0.01}),
+            "both": define_material("Both", {"newton:torsionalFriction": 0.02, "newton:rollingFriction": 0.01}),
+        }
+        mode = newton.ShapeFrictionMode
+        cases = {
+            "Default": ({}, None, mode.SLIDING),
+            "MjcFrictionless": ({"mjc:condim": 1}, None, mode.NONE),
+            "MjcRolling": ({"mjc:condim": 6}, None, mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadius": ({"physxCollision:minTorsionalPatchRadius": 0.01}, None, mode.SLIDING_TORSIONAL),
+            "NewtonTorsional": ({}, "torsional", mode.SLIDING_TORSIONAL),
+            "NewtonRolling": ({}, "rolling", mode.SLIDING_ROLLING),
+            "NewtonBoth": ({}, "both", mode.SLIDING_TORSIONAL_ROLLING),
+            "PhysxPatchRadiusRolling": (
+                {"physxCollision:minTorsionalPatchRadius": 0.01},
+                "rolling",
+                mode.SLIDING_TORSIONAL_ROLLING,
+            ),
+            "MjcColliderKeepsCondim": ({"mjc:condim": 4}, "rolling", mode.SLIDING_TORSIONAL),
+            "MjcColliderIgnoresPhysxRadius": (
+                {"mjc:condim": 3, "physxCollision:minTorsionalPatchRadius": 0.01},
+                None,
+                mode.SLIDING,
+            ),
+            "MaterialRaisesMode": ({"mjc:condim": 1}, "torsional", mode.SLIDING_TORSIONAL),
+        }
+        for i, (name, (attributes, material, _expected)) in enumerate(cases.items()):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            body.AddTranslateOp().Set((float(i), 0.0, 0.0))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            for attribute, value in attributes.items():
+                value_type = Sdf.ValueTypeNames.Int if isinstance(value, int) else Sdf.ValueTypeNames.Float
+                collider.GetPrim().CreateAttribute(attribute, value_type).Set(value)
+            if name.startswith("MjcCollider"):
+                collider.GetPrim().AddAppliedSchema("MjcCollisionAPI")
+            if material is not None:
+                UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(materials[material], "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(
+            stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc(), SchemaResolverPhysx()]
+        )
+        model = builder.finalize()
+
+        friction_mode = model.shape_material_friction_mode.numpy()
+        for name, (_attributes, _material, expected) in cases.items():
+            with self.subTest(name):
+                shape = result["path_shape_map"][f"/World/{name}/Collider"]
+                self.assertEqual(friction_mode[shape], expected)
+
+        # The PhysX patch radius r sets the torsional coefficient to mu * r, also next to an authored rolling one
+        for name in ("PhysxPatchRadius", "PhysxPatchRadiusRolling"):
+            shape = result["path_shape_map"][f"/World/{name}/Collider"]
+            self.assertAlmostEqual(
+                float(model.shape_material_mu_torsional.numpy()[shape]),
+                0.01 * float(model.shape_material_mu.numpy()[shape]),
+                places=6,
+            )
 
     @requires("pxr.Usd")
     def test_bound_material_supplies_the_friction_pair(self):
@@ -7379,15 +7767,7 @@ def Xform "Articulation" (
                 UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            # This fixture deliberately covers negative scale. Record only its
-            # expected diagnostic while preserving the ambient warning policy.
-            warnings.filterwarnings("always", message=_MIRRORED_BODY_WARNING, category=UserWarning)
-            result = builder.add_usd(stage)
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.NewtonWarning)
-        self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
+        result = builder.add_usd(stage)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
             for mass_name, _author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
@@ -8635,7 +9015,6 @@ def Xform "Articulation" (
         path_joint_map = result["path_joint_map"]
         joint1_idx = path_joint_map["/World/Articulation/Joint1"]
         joint2_idx = path_joint_map["/World/Articulation/Joint2"]
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[joint2_idx], joint1_idx)
         # newton:mimicCoef0 is authored in degrees for an angular follower; Newton
         # mimic metadata uses joint coordinates, so it arrives in radians.
@@ -8807,7 +9186,6 @@ def Xform "Articulation" (
         follower_idx = result["path_joint_map"]["/World/Root/Follower"]
         self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
         self.assertEqual(builder.joint_dof_dim[follower_idx], (1, 1))
-        self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
         self.assertTrue(
@@ -9045,8 +9423,7 @@ def Xform "Articulation" (
         self.assertEqual(model.mujoco.equality_constraint_count, 1)
         self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
 
-        # The default path additionally lowers a generic mimic constraint, which would
-        # otherwise enforce the coupling for every solver rather than only SolverMuJoCo.
+        # The default path authors the same row.
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(build_stage(), convert_mjc_equality_constraints=True)
@@ -9054,8 +9431,6 @@ def Xform "Articulation" (
 
         self.assertEqual(model.mujoco.equality_constraint_count, 1)
         self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
-        self.assertEqual(model.constraint_mimic_count, 1)
-        self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
 
     @requires("pxr.Usd")
     def test_mjc_equality_connect_site_parsing(self):
@@ -9559,7 +9934,7 @@ def Xform "Articulation" (
             joint2_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.6, 0.7, 0.004, 0.5, 1.5])
 
             connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/EqualityConnect")
-            connect.CreateBody0Rel().SetTargets([link1.GetPath()])
+            connect.CreateBody0Rel().SetTargets([root.GetPath()])
             connect.CreateBody1Rel().SetTargets([link2.GetPath()])
             connect.CreateLocalPos0Attr().Set(Gf.Vec3f(0.1, 0.2, 0.3))
             connect.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
@@ -9599,22 +9974,19 @@ def Xform "Articulation" (
 
         converted_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(converted_builder)
-        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
-            converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
+        converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
         self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
-        self.assertEqual(converted_model.constraint_mimic_count, 1)
         eq_types = converted_model.mujoco.equality_constraint_type.numpy()
         target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.CONNECT)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.WELD)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.JOINT)), 1)
         self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.JOINT)), 2)
-        self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.MIMIC)), 1)
         joint_eq = int(np.flatnonzero(eq_types == int(newton.solvers.SolverMuJoCo.EqType.JOINT))[0])
-        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
+        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.NONE))
         np.testing.assert_allclose(
             converted_model.mujoco.equality_constraint_polycoef.numpy()[joint_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
@@ -9751,6 +10123,28 @@ def Xform "Articulation" (
         load_physics_mock.assert_called_once()
         self.assertEqual(result["physics_scene_path"], "/Scene")
         self.assertEqual(result["scene_attributes"]["physics:gravityMagnitude"], 2.0)
+
+    @requires("pxr.Usd")
+    def test_scene_honors_ignore_paths(self):
+        """Skip an ignored scene, whether or not the pattern is a plain path."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/Ignored/Scene").CreateGravityMagnitudeAttr(2.0)
+        UsdPhysics.Scene.Define(stage, "/Kept").CreateGravityMagnitudeAttr(3.0)
+
+        for ignore_paths in (["/Ignored"], ["/Ignored.*"], [".*/Scene$"]):
+            with self.subTest(ignore_paths=ignore_paths):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, ignore_paths=ignore_paths)
+                self.assertEqual(result["physics_scene_path"], "/Kept")
+                self.assertAlmostEqual(float(wp.length(builder.gravity)), 3.0, places=5)
+
+        builder = newton.ModelBuilder()
+        default_gravity = builder.gravity
+        result = builder.add_usd(stage, ignore_paths=[".*Scene", "/Kept.*"])
+        self.assertIsNone(result["physics_scene_path"])
+        self.assertEqual(builder.gravity, default_gravity)
 
     @requires("pxr.Usd")
     def test_scene_gravity_enabled_parsing(self):
@@ -12450,10 +12844,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
-
         model = builder.finalize()
-        self.assertEqual(model.constraint_mimic_count, 0)
 
         follower_idx = model.joint_label.index("/Root/Robot/Joints/follower")
         leader_idx = model.joint_label.index("/Root/Robot/Joints/leader")
@@ -12501,7 +12892,6 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
         self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 
@@ -13597,24 +13987,6 @@ def Mesh "cube"
 
 
 class TestTetMesh(unittest.TestCase):
-    def test_tetmesh_keyword_only_deprecation_shim(self):
-        """Keep legacy TetMesh positional arguments working with a deprecation."""
-        signature = inspect.signature(newton.TetMesh)
-        parameters = list(signature.parameters.values())
-        self.assertEqual([parameter.name for parameter in parameters[:2]], ["vertices", "tet_indices"])
-        self.assertTrue(all(parameter.kind == inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:]))
-
-        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
-        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
-        with self.assertWarnsRegex(
-            DeprecationWarning,
-            "Passing 'k_mu', 'k_lambda', 'k_damp', 'density', 'custom_attributes' positionally",
-        ):
-            tet_mesh = newton.TetMesh(vertices, tet_indices, 1.0, 2.0, 3.0, 4.0, None)
-
-        assert_np_equal(tet_mesh.k_mu, np.array([1.0], dtype=np.float32))
-        self.assertEqual(tet_mesh.density, 4.0)
-
     def test_tetmesh_basic(self):
         """Test TetMesh construction from raw arrays."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
@@ -13836,10 +14208,10 @@ def Mesh "JustAMesh" ()
     def test_get_tetmesh_vendor_namespace_legacy_recovery(self):
         """Vendor-namespaced material reads follow the ``compat_namespaces`` opt-in.
 
-        Canonical-only (``compat_namespaces=()``) reads moduli only from a ``physics:`` material
-        that applies ``PhysicsVolumeDeformableMaterialAPI``. The deprecated default (``None``) reads
-        vendor namespaces off any bound material and emits a ``DeprecationWarning``;
-        ``DEFORMABLE_LEGACY_NAMESPACES`` keeps that behavior explicitly (without the warning).
+        Canonical-only (the default and ``compat_namespaces=()``) reads moduli only from a
+        ``physics:`` material that applies ``PhysicsVolumeDeformableMaterialAPI``; only the
+        default warns about the attributes it ignores. ``DEFORMABLE_LEGACY_NAMESPACES`` reads
+        vendor namespaces off any bound material.
         """
         from pxr import Usd
 
@@ -13896,49 +14268,99 @@ def Xform "World" ()
         custom float physics:youngsModulus = 300000
         custom float physics:poissonsRatio = 0.3
     }
+    def TetMesh "VendorApiBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/VendorApiMaterial>
+    }
+    def Material "VendorApiMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density = 40
+        float omniphysics:youngsModulus = 300000
+        float omniphysics:poissonsRatio = 0.3
+    }
+    def TetMesh "BaseDensityBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/BaseDensityMaterial>
+    }
+    def Material "BaseDensityMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI"]
+    )
+    {
+        float physics:density = 40
+    }
+    def TetMesh "TimeSampledBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/TimeSampledMaterial>
+    }
+    def Material "TimeSampledMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:density.timeSamples = {
+            1: 40,
+        }
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usda)
-        prim = stage.GetPrimAtPath("/World/SoftBody")
 
-        # Canonical-only: vendor moduli are ignored.
-        tm_canonical = usd.get_tetmesh(prim, compat_namespaces=())
-        self.assertIsNone(tm_canonical.k_mu)
-        self.assertIsNone(tm_canonical.density)
+        # Vendor moduli, and canonical moduli on a material WITHOUT the deformable material
+        # API, are ignored: silently with explicit (), with a warning by default.
+        for path in ("/World/SoftBody", "/World/UnscopedBody"):
+            with self.subTest(path=path):
+                ignored = stage.GetPrimAtPath(path)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    tm_canonical = usd.get_tetmesh(ignored, compat_namespaces=())
+                with self.assertWarnsRegex(newton.NewtonWarning, f"{path}: ignoring .*:youngsModulus"):
+                    tm_default = usd.get_tetmesh(ignored)
+                for tm in (tm_canonical, tm_default):
+                    self.assertIsNone(tm.k_mu)
+                    self.assertIsNone(tm.density)
 
-        # Deprecated default: reads the vendor namespaces off the bound material and warns.
-        with self.assertWarns(DeprecationWarning):
-            tm_default = usd.get_tetmesh(prim)
-        self.assertIsNotNone(tm_default.k_mu)
-        self.assertAlmostEqual(tm_default.density, 40.0)
+                # Explicit legacy namespaces read them off any bound material.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    tm_legacy = usd.get_tetmesh(ignored, compat_namespaces=usd.DEFORMABLE_LEGACY_NAMESPACES)
+                self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+                self.assertAlmostEqual(tm_legacy.density, 40.0)
 
-        # Explicit legacy namespaces: same reads, no deprecation warning.
-        tm_legacy = usd.get_tetmesh(prim, compat_namespaces=usd.DEFORMABLE_LEGACY_NAMESPACES)
-        self.assertIsNotNone(tm_legacy.k_mu)
-        self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
-        self.assertAlmostEqual(tm_legacy.density, 40.0)
-
-        # A canonical material under the deprecated default reads identically and must NOT
-        # warn: the default change alters nothing for it (the gate matches add_usd's).
+        # Vendor values on a material WITH the API never warned before, so the default keeps
+        # reading them for a deprecation window; explicit () ignores them.
+        vendor_api = stage.GetPrimAtPath("/World/VendorApiBody")
+        with self.assertWarnsRegex(newton.NewtonDeprecationWarning, "reading omniphysics:youngsModulus"):
+            tm_vendor_api = usd.get_tetmesh(vendor_api)
+        self.assertAlmostEqual(tm_vendor_api.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(tm_vendor_api.density, 40.0)
         with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
+            warnings.simplefilter("error")
+            self.assertIsNone(usd.get_tetmesh(vendor_api, compat_namespaces=()).density)
+            # A vendor value authored only as time samples is read by neither default.
+            self.assertIsNone(usd.get_tetmesh(stage.GetPrimAtPath("/World/TimeSampledBody")).density)
+
+        # A canonical material, and base-material density, are read by default and must NOT warn.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
+            tm_base_density = usd.get_tetmesh(stage.GetPrimAtPath("/World/BaseDensityBody"))
         self.assertAlmostEqual(tm_canonical_default.density, 40.0)
         self.assertIsNotNone(tm_canonical_default.k_mu)
-
-        # Canonical physics: moduli on a material WITHOUT the deformable material API: the
-        # deprecated default reads them off any bound material, but canonical-only scopes
-        # moduli to API-applied materials and drops them. The default is load-bearing, so
-        # it must warn.
-        unscoped = stage.GetPrimAtPath("/World/UnscopedBody")
-        with self.assertWarns(DeprecationWarning):
-            tm_unscoped_default = usd.get_tetmesh(unscoped)
-        self.assertIsNotNone(tm_unscoped_default.k_mu)
-        self.assertAlmostEqual(tm_unscoped_default.density, 40.0)
-        tm_unscoped_canonical = usd.get_tetmesh(unscoped, compat_namespaces=())
-        self.assertIsNone(tm_unscoped_canonical.k_mu)
-        self.assertIsNone(tm_unscoped_canonical.density)
+        self.assertAlmostEqual(tm_base_density.density, 40.0)
 
     @requires("pxr.Usd")
     def test_get_tetmesh_no_material(self):

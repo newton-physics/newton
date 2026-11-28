@@ -446,11 +446,12 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
             # a bounded correction of the verified deep overlap.
             slot = newton.solvers.SolverBase.CollisionSlot.RIGID
             frequency = newton.solvers.SolverBase.CollisionFrequencyType
-            solver = newton.solvers.SolverVBD(
-                model,
-                iterations=4,
-                rigid_avbd_contact_alpha=1.0,
-            )
+            with test.assertWarnsRegex(newton.NewtonDeprecationWarning, "rigid_avbd_contact_alpha"):
+                solver = newton.solvers.SolverVBD(
+                    model,
+                    iterations=4,
+                    rigid_avbd_contact_alpha=1.0,
+                )
             # Late-bound pipeline storage must also support mid-step refresh.
             solver.collision_pipeline = pipeline
             solver.contacts = contacts
@@ -458,7 +459,7 @@ def test_planar_mesh_recovery_under_load(test, device, *, reduce_contacts=True, 
         else:
             solver = newton.solvers.SolverXPBD(model, iterations=4)
         control = model.control()
-        sensor = SensorContact(model, sensing_bodies=[body], request_contact_attributes=False)
+        sensor = SensorContact(model, sensing_bodies=[body])
         observables = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
         dt = 1.0 / 1440.0
 

@@ -14,28 +14,34 @@ class ModelFlags(IntEnum):
     Categories overlap semantically, but each flag has its own bit. The broad
     :attr:`JOINT_DOF_PROPERTIES` includes force, inertial, and reference-pose
     updates. Testing the broad bit alone does not detect a narrower notification.
+
+    :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>` returns the
+    flags to pass after editing a given model attribute.
     """
 
+    NONE = 0
+    """Indicates no model updates."""
+
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis, joint_enabled."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
     """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_stiffness, joint_rest_q, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
-    """Indicates body property updates: body_q, body_qd, body_flags."""
+    """Indicates body property updates: body_q (together with :attr:`JOINT_REFERENCE_POSE_PROPERTIES`), body_qd, body_flags."""
 
     BODY_INERTIAL_PROPERTIES = 1 << 3
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
     SHAPE_PROPERTIES = 1 << 4
-    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_mu_static, shape_material_restitution, shape_material_ke, shape_material_kd, rigid_contact_mu_torsional, rigid_contact_mu_rolling."""
+    """Indicates shape property updates: shape_transform, shape_scale, shape_margin, shape_gap, shape_collision_radius, shape_is_solid, and the shape_material_* coefficients such as shape_material_mu, shape_material_mu_static, shape_material_restitution, shape_material_ke, shape_material_kd, shape_material_mu_torsional, and shape_material_mu_rolling."""
 
     MODEL_PROPERTIES = 1 << 5
-    """Indicates model property updates: gravity and other global parameters."""
+    """Indicates model property updates: gravity, particle_mass, particle_radius, particle_flags, and other global parameters."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp), mimic relationships (joint_mimic_coeffs and the deprecated constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled arrays), and particle-body attachments (attachment_particle_body_stiffness, attachment_particle_body_damping, attachment_particle_body_enabled)."""
+    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp), mimic relationships (joint_mimic_coeffs), and particle-body attachments (attachment_particle_body_stiffness, attachment_particle_body_damping, attachment_particle_body_enabled)."""
 
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
@@ -50,7 +56,7 @@ class ModelFlags(IntEnum):
     """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
-    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q for passive springs and Rod rest configurations. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+    """Indicates joint reference-pose and spring-reference updates, including joint_rest_q for passive springs, Rod rest configurations, and body_q, from which MuJoCo derives free-joint reference poses. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     SHAPE_TYPE_AND_SOURCE = 1 << 12
     """Indicates that shapes changed type or source (shape_type, shape_source_ptr) together with the collision data derived from them, or were emptied: variant rows took other variant shapes in :meth:`~newton.Model.select_body_variants`. Viewers and solvers that cache shape geometry must refresh it. Edits of shape_transform or shape_scale alone are :attr:`SHAPE_PROPERTIES`. Use at reset rather than every step.
@@ -168,6 +174,84 @@ class BodyFlags(IntEnum):
 
     ALL = DYNAMIC | KINEMATIC | PROXY
     """Filter bitmask selecting all body types."""
+
+
+class ShapeFrictionMode(IntEnum):
+    """Friction components a shape enables in its rigid contacts.
+
+    The modes follow the contact models of grasping: frictionless point contact,
+    point contact with sliding friction, and soft-finger contact that adds
+    torsional friction about the normal. Rolling resistance can be added with or
+    without torsional friction. The values are bit flags (sliding 1, torsional 2,
+    rolling 4); torsional and rolling friction always come with sliding friction.
+
+    A contact enables the components that either of its shapes enables (in
+    :class:`~newton.solvers.SolverMuJoCo`, a higher ``mujoco:geom_priority`` or
+    an explicit contact pair decides instead), so a rigid contact is only
+    frictionless when both shapes are ``NONE``. The strength of an enabled
+    component combines the coefficients of both shapes by the solver's usual
+    rule, also when only one of them enables it.
+
+    ``NONE``, ``SLIDING``, ``SLIDING_TORSIONAL``, and ``SLIDING_TORSIONAL_ROLLING``
+    correspond to MuJoCo's ``condim`` 1, 3, 4, and 6. ``SLIDING_ROLLING`` has no
+    ``condim``; see :ref:`mujoco-friction-modes` for how
+    :class:`~newton.solvers.SolverMuJoCo` applies it.
+
+    The mode fixes which friction constraints a solver creates when it is
+    constructed; the coefficients :attr:`~newton.Model.shape_material_mu`,
+    :attr:`~newton.Model.shape_material_mu_torsional`, and
+    :attr:`~newton.Model.shape_material_mu_rolling` set their strength and may
+    change at runtime.
+
+    Particles have no friction mode, so they count as ``NONE`` and a contact
+    between a particle and a shape follows the shape's mode. Because particles
+    do not rotate, torsional and rolling friction do not act on them.
+    :class:`~newton.solvers.SolverMuJoCo` flexes keep sliding friction, see
+    :ref:`mujoco-flexes`.
+    """
+
+    NONE = 0
+    """Frictionless contact."""
+
+    SLIDING = 1
+    """Sliding friction tangential to the contact."""
+
+    SLIDING_TORSIONAL = 3
+    """Sliding friction and torsional friction about the contact normal."""
+
+    SLIDING_ROLLING = 5
+    """Sliding friction and rolling friction."""
+
+    SLIDING_TORSIONAL_ROLLING = 7
+    """Sliding, torsional, and rolling friction."""
+
+
+FRICTION_SLIDING_BIT = 1
+"""Bit of a :class:`ShapeFrictionMode` that enables sliding friction."""
+
+FRICTION_TORSIONAL_BIT = 2
+"""Bit of a :class:`ShapeFrictionMode` that enables torsional friction."""
+
+FRICTION_ROLLING_BIT = 4
+"""Bit of a :class:`ShapeFrictionMode` that enables rolling friction."""
+
+FRICTION_MODE_CONDIM = (1, 3, 4, 4, 6, 6, 6, 6)
+"""MuJoCo ``condim`` that holds the components of a :class:`ShapeFrictionMode`, indexed by mode."""
+
+_CONDIM_FRICTION_MODE = {
+    1: ShapeFrictionMode.NONE,
+    3: ShapeFrictionMode.SLIDING,
+    4: ShapeFrictionMode.SLIDING_TORSIONAL,
+    6: ShapeFrictionMode.SLIDING_TORSIONAL_ROLLING,
+}
+
+
+def friction_mode_from_condim(condim: int) -> ShapeFrictionMode:
+    """Return the :class:`ShapeFrictionMode` of a MuJoCo ``condim``."""
+    mode = _CONDIM_FRICTION_MODE.get(condim)
+    if mode is None:
+        raise ValueError(f"condim must be 1, 3, 4, or 6 (got {condim}).")
+    return mode
 
 
 # Types of joints linking rigid bodies

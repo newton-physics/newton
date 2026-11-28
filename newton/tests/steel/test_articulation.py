@@ -1345,11 +1345,9 @@ def _run_four_bar(device, steps: int = 720, crank_target: float = 0.6, iteration
 def _build_overcapacity_mixed_bilateral_model(device):
     """Build one articulation with three connect rows and six mimic rows."""
     builder = _build_four_bar()
-    # Six rows on one follower need the deprecated API; joint-owned mimics allow one per joint.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        for index in range(6):
-            builder.add_constraint_mimic(joint0=1, joint1=0, coef0=0.0, coef1=1.0, label=f"mimic_{index}")
+    # Six rows on one follower need joint equalities; joint-owned mimics allow one per joint.
+    for _ in range(6):
+        newton.solvers.mujoco.add_equality_joint(builder, 1, 0)
     return builder.finalize(device=device)
 
 
@@ -1771,8 +1769,8 @@ def _run_model(model, leader_target: float, steps: int, **solver_kwargs):
     return solver, state_0.joint_q.numpy()
 
 
-def _run_chain(device, coef0: float, coef1: float, leader_target: float, steps: int = 600, legacy: bool = False):
-    builder, _, _ = _build_two_revolute_chain(coef0, coef1, legacy=legacy)
+def _run_chain(device, coef0: float, coef1: float, leader_target: float, steps: int = 600, equality: bool = False):
+    builder, _, _ = _build_two_revolute_chain(coef0, coef1, equality=equality)
     return _run_model(builder.finalize(device=device), leader_target, steps)
 
 
@@ -1809,18 +1807,7 @@ def check_scalar_and_d6_mimic_coordinate_maps(test, device, **solver_kwargs):
             ):
                 expected = np.arange(int(start.numpy()[joint]), int(start.numpy()[joint]) + dimensions)
                 np.testing.assert_array_equal(getattr(solver, f"_mimic_{suffix}").numpy(), expected)
-            np.testing.assert_array_equal(solver._mimic_legacy.numpy(), np.full(dimensions, -1))
-
-
-def check_invalid_legacy_mimic_keeps_precedence(test, device, **solver_kwargs):
-    """A legacy mimic replaces the joint-owned mimic of its follower, also when it is rejected."""
-    builder, leader, follower = _build_mimic_layout(newton.JointType.BALL)
-    with test.assertWarns(DeprecationWarning):
-        builder.add_constraint_mimic(joint0=follower, joint1=leader)
-    model = builder.finalize(device=device)
-    # The legacy entry is checked instead of the joint-owned BALL mimic it replaces.
-    with test.assertRaisesRegex(NotImplementedError, "must couple REVOLUTE or PRISMATIC"):
-        SolverSteel(model, **solver_kwargs)
+            np.testing.assert_array_equal(solver._mimic_equality.numpy(), np.full(dimensions, -1))
 
 
 def test_reject_quaternion_mimics_at_construction(test, device):
@@ -1833,22 +1820,15 @@ def test_scalar_and_d6_mimic_coordinate_maps(test, device):
     check_scalar_and_d6_mimic_coordinate_maps(test, device, solve_mode="serial")
 
 
-def test_invalid_legacy_mimic_keeps_precedence(test, device):
-    """Validate a legacy mimic entry in place of the joint-owned mimic it replaces."""
-    check_invalid_legacy_mimic_keeps_precedence(test, device, solve_mode="serial")
-
-
 def test_cross_articulation_mimic_is_rejected(test, device):
-    """Reject a mimic between two articulations instead of ignoring it."""
+    """Reject a joint equality between two articulations instead of ignoring it."""
     template, j_leader, j_follower = _build_two_revolute_chain(0.0, 1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.add_builder(template)
     builder.add_builder(template)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        # The follower of the second copy mimics the leader of the first copy.
-        builder.add_constraint_mimic(joint0=j_follower + 2, joint1=j_leader, coef0=0.0, coef1=1.0)
-    with test.assertRaisesRegex(NotImplementedError, "different articulations"):
+    # The follower of the second copy follows the leader of the first copy.
+    newton.solvers.mujoco.add_equality_joint(builder, j_follower + 2, j_leader)
+    with test.assertRaisesRegex(NotImplementedError, "of one articulation"):
         SolverSteel(builder.finalize(device=device))
 
 
@@ -1859,27 +1839,20 @@ def test_identity_mimic_tracks_leader(test, device):
     test.assertAlmostEqual(q[1], q[0], delta=0.02)
 
 
-def test_legacy_constraint_mimic_tracks_leader(test, device):
-    """Couple the follower through the deprecated mimic constraints."""
-    _, q = _run_chain(device, coef0=0.1, coef1=-0.5, leader_target=0.6, legacy=True)
+def test_joint_equality_tracks_leader(test, device):
+    """Couple the follower through a MuJoCo joint equality row."""
+    _, q = _run_chain(device, coef0=0.1, coef1=-0.5, leader_target=0.6, equality=True)
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
 
 
-def test_legacy_constraint_overrides_joint_mimic(test, device):
-    """Replace the follower's joint-owned mimic with a legacy constraint on it, as in SolverMuJoCo."""
-    builder, j_leader, j_follower = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        builder.add_constraint_mimic(joint0=j_follower, joint1=j_leader, coef0=0.1, coef1=-0.5)
-    solver, q = _run_model(builder.finalize(device=device), leader_target=0.6, steps=600)
-    test.assertEqual(solver._mimic_count, 1)
-    test.assertEqual(solver._mimic_legacy.numpy().tolist(), [0])
-    test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
+def _has_mimic_row(solver) -> bool:
+    row_types = solver._row_type.numpy()
+    counts = solver._constraint_count.numpy()
+    return any(PGS_CONSTRAINT_TYPE_MIMIC in row_types[w, : counts[w]] for w in range(row_types.shape[0]))
 
 
-def test_runtime_coefficient_change(test, device):
-    """Read joint-owned coefficients every step, also from a captured graph."""
-    builder, _, follower = _build_two_revolute_chain(0.0, 1.0)
+def _check_runtime_coefficient_change(test, device, equality: bool):
+    builder, _, follower = _build_two_revolute_chain(0.0, 1.0, equality=equality)
     model = builder.finalize(device=device)
     solver = SolverSteel(model, iterations=16, baumgarte=0.1)
     state_0, state_1 = model.state(), model.state()
@@ -1901,23 +1874,44 @@ def test_runtime_coefficient_change(test, device):
     q = state_0.joint_q.numpy()
     test.assertAlmostEqual(q[1], q[0], delta=0.02)
 
-    coeffs = model.joint_mimic_coeffs.numpy()
-    coeffs[follower] = (0.1, -0.5)
-    model.joint_mimic_coeffs.assign(coeffs)
+    if equality:
+        coeffs = model.mujoco.equality_constraint_polycoef.numpy()
+        coeffs[0, :2] = (0.1, -0.5)
+        model.mujoco.equality_constraint_polycoef.assign(coeffs)
+    else:
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[follower] = (0.1, -0.5)
+        model.joint_mimic_coeffs.assign(coeffs)
     for _ in range(150):
         wp.capture_launch(capture.graph)
     q = state_0.joint_q.numpy()
     test.assertTrue(np.isfinite(q).all())
     test.assertAlmostEqual(q[1], 0.1 - 0.5 * q[0], delta=0.02)
+    if not equality:
+        return
+
+    model.mujoco.equality_constraint_enabled.fill_(False)
+    wp.capture_launch(capture.graph)
+    test.assertFalse(_has_mimic_row(solver))
+
+    # A replaced array takes effect with an eager notification.
+    model.mujoco.equality_constraint_enabled = wp.ones(1, dtype=wp.bool, device=device)
+    solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+    solver.step(state_0, state_1, control, None, DT)
+    test.assertTrue(_has_mimic_row(solver))
+
+
+def test_runtime_coefficient_change(test, device):
+    """Read mimic coefficients and equality enabled flags every step, also from a captured graph."""
+    for equality in (False, True):
+        with test.subTest(equality=equality):
+            _check_runtime_coefficient_change(test, device, equality)
 
 
 def test_mimic_row_is_assembled(test, device):
     """Assemble a mimic row that carries the coupling."""
     solver, _ = _run_chain(device, coef0=0.0, coef1=1.0, leader_target=0.5, steps=10)
-    row_types = solver._row_type.numpy()
-    counts = solver._constraint_count.numpy()
-    rows = [int(t) for w in range(row_types.shape[0]) for t in row_types[w, : counts[w]]]
-    test.assertIn(PGS_CONSTRAINT_TYPE_MIMIC, rows)
+    test.assertTrue(_has_mimic_row(solver))
 
 
 def test_replicated_mimics_have_articulation_local_ranges(test, device):
@@ -1931,9 +1925,8 @@ def test_replicated_mimics_have_articulation_local_ranges(test, device):
 
 
 def test_disabled_mimic_is_ignored(test, device):
-    """Leave the follower joint uncoupled under a disabled legacy mimic constraint."""
-    builder, _, _ = _build_two_revolute_chain(0.0, 1.0, legacy=True)
-    builder.constraint_mimic_enabled[0] = False
+    """Leave the follower joint uncoupled under a disabled joint equality row."""
+    builder, _, _ = _build_two_revolute_chain(0.0, 1.0, equality=True, enabled=False)
     _, q = _run_model(builder.finalize(device=device), leader_target=0.5, steps=600)
     test.assertAlmostEqual(q[0], 0.5, delta=0.05)
     # The undriven follower swings freely; it must not sit at the leader angle.
@@ -1952,10 +1945,8 @@ def test_mimic_row_overflow_is_reported(test, device):
     test.assertEqual(int(solver._mimic_slot.numpy()[0]), 0)
     test.assertFalse(bool(solver.constraint_overflow.numpy()[0]))
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        # A second, consistent row on the other joint (identity coupling in both directions).
-        builder.add_constraint_mimic(joint0=0, joint1=1, coef0=0.0, coef1=1.0)
+    # A second, consistent row on the other joint (identity coupling in both directions).
+    newton.solvers.mujoco.add_equality_joint(builder, 0, 1)
     model = builder.finalize(device=device)
     solver = SolverSteel(model, **options)
     state_0, state_1 = model.state(), model.state()
@@ -1977,7 +1968,6 @@ class TestSteelMimic(unittest.TestCase):
 for _name in (
     "test_reject_quaternion_mimics_at_construction",
     "test_scalar_and_d6_mimic_coordinate_maps",
-    "test_invalid_legacy_mimic_keeps_precedence",
     "test_cross_articulation_mimic_is_rejected",
 ):
     add_function_test(TestSteelMimicLayout, _name, globals()[_name], devices=cuda_devices)
@@ -1985,8 +1975,7 @@ for _name in (
 
 for _name in (
     "test_identity_mimic_tracks_leader",
-    "test_legacy_constraint_mimic_tracks_leader",
-    "test_legacy_constraint_overrides_joint_mimic",
+    "test_joint_equality_tracks_leader",
     "test_runtime_coefficient_change",
     "test_mimic_row_is_assembled",
     "test_replicated_mimics_have_articulation_local_ranges",
@@ -2269,7 +2258,7 @@ def test_captured_spring_notifications_apply_in_place_edits(test, device):
 
 
 def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial"):
-    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs, across construction and notifications."""
+    """Keep stiffness only on tree PRISMATIC, REVOLUTE and D6 DOFs and warn about the rest, across construction and notifications."""
     builder, loop_joint = _build_square_loop("revolute")
     inertia = wp.mat33(np.eye(3) * 0.01)
     links = [
@@ -2285,20 +2274,41 @@ def test_springs_skip_unsupported_joint_types(test, device, solve_mode="serial")
         builder.add_joint_revolute(parent=links[1], child=links[2], parent_xform=hinge, axis=newton.Axis.Z),
     ]
     builder.add_articulation(joints)
+    # A REVOLUTE joint in no articulation, whose child is in none either, is not simulated.
+    unowned_link = builder.add_link(
+        xform=wp.transform(wp.vec3(5.0, 0.0, 1.0), wp.quat_identity()), mass=0.5, inertia=inertia
+    )
+    builder.add_joint_revolute(parent=-1, child=unowned_link, axis=newton.Axis.Z)
     builder.joint_stiffness = [5.0] * builder.joint_dof_count
     model = builder.finalize(device=device)
-    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE and BALL joints do not.
+    # The square's four tree hinges and the finger hinge carry springs; the loop, FREE, BALL and unowned joints do not.
     qd_start = model.joint_qd_start.numpy()
     sprung = np.zeros(model.joint_dof_count, dtype=bool)
     sprung[qd_start[joints[2]]] = True
     sprung[: qd_start[loop_joint]] = True
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", newton.NewtonWarning)
-        solver = SolverSteel(model, solve_mode=solve_mode)
-        np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
-        model.joint_stiffness.fill_(7.0)
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+
+    def warnings_of(call, *patterns):
+        """Run ``call`` and assert it emits exactly one NewtonWarning per pattern, in order."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = call()
+        test.assertEqual([w.category for w in caught], [newton.NewtonWarning] * len(patterns), caught)
+        for w, pattern in zip(caught, patterns, strict=True):
+            test.assertRegex(str(w.message), pattern)
+        return result
+
+    # The REVOLUTE loop warns about its own inputs; the FREE, BALL and unowned joints' 10 DOFs warn here.
+    expected = ("loop-closing REVOLUTE joint .* spring stiffness", "stiffness on 10 DOF")
+    solver = warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode), *expected)
+    np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 5.0, 0.0))
+    model.joint_stiffness.fill_(7.0)
+    warnings_of(lambda: solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES), *expected)
     np.testing.assert_array_equal(solver._passive_spring_stiffness.numpy(), np.where(sprung, 7.0, 0.0))
+
+    builder, _ = _build_square_loop("ball")
+    builder.joint_stiffness = [5.0] * builder.joint_dof_count
+    model = builder.finalize(device=device)
+    warnings_of(lambda: SolverSteel(model, solve_mode=solve_mode), "stiffness on 3 DOF")
 
 
 def test_registration_adds_no_spring_attributes(test, device):

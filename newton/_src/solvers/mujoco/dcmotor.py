@@ -280,8 +280,7 @@ def _require_matching_worlds(values: np.ndarray, description: str) -> None:
     mismatches = np.flatnonzero(np.any(differences, axis=1))
     if mismatches.size:
         raise ValueError(
-            f"SolverMuJoCo with separate_worlds=True requires {description}; "
-            f"world {mismatches[0] + 1} differs from world 0."
+            f"SolverMuJoCo requires {description} across worlds; world {mismatches[0] + 1} differs from world 0."
         )
 
 

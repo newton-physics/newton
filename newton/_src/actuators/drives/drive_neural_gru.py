@@ -16,6 +16,12 @@ import warp as wp
 from ...utils.onnx import require_onnx
 from ..space import DriveOutputSpace
 from ..utils import load_metadata
+from ._linearization import (
+    IMPLICIT_JACOBIAN_MARGIN,
+    _assemble_linear_params_kernel,
+    _gather_slot_state_kernel,
+    _linear_force,
+)
 from .base import DriveBase
 
 _FEATURE_POSITION = 0
@@ -83,6 +89,45 @@ def _write_effort_kernel(
 ):
     i = wp.tid()
     forces[i] = network_output[i, 0] * network_scale * effort_std + effort_mean
+
+
+@wp.kernel(enable_backward=False)
+def _effort_and_slopes_kernel(
+    network_output: wp.array2d[float],
+    input_grad: wp.array2d[float],
+    feature_codes: wp.array[wp.int32],
+    stds: wp.array[float],
+    network_scale: float,
+    effort_mean: float,
+    effort_std: float,
+    tau: wp.array[float],
+    dtau_dq: wp.array[float],
+    dtau_dqd: wp.array[float],
+):
+    """Effort and its state derivatives from the network output and input gradients.
+
+    Each input column is ``(feature - mean) / std``; ``position`` and
+    ``velocity`` enter with ``+1``, the ``*_error`` features with ``-1``, and
+    the remaining features do not depend on the joint state.
+    """
+    i = wp.tid()
+    scale = network_scale * effort_std
+    tau[i] = network_output[i, 0] * scale + effort_mean
+    dq = float(0.0)
+    dqd = float(0.0)
+    for column in range(input_grad.shape[1]):
+        grad = input_grad[i, column] / stds[column]
+        feature = feature_codes[column]
+        if feature == _FEATURE_POSITION:
+            dq += grad
+        elif feature == _FEATURE_POSITION_ERROR:
+            dq -= grad
+        elif feature == _FEATURE_VELOCITY:
+            dqd += grad
+        elif feature == _FEATURE_VELOCITY_ERROR:
+            dqd -= grad
+    dtau_dq[i] = dq * scale
+    dtau_dqd[i] = dqd * scale
 
 
 @wp.kernel
@@ -485,8 +530,8 @@ class DriveNeuralGRU(DriveBase):
 
     The network and its weights are read from an ONNX checkpoint and evaluated
     with Warp-NN. Hidden state is kept across timesteps through the
-    double-buffered :class:`Actuator.State` lifecycle. Only the explicit effort
-    mode is supported.
+    double-buffered :class:`Actuator.State` lifecycle. The implicit effort mode
+    is supported through a per-step linearization of the network.
 
     **Checkpoint metadata.** A JSON block embedded in the ONNX file must
     provide:
@@ -540,7 +585,8 @@ class DriveNeuralGRU(DriveBase):
     share one hidden size; all weights must be embedded in the file. Per
     invocation the network takes an input of shape ``[1, N, F]`` and a hidden
     state of shape ``[layer_count, N, hidden_size]``, and returns one scalar
-    per actuator.
+    per actuator. The supported graph processes each actuator independently,
+    so implicit mode can use each lane's own effort derivatives.
 
     .. warning::
 
@@ -665,14 +711,23 @@ class DriveNeuralGRU(DriveBase):
         self._head: Any = None
         self._activation: Any = None
         self._next_hidden: list[wp.array2d[float]] | None = None
+        self._grad_seed: wp.array2d[float] | None = None
+        self._lin_params: wp.array2d[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
-        """Create the Warp-NN layers and inference buffers.
+        """Create the Warp-NN layers and inference buffers once.
 
         Args:
             device: Device on which inference runs.
             num_actuators: Number of vectorized actuator lanes.
         """
+        if self._device is not None:
+            if self._device != device or self._num_actuators != num_actuators:
+                raise RuntimeError(
+                    "DriveNeuralGRU is already finalized for a different actuator; construct one drive per actuator."
+                )
+            return
+
         try:
             from warp_nn import nn  # noqa: PLC0415
         except ImportError as exc:
@@ -680,11 +735,6 @@ class DriveNeuralGRU(DriveBase):
                 "DriveNeuralGRU requires Warp-NN and ONNX. Install them with `pip install newton[onnx]`."
             ) from exc
 
-        if self._device is not None and (self._device != device or self._num_actuators != num_actuators):
-            raise RuntimeError(
-                "DriveNeuralGRU is already finalized for a different actuator; construct one drive per actuator."
-            )
-        self._device = device
         self._num_actuators = num_actuators
         self._input_means_wp = wp.array(self._input_means, dtype=wp.float32, device=device)
         self._input_stds_wp = wp.array(self._input_stds, dtype=wp.float32, device=device)
@@ -694,7 +744,6 @@ class DriveNeuralGRU(DriveBase):
             device=device,
         )
         self._net_input = wp.zeros((num_actuators, len(self._input_feature_keys)), dtype=wp.float32, device=device)
-
         self._gru_layers = []
         with wp.ScopedDevice(device):
             for description in self._description.layers:
@@ -702,6 +751,7 @@ class DriveNeuralGRU(DriveBase):
                     description.input_size,
                     description.hidden_size,
                     bias=description.bias_ih is not None,
+                    requires_grad=False,
                 )
                 state_dict = {
                     "weight_ih": description.weight_ih,
@@ -713,25 +763,34 @@ class DriveNeuralGRU(DriveBase):
                 layer.load_state_dict(state_dict)
                 self._gru_layers.append(layer)
 
-            self._head = nn.Linear(self._description.layers[-1].hidden_size, 1)
+            self._head = nn.Linear(self._description.layers[-1].hidden_size, 1, requires_grad=False)
             self._head.load_state_dict(
                 {
                     "weight": self._description.head_weight,
                     "bias": self._description.head_bias.reshape(1, 1),
                 }
             )
-            self._activation = nn.Tanh() if self._description.apply_tanh else None
+            self._activation = nn.Tanh(requires_grad=False) if self._description.apply_tanh else None
 
-            # Populate Warp-NN's shape caches before optional graph capture.
-            warm_hidden = wp.zeros(
-                (num_actuators, self._description.layers[0].hidden_size), dtype=wp.float32, device=device
+        self._warm_network(device)
+        self._device = device
+
+    def _warm_network(self, device: wp.Device, *, requires_grad: bool = False) -> None:
+        # Prime the Warp-NN output caches before capture. When implicit mode
+        # is enabled, attach adjoints only to the input and intermediate values.
+        with wp.ScopedDevice(device):
+            hidden = wp.zeros(
+                (self._num_actuators, self._description.layers[0].hidden_size), dtype=wp.float32, device=device
             )
             output = self._net_input
+            output.requires_grad = requires_grad
             for layer in self._gru_layers:
-                output = layer(output, warm_hidden)
+                output = layer(output, hidden)
+                output.requires_grad = requires_grad
             output = self._head(output)
+            output.requires_grad = requires_grad
             if self._activation is not None:
-                self._activation(output)
+                self._activation(output).requires_grad = requires_grad
 
     def is_stateful(self) -> bool:
         """Return ``True`` because the GRU maintains hidden state."""
@@ -740,6 +799,132 @@ class DriveNeuralGRU(DriveBase):
     def is_graphable(self) -> bool:
         """Return ``True`` because inference uses graph-capturable Warp operations."""
         return True
+
+    #: The network enters the general implicit solve as a per-step-linearized
+    #: in-kernel law (see :meth:`prepare_implicit`), like any other drive.
+    evaluate_force = _linear_force
+
+    def bind_params(self) -> wp.array2d[float] | None:
+        """Return the linearization pack, or ``None`` before :meth:`finalize`.
+
+        The first binding allocates the pack ``[tau0, a, b, q0, qd0]`` and the
+        implicit workspace. :meth:`prepare_implicit` rewrites the pack in place.
+        """
+        if self._device is None:
+            return None
+        if self._lin_params is None:
+            device = self._device
+            n = self._num_actuators
+            self._warm_network(device, requires_grad=True)
+            self._grad_seed = wp.ones((n, 1), dtype=wp.float32, device=device)
+            self._q0 = wp.zeros(n, dtype=wp.float32, device=device)
+            self._qd0 = wp.zeros(n, dtype=wp.float32, device=device)
+            self._tq0 = wp.zeros(n, dtype=wp.float32, device=device)
+            self._tqd0 = wp.zeros(n, dtype=wp.float32, device=device)
+            self._tau0 = wp.zeros(n, dtype=wp.float32, device=device)
+            self._dtau_dq = wp.zeros(n, dtype=wp.float32, device=device)
+            self._dtau_dqd = wp.zeros(n, dtype=wp.float32, device=device)
+            self._lin_params = wp.zeros((n, 5), dtype=wp.float32, device=device)
+        return self._lin_params
+
+    def prepare_implicit(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        drive_state: DriveNeuralGRU.State | None,
+        dt: float,
+        inv_mass: wp.array[float] | None = None,
+        device: wp.Device | None = None,
+        *,
+        custom_inputs: dict[str, Any] | None = None,
+    ) -> None:
+        """Refresh the linearization of the network about the current state.
+
+        One forward + autodiff backward at the current per-slot state, with the
+        incoming hidden state held fixed, gives ``tau0, d(tau)/dq,
+        d(tau)/dqd``, packed as ``[tau0, a, b, q0, qd0]`` into
+        :meth:`bind_params`. The forward also advances the hidden state for
+        :meth:`update_state`.
+        """
+        if inv_mass is None:
+            raise ValueError("DriveNeuralGRU.prepare_implicit requires inv_mass (the per-slot response)")
+        params = self.bind_params()
+        if params is None:
+            raise RuntimeError("DriveNeuralGRU.prepare_implicit requires finalize() to have run")
+        device = device or self._device
+        n = self._num_actuators
+        self._compute_net_input(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            pos_indices,
+            vel_indices,
+            target_pos_indices,
+            target_vel_indices,
+            drive_state,
+            dt,
+            device,
+            custom_inputs,
+        )
+        wp.launch(
+            _gather_slot_state_kernel,
+            dim=n,
+            inputs=[
+                positions,
+                velocities,
+                target_pos,
+                target_vel,
+                pos_indices,
+                vel_indices,
+                target_pos_indices,
+                target_vel_indices,
+            ],
+            outputs=[self._q0, self._qd0, self._tq0, self._tqd0],
+            device=device,
+        )
+        tape = wp.Tape()
+        with tape:
+            output = self._forward(drive_state.hidden)
+        tape.backward(grads={output: self._grad_seed})
+        wp.launch(
+            _effort_and_slopes_kernel,
+            dim=n,
+            inputs=[
+                output,
+                self._net_input.grad,
+                self._input_feature_codes_wp,
+                self._input_stds_wp,
+                self._description.output_scale,
+                self._effort_mean,
+                self._effort_std,
+            ],
+            outputs=[self._tau0, self._dtau_dq, self._dtau_dqd],
+            device=device,
+        )
+        tape.zero()
+        wp.launch(
+            _assemble_linear_params_kernel,
+            dim=n,
+            inputs=[
+                self._tau0,
+                self._dtau_dq,
+                self._dtau_dqd,
+                self._q0,
+                self._qd0,
+                inv_mass,
+                float(dt),
+                IMPLICIT_JACOBIAN_MARGIN,
+            ],
+            outputs=[params],
+            device=device,
+        )
 
     def state(self, num_actuators: int, device: wp.Device) -> DriveNeuralGRU.State:
         """Create zero-initialized hidden state.
@@ -782,6 +967,51 @@ class DriveNeuralGRU(DriveBase):
         custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""
+        runtime_device = device or self._device
+        self._compute_net_input(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            pos_indices,
+            vel_indices,
+            target_pos_indices,
+            target_vel_indices,
+            state,
+            dt,
+            runtime_device,
+            custom_inputs,
+        )
+        net_output = self._forward(state.hidden)
+        wp.launch(
+            _write_effort_kernel,
+            dim=self._num_actuators,
+            inputs=[
+                net_output,
+                self._description.output_scale,
+                self._effort_mean,
+                self._effort_std,
+            ],
+            outputs=[output],
+            device=runtime_device,
+        )
+
+    def _compute_net_input(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        state: DriveNeuralGRU.State | None,
+        dt: float,
+        device: wp.Device,
+        custom_inputs: dict[str, Any] | None,
+    ) -> None:
+        """Validate one step's inputs and write the normalized network input."""
         self._next_hidden = None
         custom_input = None
         if self.custom_inputs:
@@ -819,7 +1049,6 @@ class DriveNeuralGRU(DriveBase):
                 f"sample_dt_s={self._sample_dt_s}; received actuator evaluation dt={dt!r}"
             )
 
-        runtime_device = device or self._device
         wp.launch(
             _compute_inputs_kernel,
             dim=(self._num_actuators, len(self._input_feature_keys)),
@@ -838,31 +1067,26 @@ class DriveNeuralGRU(DriveBase):
                 self._input_stds_wp,
             ],
             outputs=[self._net_input],
-            device=runtime_device,
+            device=device,
         )
 
-        net_output = self._net_input
+    def _forward(self, hidden: wp.array3d[float]) -> wp.array2d[float]:
+        """Run the GRU layers and head on the current network input.
+
+        Records the per-layer hidden outputs for :meth:`update_state` and
+        returns the head output before effort denormalization.
+        """
+        output = self._net_input
         next_hidden = []
         for layer_index, layer in enumerate(self._gru_layers):
-            net_output = layer(net_output, state.hidden[layer_index])
-            next_hidden.append(net_output)
+            output = layer(output, hidden[layer_index])
+            next_hidden.append(output)
         self._next_hidden = next_hidden
 
-        net_output = self._head(net_output)
+        output = self._head(output)
         if self._activation is not None:
-            net_output = self._activation(net_output)
-        wp.launch(
-            _write_effort_kernel,
-            dim=self._num_actuators,
-            inputs=[
-                net_output,
-                self._description.output_scale,
-                self._effort_mean,
-                self._effort_std,
-            ],
-            outputs=[output],
-            device=runtime_device,
-        )
+            output = self._activation(output)
+        return output
 
     def update_state(
         self,

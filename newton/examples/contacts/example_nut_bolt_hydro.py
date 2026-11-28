@@ -397,19 +397,10 @@ class Example:
             self.nut_body_indices = None
             return
 
-        # Find bolt and nut body indices by key
-        self.bolt_body_indices = []
-        self.nut_body_indices = []
-
-        for i in range(self.grid_x):
-            for j in range(self.grid_y):
-                bolt_key = f"bolt_{i}_{j}"
-                nut_key = f"nut_{i}_{j}"
-
-                if bolt_key in self.model.body_label:
-                    self.bolt_body_indices.append(self.model.body_label.index(bolt_key))
-                if nut_key in self.model.body_label:
-                    self.nut_body_indices.append(self.model.body_label.index(nut_key))
+        # Replication preserves assembly order, so the lists stay paired across worlds.
+        self.bolt_body_indices = [i for i, label in enumerate(self.model.body_label) if label.startswith("bolt_")]
+        self.nut_body_indices = [i for i, label in enumerate(self.model.body_label) if label.startswith("nut_")]
+        assert len(self.bolt_body_indices) == len(self.nut_body_indices) == self.world_count * self.num_per_world
 
         # Store initial transforms
         body_q = self.state_0.body_q.numpy()
@@ -468,6 +459,13 @@ class Example:
         min_rotation_threshold = np.radians(45.0)
         min_descent = 0.005
         for i in range(len(self.nut_body_indices)):
+            # A nut falling off can also satisfy the rotation and descent checks.
+            bolt_q = body_q[self.bolt_body_indices[i]]
+            bolt_axis = np.array(wp.quat_rotate(wp.quat(bolt_q[3:]), wp.vec3(0.0, 0.0, 1.0)))
+            offset = body_q[self.nut_body_indices[i], :3] - bolt_q[:3]
+            radial_offset = np.linalg.norm(offset - np.dot(offset, bolt_axis) * bolt_axis)
+            assert radial_offset < 0.005 * self.scene_scale, f"Nut {i}: left the bolt axis by {radial_offset:.4f} m"
+
             # Check rotation occurred
             max_rotation = self.nut_max_rotation_change[i]
             assert max_rotation > min_rotation_threshold, (

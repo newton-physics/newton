@@ -7,15 +7,14 @@ import math
 import os
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..utils.color import ColorSpace
-from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -132,6 +131,13 @@ class GeoType(enum.IntEnum):
         return self in {GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD}
 
 
+class _ConvexSupportData(NamedTuple):
+    flags: int
+    lut: np.ndarray
+    vertex_offsets: np.ndarray
+    neighbors: np.ndarray
+
+
 class Mesh:
     """
     Represents a triangle mesh for collision and simulation.
@@ -175,7 +181,9 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
-    @deprecate_nonkeyword_arguments
+    # Older serialized meshes have no instance attribute for this lazy cache.
+    _convex_support_data: _ConvexSupportData | None = None
+
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -1179,7 +1187,7 @@ class Mesh:
     def invalidate_cache(self) -> None:
         """Invalidate all cached data derived from the mesh geometry.
 
-        Drops the cached mesh hash, edge data, watertightness flag, and the
+        Drops the cached mesh hash, edge data, convex support tables, watertightness flag, and the
         finalized Warp meshes returned by :meth:`finalize`, so they are
         recomputed from the current :attr:`vertices` and :attr:`indices` on
         next access.
@@ -1197,6 +1205,7 @@ class Mesh:
         self._edges = None
         self._canonical_ids = None
         self._collision_edges = None
+        self._convex_support_data = None
         self._is_watertight = None
         self._finalized_meshes = {}
 
@@ -1854,7 +1863,6 @@ class TetMesh:
         }
     )
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -2109,18 +2117,13 @@ class TetMesh:
         frequency is ambiguous or cannot be inferred emit a warning and are
         omitted without preventing the TetMesh from loading.
 
-        Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
-        (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
-        are read off any bound material, matching the pre-canonical behavior. That default is
-        deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
-        authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
-        without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
-        materials do not warn); a future
-        release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
-        the canonical-only behavior now -- moduli are then read only from a material that applies
-        ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
-        warning.
+        Material-attribute namespaces: by default, only canonical ``physics:`` attributes are
+        read, moduli from a material that applies ``PhysicsVolumeDeformableMaterialAPI`` and
+        density also from one that applies ``UsdPhysicsMaterialAPI``. Omitting
+        ``compat_namespaces`` warns when this ignores attributes authored on the bound material.
+        Pass an explicit list (e.g. ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to read the
+        canonical and the listed vendor namespaces off any bound material.
+        One deprecated exception to the default is described under ``compat_namespaces``.
 
         Example:
 
@@ -2140,8 +2143,13 @@ class TetMesh:
             prim: The USD prim to load the tetrahedral mesh from.
             compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
                 ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
-                gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
-                canonical-only.
+                gate. ``None`` (the default) and ``()`` are canonical-only; only ``None`` warns
+                about ignored attributes.
+
+                .. deprecated:: 1.9
+                    ``None`` still reads vendor-namespaced values without a ``physics:`` counterpart
+                    from a material that applies ``PhysicsVolumeDeformableMaterialAPI``. A future
+                    release ignores them.
 
         Returns:
             A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -2213,9 +2221,9 @@ class TetMesh:
                 **kwargs,
             )
 
-        import meshio
+        from .utils import _read_meshio  # noqa: PLC0415
 
-        m = meshio.read(filename)
+        m = _read_meshio(filename)
 
         # Find tetrahedral cells
         tet_indices = None
@@ -2598,12 +2606,6 @@ class Gaussian:
         min_response: wp.float32
         sorting_mode: wp.int32
 
-    _WARP_DATA_DEPRECATION_MSG = (
-        "Gaussian.warp_data is deprecated in Newton 1.6; use the Gaussian.Data object returned by "
-        "Gaussian.finalize() instead."
-    )
-    _WARP_BVH_DEPRECATION_MSG = "Gaussian.warp_bvh is deprecated in Newton 1.6; use Gaussian.bvh instead."
-
     def __init__(
         self,
         positions: np.ndarray,
@@ -2754,36 +2756,6 @@ class Gaussian:
         :class:`Data` arrays change.
         """
         return self._warp_bvh
-
-    @property
-    def warp_data(self) -> "Gaussian.Data | None":
-        """Deprecated alias for the finalized Warp Gaussian data.
-
-        .. deprecated:: 1.6
-            Use the :class:`Data` object returned by :meth:`finalize` instead.
-        """
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._warp_data
-
-    @warp_data.setter
-    def warp_data(self, value: "Gaussian.Data | None") -> None:
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._warp_data = value
-
-    @property
-    def warp_bvh(self) -> wp.Bvh | None:
-        """Deprecated alias for :attr:`bvh`.
-
-        .. deprecated:: 1.6
-            Use :attr:`bvh` instead.
-        """
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        return self._warp_bvh
-
-    @warp_bvh.setter
-    def warp_bvh(self, value: wp.Bvh | None) -> None:
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
-        self._warp_bvh = value
 
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""

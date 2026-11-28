@@ -245,7 +245,7 @@ def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds, nat
     assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds)
 
 
-def build_stopping_distance_scene(device, contact_ke=1.0e5):
+def build_stopping_distance_scene(device, contact_ke=1.0e5, contact_kf=0.0):
     """Boxes on per-box static ground patches with matching mu.
 
     Newton averages mu across the two contact shapes, so a shared ground would
@@ -262,7 +262,7 @@ def build_stopping_distance_scene(device, contact_ke=1.0e5):
         cfg.mu = mu
         cfg.ke = contact_ke
         cfg.kd = 0.0
-        cfg.kf = 0.0
+        cfg.kf = contact_kf
         cfg.gap = 0.0
         cfg.color = _ROW_COLORS[i % len(_ROW_COLORS)]
 
@@ -299,7 +299,7 @@ def build_stopping_distance_scene(device, contact_ke=1.0e5):
 
 
 def test_friction_stopping_distance(
-    test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False, contact_ke=1.0e5
+    test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False, contact_ke=1.0e5, contact_kf=0.0
 ):
     """Verify a sliding box stops at d = v0^2 / (2 mu g).
 
@@ -309,7 +309,7 @@ def test_friction_stopping_distance(
     distance against the analytical value and check average planar motion over
     a short trailing rest window.
     """
-    model, box_ids = build_stopping_distance_scene(device, contact_ke=contact_ke)
+    model, box_ids = build_stopping_distance_scene(device, contact_ke=contact_ke, contact_kf=contact_kf)
     solver = solver_fn(model)
 
     state_0 = model.state()
@@ -430,28 +430,6 @@ _SOLVERS = {
             lambda model: newton.solvers.SolverMuJoCo(
                 model,
                 use_mujoco_cpu=False,
-                njmax=800,
-                nconmax=500,
-                cone="elliptic",
-                impratio=10.0,
-                iterations=200,
-                ls_iterations=100,
-            )
-        ),
-        "native_contacts": True,
-        "mus": _DEFAULT_MUS,
-        "angles_deg": _DEFAULT_ANGLES_DEG,
-        "thresholds": _DEFAULT_THRESHOLDS,
-        "stopping_distance_rel_tol": 0.01,
-        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
-    },
-    # Same config as mujoco_warp but consuming Newton CollisionPipeline
-    # contacts — covers the elliptic + Newton-contacts constraint path.
-    "mujoco_warp_newton_contacts": {
-        "factory": requires(*MUJOCO_MODULES)(
-            lambda model: newton.solvers.SolverMuJoCo(
-                model,
-                use_mujoco_cpu=False,
                 use_mujoco_contacts=False,
                 njmax=800,
                 nconmax=500,
@@ -461,15 +439,16 @@ _SOLVERS = {
                 ls_iterations=100,
             )
         ),
+        # Elliptic Newton contacts need nonzero kf to create friction rows.
+        # For the stopping box, 1e4 is close to the gain from MuJoCo's native
+        # friction rows and keeps the viscous tail within the distance tolerance.
+        "friction_ramp_contact_kf": 1.0e4,
+        "stopping_distance_contact_kf": 1.0e4,
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
         "stopping_distance_rel_tol": 0.01,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
-        "friction_ramp_contact_kf": 1000.0,
-        # Finite kf has a low-speed viscous tail, so the pure Coulomb
-        # stopping-distance oracle does not apply.
-        "run_stopping_distance": False,
     },
     "mujoco_cpu": {
         "factory": requires(*MUJOCO_MODULES)(
@@ -509,6 +488,14 @@ _SOLVERS = {
         "stopping_distance_rel_tol": 0.01,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
+}
+
+_SOLVERS["mujoco_warp_newton_contacts"] = {
+    **_SOLVERS["mujoco_warp"],
+    "friction_ramp_contact_kf": 1.0e3,
+    "stopping_distance_contact_kf": 0.0,
+    # The low gain leaves a viscous tail outside the Coulomb distance tolerance.
+    "run_stopping_distance": False,
 }
 
 for _backend in ("pgs", "apgd"):
@@ -625,7 +612,9 @@ class TestRigidFrictionRamp(unittest.TestCase):
         cfg = _SOLVERS[solver_name]
 
         model, box_ids = build_stopping_distance_scene(
-            device, contact_ke=cfg.get("stopping_distance_contact_ke", 1.0e5)
+            device,
+            contact_ke=cfg.get("stopping_distance_contact_ke", 1.0e5),
+            contact_kf=cfg.get("stopping_distance_contact_kf", 0.0),
         )
         solver = cfg["factory"](model)
         state_0 = model.state()
@@ -735,6 +724,7 @@ for device in devices:
             rest_speed_max=cfg["stopping_distance_rest_speed_max"],
             native_contacts=cfg.get("native_contacts", False),
             contact_ke=cfg.get("stopping_distance_contact_ke", 1.0e5),
+            contact_kf=cfg.get("stopping_distance_contact_kf", 0.0),
         )
 
 

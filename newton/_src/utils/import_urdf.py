@@ -20,7 +20,7 @@ from ..core.types import Transform
 from ..exceptions import NewtonWarning
 from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointTargetMode, friction_mode_from_condim
 from ..sim.model import Model
 from .import_utils import (
     clamp_imported_opacity,
@@ -496,6 +496,12 @@ def parse_urdf(
                 continue
             custom_attributes = parse_custom_attributes(geo.attrib, builder_custom_attr_shape, parsing_mode="urdf")
             shape_kwargs["custom_attributes"] = custom_attributes
+            # condim is a MuJoCo extension of URDF; it sets the friction mode, not the deprecated attribute.
+            custom_attributes.pop("mujoco:condim", None)
+            condim = geo.get("condim")
+            shape_cfg.friction_mode = (
+                builder.default_shape_cfg.friction_mode if condim is None else friction_mode_from_condim(int(condim))
+            )
 
             tf = parse_transform(geom_group)
             if incoming_xform is not None:
@@ -637,8 +643,10 @@ def parse_urdf(
             joint_data["friction"] = float(el_dynamics.get("friction", default_joint_friction))
         el_limit = joint.find("limit")
         if el_limit is not None:
-            joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
-            joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
+            # URDF continuous joints have no position limits; only effort and velocity are read
+            if joint_data["type"] != "continuous":
+                joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
+                joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
             joint_data["limit_effort"] = float(el_limit.get("effort", default_joint_limit_effort))
             if (velocity := el_limit.get("velocity")) is not None:
                 joint_data["limit_velocity"] = float(velocity)

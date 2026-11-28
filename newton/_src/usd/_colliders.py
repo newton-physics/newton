@@ -26,6 +26,7 @@ from ._mass_properties import _is_enabled_collider
 from ._resolution_policy import (
     _resolve_physics_material,
     _resolve_shape_contact,
+    _resolve_shape_friction_mode,
     _resolve_shape_hydroelastic,
     _resolve_shape_offsets,
     _resolve_shape_sdf,
@@ -37,6 +38,7 @@ from .schemas import SchemaResolverMjc, SchemaResolverNewton, SchemaResolverPhys
 if TYPE_CHECKING:
     from pxr import Usd, UsdGeom, UsdPhysics
 
+    from ..sim.enums import ShapeFrictionMode
     from ._mass_properties import _UsdMassProperties
     from ._resolution_policy import _PhysicsMaterial
     from ._visuals import _UsdVisuals
@@ -56,6 +58,7 @@ class _ColliderProperties:
     margin: float
     gap: float
     contact: dict[str, Any]
+    friction_mode: ShapeFrictionMode
     sdf: Any
     is_hydroelastic: bool
     kh: float
@@ -209,6 +212,10 @@ def _parse_colliders(
                 elif verbose:
                     logger.info("No material found for shape at '%s'.", path)
 
+                # Extract custom attributes for this shape
+                shape_custom_attrs = usd.get_custom_attribute_values(
+                    prim, builder_custom_attr_shape, context={"builder": builder}
+                )
                 # Instance proxies of one prototype prim author identical collider attributes.
                 collider_properties = None
                 cache_key = None
@@ -240,11 +247,16 @@ def _parse_colliders(
                             verbose=verbose,
                         )
                         mesh_properties["approximation"] = usd.get_attribute(prim, "physics:approximation", None)
+                    contact = _resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose)
+                    friction_mode = _resolve_shape_friction_mode(
+                        prim, R, material, builder.default_shape_cfg, contact, shape_custom_attrs, verbose=verbose
+                    )
                     collider_properties = _ColliderProperties(
                         enabled=_is_enabled_collider(prim),
                         margin=margin_val,
                         gap=gap_val,
-                        contact=_resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose),
+                        contact=contact,
+                        friction_mode=friction_mode,
                         sdf=sdf,
                         is_hydroelastic=is_hydroelastic,
                         kh=kh,
@@ -271,10 +283,8 @@ def _parse_colliders(
                     shape_xform = incoming_world_xform * local_xform
                 else:
                     shape_xform = local_xform
-                # Extract custom attributes for this shape
-                shape_custom_attrs = usd.get_custom_attribute_values(
-                    prim, builder_custom_attr_shape, context={"builder": builder}
-                )
+                # The friction mode carries mjc:condim; the deprecated mujoco:condim stays unset.
+                shape_custom_attrs.pop("mujoco:condim", None)
                 margin_val, gap_val = collider_properties.margin, collider_properties.gap
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
@@ -340,6 +350,7 @@ def _parse_colliders(
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
                         **shape_contact,
+                        friction_mode=collider_properties.friction_mode,
                         margin=inertia_margin,
                         gap=gap_val,
                         density=shape_density,
