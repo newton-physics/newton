@@ -1,0 +1,1 @@
+Import MJCF `<body mocap="true">` bodies with `BodyFlags.KINEMATIC` (matching USD kinematic rigid bodies), preserve kinematic root bodies during `ModelBuilder.collapse_fixed_joints()`, and avoid merging articulated bodies across loop-closing MuJoCo `<weld>` equality joints when collapsing fixed joints.

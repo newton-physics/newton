@@ -2762,6 +2762,30 @@ def parse_mjcf(
         body_name = sanitize_name(body_name)
         has_inertial_definition = body.find("inertial") is not None
         has_joint_definition = body.find("joint") is not None or body.find("freejoint") is not None
+        mocap_raw = body_attrib.get("mocap", defaults.get("body", {}).get("mocap", "false")).strip().lower()
+        if mocap_raw not in ("true", "false", "1", "0"):
+            raise ValueError(f"MJCF body '{body_name}' mocap must be 'true' or 'false'; got {mocap_raw!r}.")
+        is_mocap_body = mocap_raw in ("true", "1")
+        if is_mocap_body:
+            if not is_mjcf_root:
+                raise ValueError(f"MJCF body '{body_name}' with mocap=\"true\" must be a child of <worldbody>.")
+
+            def _iter_body_owned_frame_elements(frame_el: ET.Element):
+                stack = list(frame_el)
+                while stack:
+                    el = stack.pop()
+                    if el.tag == "body":
+                        continue
+                    yield el
+                    stack.extend(el)
+
+            has_framed_joint = any(
+                el.tag in ("joint", "freejoint")
+                for fr in body.findall("frame")
+                for el in _iter_body_owned_frame_elements(fr)
+            )
+            if has_joint_definition or has_framed_joint:
+                raise ValueError(f"MJCF body '{body_name}' with mocap=\"true\" cannot declare joints.")
         if (
             inertia_from_geom == "false"
             and not ignore_inertial_definitions
@@ -3053,6 +3077,7 @@ def parse_mjcf(
         link = builder.add_link(
             xform=world_xform,  # Use the composed world transform
             label=body_label_path,
+            is_kinematic=is_mocap_body,
             custom_attributes=body_custom_attributes,
         )
         body_name_to_idx[body_name] = link
@@ -3101,7 +3126,9 @@ def parse_mjcf(
         # This handles the case where a MJCF with a <freejoint> is being attached to an existing body
         is_free_joint_with_override = joint_type == JointType.FREE and is_mjcf_root and has_hierarchical_composition
 
-        if (is_mjcf_root and (has_override_params or has_hierarchical_composition)) or is_free_joint_with_override:
+        if (not is_mocap_body or has_hierarchical_composition) and (
+            (is_mjcf_root and (has_override_params or has_hierarchical_composition)) or is_free_joint_with_override
+        ):
             # Extract joint position (used for transform calculation)
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
