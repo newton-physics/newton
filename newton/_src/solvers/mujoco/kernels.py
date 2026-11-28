@@ -26,6 +26,8 @@ from .constants import (
     DEFAULT_LIMIT_SOLREF_TIMECONST,
     FLOAT64_EPS,
     HINGE_CONNECT_HALF_SPAN,
+    MJ_MAXIMP,
+    MJ_MINIMP,
     MJ_MINMU,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -493,6 +495,21 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
 
 
 @wp.func
+def _hydroelastic_solref(stiffness: float, damping: float, invweight: float, timestep: float, is_discrete: bool):
+    """Map an implicit spring-damper through native MuJoCo contact parameters."""
+    damping = wp.max(damping, 0.0)
+    imp = float(MJ_MINIMP)
+    if not is_discrete:
+        damping += timestep * stiffness
+        scaled_weight = invweight * timestep * damping
+        # Reciprocal form avoids inf / inf for very stiff contacts.
+        imp = wp.clamp(1.0 / (1.0 + 1.0 / wp.max(scaled_weight, FLOAT64_EPS)), MJ_MINIMP, MJ_MAXIMP)
+    # Discrete already integrates the spring and damper implicitly.
+    factor = invweight * (1.0 - imp)
+    return wp.vec2(-stiffness * factor, -damping * factor), vec5(imp, imp, 0.001, 1.0, 0.5)
+
+
+@wp.func
 def _recovery_solref(thickness: float, depth: float, dt: float, solimp: vec5) -> wp.vec2:
     """Limit the positional recovery target independently of the contact distance."""
     imp_max = wp.clamp(solimp[1], 0.0001, 0.9999)
@@ -571,6 +588,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
+    hydroelastic_pressure: wp.array[bool],
+    hydroelastic_generation: wp.array[int],
+    hydroelastic_shape_enabled: wp.array[bool],
+    hydroelastic: bool,
+    is_discrete: bool,
     recovery: MeshRecoveryData,
     world_timestep: wp.array[float],
     refsafe: bool,
@@ -594,9 +616,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     gen = contact_generation[0]
     last_gen = last_contact_generation[0]
+    # Selected patches refresh timestep-dependent parameters on every substep.
     # An expired recovery row must release its slot even when the detection
     # generation is held. Actuators also consume the packed table directly.
-    if gen != last_gen or (compact_stale and has_recovery_contacts(recovery, gen)):
+    needs_full = gen != last_gen or hydroelastic or (compact_stale and has_recovery_contacts(recovery, gen))
+
+    if needs_full:
         # ── FULL PATH ────────────────────────────────────────────────────
         # Runs on the first substep after collision detection.  Identical to
         # the original kernel plus recording the tid→cid mapping.
@@ -677,6 +702,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
             rigid_contact_margin0[tid] - shape_margin[shape_a],
             rigid_contact_margin1[tid] - shape_margin[shape_b],
         )
+        if hydroelastic and hydroelastic_generation[tid] != gen:
+            # Retain the exported stiffness's meaning until collision detection replaces this row.
+            hydroelastic_pressure[tid] = (
+                hydroelastic_shape_enabled[shape_a]
+                and hydroelastic_shape_enabled[shape_b]
+                and dist < shape_margin[shape_a] + shape_margin[shape_b]
+            )
+            hydroelastic_generation[tid] = gen
         pos = 0.5 * (point_a + point_b)
 
         frame = make_frame(n)
@@ -812,6 +845,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 dampratio = critical_timeconst / timeconst
                 solref = wp.vec2(timeconst, dampratio)
 
+        if hydroelastic and hydroelastic_pressure[tid]:
+            stiffness = rigid_contact_stiffness[tid]
+            if stiffness > 0.0 and invweight > 0.0:
+                h = world_timestep[worldid % world_timestep.shape[0]]
+                solref, solimp = _hydroelastic_solref(stiffness, rigid_contact_damping[tid], invweight, h, is_discrete)
+                if condim > 1:
+                    rate = 1.0 / h
+                    if is_discrete:
+                        # Compensate discrete's b / (1 + h*b), to the impedance-floor accuracy.
+                        rate /= MJ_MINIMP
+                    solreffriction = wp.vec2(0.0, -rate * solimp[1])
+
         if recovery_slot >= 0 and dist < margin:
             dt = world_timestep[worldid % world_timestep.shape[0]]
             solref = _recovery_solref(recovery.contacts[recovery_slot].thickness, margin - dist, dt, solimp)
@@ -933,13 +978,14 @@ def _sync_nacon_count(
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
+    force_full: bool,
     recovery: MeshRecoveryData,
     compact_stale: bool,
     naconmax: int,
 ):
     """Publish the compacted count and reset scratch storage for the next pass."""
     gen = contact_generation[0]
-    if gen != last_contact_generation[0] or (compact_stale and has_recovery_contacts(recovery, gen)):
+    if gen != last_contact_generation[0] or force_full or (compact_stale and has_recovery_contacts(recovery, gen)):
         last_nacon_count[0] = contact_count[0]
         last_contact_generation[0] = gen
         if compact_stale and contact_count[0] > naconmax:
