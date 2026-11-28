@@ -214,8 +214,9 @@ def eval_bending(
     n2_length = wp.length(n2)
     e_length = wp.length(e)
 
-    # Check for degenerate cases
-    if n1_length < eps or n2_length < eps or e_length < eps:
+    # Compare triangle heights to the shared edge, independently of mesh scale.
+    area_eps = eps * e_length * e_length
+    if n1_length < area_eps or n2_length < area_eps or e_length < eps:
         return
 
     n1_hat = n1 / n1_length
@@ -226,10 +227,13 @@ def eval_bending(
     sin_theta = wp.dot(wp.cross(n1_hat, n2_hat), e_hat)
     theta = wp.atan2(sin_theta, cos_theta)
 
-    d1 = -n1_hat * e_length
-    d2 = -n2_hat * e_length
-    d3 = -n1_hat * wp.dot(x1 - x4, e_hat) - n2_hat * wp.dot(x2 - x4, e_hat)
-    d4 = -n1_hat * wp.dot(x3 - x1, e_hat) - n2_hat * wp.dot(x3 - x2, e_hat)
+    # Angle derivatives use inverse-area normals.
+    n1_grad = n1_hat / n1_length
+    n2_grad = n2_hat / n2_length
+    d1 = -n1_grad * e_length
+    d2 = -n2_grad * e_length
+    d3 = -n1_grad * wp.dot(x1 - x4, e_hat) - n2_grad * wp.dot(x2 - x4, e_hat)
+    d4 = -n1_grad * wp.dot(x3 - x1, e_hat) - n2_grad * wp.dot(x3 - x2, e_hat)
 
     # elastic
     f_elastic = ke * (theta - rest_angle)
