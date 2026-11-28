@@ -863,19 +863,6 @@ class PADMMSolverConfig:
     carried by the kept rows.
     """
 
-    contact_warmstart_method: Literal[
-        "key_and_position",
-        "geom_pair_net_force",
-        "geom_pair_net_wrench",
-        "key_and_position_with_net_force_backup",
-        "key_and_position_with_net_wrench_backup",
-    ] = "key_and_position"
-    """
-    Method to be used for warm-starting contacts.\n
-    See :class:`WarmstarterContacts.Method` for available options.\n
-    Defaults to `key_and_position`.
-    """
-
     detect_redundant_kinematics: bool = field(default=True, kw_only=True)
     """
     Whether to drop the numerically redundant kinematic joint constraints, e.g. of closed kinematic loops,
@@ -1049,7 +1036,6 @@ class PADMMSolverConfig:
         """
         # Import here to avoid module-level imports and circular dependencies
         from ._src.solvers.padmm import PADMMPenaltyUpdate, PADMMWarmStartMode  # noqa: PLC0415
-        from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
         # Ensure that the scalar parameters are within valid ranges
         if self.primal_tolerance < 0.0:
@@ -1099,7 +1085,6 @@ class PADMMSolverConfig:
         # if the corresponding input string is invalid.
         PADMMPenaltyUpdate.from_string(self.penalty_update_method)
         PADMMWarmStartMode.from_string(self.warmstart_mode)
-        WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
 
     @override
     def __post_init__(self):
@@ -1321,19 +1306,6 @@ class SCCSolverConfig:
     Uses the same choices as the other dual dynamics solvers. Defaults to `containers`.
     """
 
-    contact_warmstart_method: Literal[
-        "key_and_position",
-        "geom_pair_net_force",
-        "key_and_position_with_net_force_backup",
-        "key_and_position_with_tangential_net_force",
-        "key_and_position_with_net_force_backup_and_tangential_net_force",
-    ] = "key_and_position_with_tangential_net_force"
-    """
-    The contact warmstart method used when `warmstart_mode` is `containers`.
-    See :class:`WarmstarterContacts.Method` for available options.
-    Defaults to `key_and_position_with_tangential_net_force`.
-    """
-
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -1366,7 +1338,6 @@ class SCCSolverConfig:
     def validate(self) -> None:
         """Validates the current values held by this config instance."""
         from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
-        from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
         if self.unilateral_solver not in {"pgs", "apgd"}:
             raise ValueError("`unilateral_solver` must be 'pgs' or 'apgd'.")
@@ -1402,19 +1373,6 @@ class SCCSolverConfig:
                 f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM', 'LDL']."
             )
         WarmStartMode.from_string(self.warmstart_mode)
-        WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
-        implemented_contact_warmstart_methods = {
-            "key_and_position",
-            "geom_pair_net_force",
-            "key_and_position_with_net_force_backup",
-            "key_and_position_with_tangential_net_force",
-            "key_and_position_with_net_force_backup_and_tangential_net_force",
-        }
-        if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
-            raise ValueError(
-                f"SCC contact warmstart method is not implemented: {self.contact_warmstart_method}. "
-                f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
-            )
 
     @override
     def __post_init__(self):
@@ -1677,15 +1635,6 @@ class LOXSolverConfig:
     retain the 3D path.
     """
 
-    contact_warmstart_method: Literal[
-        "key_and_position",
-        "geom_pair_net_force",
-        "key_and_position_with_net_force_backup",
-        "key_and_position_with_tangential_net_force",
-        "key_and_position_with_net_force_backup_and_tangential_net_force",
-    ] = "key_and_position"
-    """Method used to warm-start contacts."""
-
     gauss_seidel_max_colors: int = 4
     """Maximum colors used by Gauss--Seidel unilateral projection.
 
@@ -1754,8 +1703,6 @@ class LOXSolverConfig:
     @override
     def validate(self) -> None:
         """Validates the current values held by this config instance."""
-        from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
-
         iteration_fields = {
             "max_iterations": self.max_iterations,
             "projection_sweeps_per_iteration": self.projection_sweeps_per_iteration,
@@ -1874,19 +1821,6 @@ class LOXSolverConfig:
         for name in ("contact_compliance", "contact_implicit_restitution", "contact_spatial_friction"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"Invalid {name}: {getattr(self, name)}. Must be a boolean.")
-        WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
-        implemented_contact_warmstart_methods = {
-            "key_and_position",
-            "geom_pair_net_force",
-            "key_and_position_with_net_force_backup",
-            "key_and_position_with_tangential_net_force",
-            "key_and_position_with_net_force_backup_and_tangential_net_force",
-        }
-        if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
-            raise ValueError(
-                f"LOX contact warmstart method is not implemented: {self.contact_warmstart_method}. "
-                f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
-            )
 
     @override
     def __post_init__(self):

@@ -89,7 +89,6 @@ class Example:
         solver_config.padmm.rho_0 = 0.1
         solver_config.padmm.use_acceleration = True
         solver_config.padmm.warmstart_mode = "containers"
-        solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
         configure_ldl(solver_config, args)

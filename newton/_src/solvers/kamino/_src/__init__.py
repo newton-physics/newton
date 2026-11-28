@@ -33,6 +33,7 @@ from .geometry.contacts import (
 )
 from .geometry.detector import CollisionDetector
 from .solver_kamino_impl import SolverKaminoImpl
+from .solvers.warmstart import ContactMatchMap
 
 ###
 # Kamino API
@@ -42,6 +43,7 @@ __all__ = [
     "JOINT_QMAX",
     "JOINT_QMIN",
     "CollisionDetector",
+    "ContactMatchMap",
     "ContactsKamino",
     "ControlKamino",
     "DofActuationPath",

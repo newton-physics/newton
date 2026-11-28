@@ -526,7 +526,6 @@ class DRLegsBenchmarkWorkload:
         config.padmm.rho_0 = 0.05
         config.padmm.use_acceleration = True
         config.padmm.warmstart_mode = "containers"
-        config.padmm.contact_warmstart_method = "geom_pair_net_force"
         config.padmm.use_graph_conditionals = False
         config.dynamics.linear_solver_type = "LLTBRCM"
         return newton.solvers.SolverKamino(model, config=config)

@@ -162,7 +162,6 @@ class Example:
             self.config.scc.max_alternating_iterations = 4
             self.config.scc.inequality_sweeps_per_iteration = 3
             self.config.scc.bilateral_solve_interval = 1
-            self.config.scc.contact_warmstart_method = "key_and_position_with_tangential_net_force"
             self.config.scc.unilateral_solver = getattr(args, "unilateral_solver", None) or "pgs"
             self.config.scc.use_schur_complement = getattr(args, "use_schur_complement", None)
         configure_ldl(self.config, args)

@@ -1008,6 +1008,10 @@ class SolverKamino(SolverBase, CouplingInterface):
                 remappable=True,
             )
 
+        self._contact_match_map = None
+        if self._contacts_kamino is not None and self._contacts_kamino.data.remap is not None:
+            self._contact_match_map = self._kamino.ContactMatchMap(model.device, model.rigid_contact_max or 0)
+
         # Declare an internal reference cache to be able to detect if
         # a Kamino-internal collision detector was used at runtime.
         # NOTE: This is used to determine whether to clear the output
@@ -1268,7 +1272,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
         generates contacts on every step and ``contacts`` is not used as input. Otherwise, non-``None``
         contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
-        converted to Kamino's internal format and used directly.
+        converted to Kamino's internal format and used directly. Container contact
+        warm starting uses :attr:`Contacts.rigid_contact_match_index` when the
+        Newton pipeline enables contact matching, and otherwise matches the
+        contacts against the previous step with the same contact matcher.
 
         Args:
             state_in: The input state.
@@ -1328,6 +1335,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self._contacts_kamino is not None:
                 self._contacts_kamino.clear()
 
+        contact_stream = 0
+        if self._contact_match_map is not None:
+            contact_stream = self._contact_match_map.resolve(contacts, self._contacts_kamino)
+
         # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(
             body_com=self._model_kamino.bodies.i_r_com_i,
@@ -1345,15 +1356,24 @@ class SolverKamino(SolverBase, CouplingInterface):
             # the input twist until integration completes, including in-place steps.
             wp.copy(body_qdd, state_in.body_qd)
 
-        # Step the physics solver
-        self._solver_kamino.step(
-            state_in=state_in_kamino,
-            state_out=state_out_kamino,
-            control=self._control_kamino,
-            contacts=self._contacts_kamino,
-            detector=self._detector,
-            dt=dt,
-        )
+        try:
+            self._solver_kamino.step(
+                state_in=state_in_kamino,
+                state_out=state_out_kamino,
+                control=self._control_kamino,
+                contacts=self._contacts_kamino,
+                detector=self._detector,
+                dt=dt,
+                contacts_matched=contact_stream != 0,
+            )
+        except BaseException:
+            if self._contact_match_map is not None:
+                # The reaction cache may already contain rows from the failed step.
+                self._contact_match_map.update(self._contacts_kamino, 0)
+            raise
+
+        if self._contact_match_map is not None:
+            self._contact_match_map.update(self._contacts_kamino, contact_stream)
 
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.SOLVER_RESIDUAL):
             self._solver_kamino.solver_fd.write_world_residual(observables.solver_residual)

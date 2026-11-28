@@ -1142,7 +1142,6 @@ class RigidBodySim:
         settings.solver.padmm.rho_0 = 0.05
         settings.solver.padmm.use_acceleration = True
         settings.solver.padmm.warmstart_mode = "containers"
-        settings.solver.padmm.contact_warmstart_method = "geom_pair_net_force"
         settings.solver.collect_solver_info = False
         settings.solver.compute_solution_metrics = False
         settings.solver.padmm.use_graph_conditionals = False

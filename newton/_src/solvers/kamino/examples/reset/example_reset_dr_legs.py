@@ -145,7 +145,6 @@ class Example:
         self.config.padmm.rho_min = 0.01
         self.config.padmm.use_acceleration = True
         self.config.padmm.warmstart_mode = "containers"
-        self.config.padmm.contact_warmstart_method = "geom_pair_net_force"
         self.config.collect_solver_info = False
         self.config.compute_solution_metrics = False
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)

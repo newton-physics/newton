@@ -1663,11 +1663,9 @@ class LOXProblem:
             )
             if self._data.contact_rows.angular_warmstarter is not None:
                 # Warm-start the spin and rolling impulses from the contacts of the previous time step
-                self._data.contact_rows.angular_reaction.zero_()
                 self._data.contact_rows.angular_warmstarter.warmstart(
                     self.contacts,
                     self._data.contact_rows.source_to_internal,
-                    self.kamino_data.bodies.q_i,
                     time_step,
                     self._data.contact_rows.angular_reaction,
                 )
