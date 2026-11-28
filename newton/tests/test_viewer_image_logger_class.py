@@ -449,6 +449,7 @@ class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
         from newton._src.viewer import viewer_gl, viewer_gui  # noqa: PLC0415
 
         renderer = mock.MagicMock()
+        renderer.framebuffer_size.return_value = (640, 480)
         renderer.window.get_framebuffer_size.return_value = (640, 480)
         renderer.window.get_size.return_value = (640, 480)
         fake_ui = types.SimpleNamespace(is_available=True, imgui=mock.MagicMock(), dpi_scale=1.0, shutdown=mock.Mock())
@@ -637,6 +638,9 @@ class TestViewerGLInitialization(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 self.window = _FakeWindow()
                 self.closed = False
+
+            def framebuffer_size(self):
+                return self.window.get_framebuffer_size()
 
             def set_title(self, title):
                 self.title = title

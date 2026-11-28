@@ -241,6 +241,42 @@ class TestViewerGLGetFrame(unittest.TestCase):
         finally:
             viewer.close()
 
+    def test_headless_frame_size_ignores_window_backing_scale(self):
+        """Keep headless frames at the requested size when the hidden window is HiDPI-scaled."""
+        pyglet = import_pyglet_window()
+
+        # A hidden pyglet window on a Retina display reports a framebuffer
+        # twice the requested size; headless capture must not follow it.
+        # Patch the window class before construction so viewer setup sees the
+        # scaled framebuffer too.
+        with mock.patch.object(pyglet.window.Window, "get_framebuffer_size", return_value=(128, 96)):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+
+            try:
+                self.assertEqual(viewer.renderer.window.get_framebuffer_size(), (128, 96))
+                self.assertEqual((viewer.camera.width, viewer.camera.height), (64, 48))
+
+                viewer.set_model(_make_box_model("cpu"))
+                viewer.begin_frame(0.0)
+                viewer.end_frame()
+                frame = viewer.get_frame()
+                self.assertEqual(frame.shape, (48, 64, 3))
+                self.assertEqual((viewer.camera.width, viewer.camera.height), (64, 48))
+
+                # A resize that changes the aspect ratio must reach the camera
+                # too, or the projection stretches the captured frame.
+                viewer.renderer._on_window_resize(96, 48)
+                viewer.begin_frame(1.0)
+                viewer.end_frame()
+                frame = viewer.get_frame()
+                self.assertEqual(frame.shape, (48, 96, 3))
+                self.assertEqual((viewer.camera.width, viewer.camera.height), (96, 48))
+
+                viewer.set_model(_make_box_model("cpu"))
+                self.assertEqual((viewer.camera.width, viewer.camera.height), (96, 48))
+            finally:
+                viewer.close()
+
     def test_large_quad_is_stable_under_parallel_camera_translation(self):
         """Keep a large uniform quad stable while translating the camera parallel to it."""
         viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)

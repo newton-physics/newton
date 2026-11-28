@@ -187,6 +187,7 @@ class TestViewerRTXPlotting(_ViewerPlottingTests, unittest.TestCase):
 class TestViewerGLPlotting(_ViewerPlottingTests, unittest.TestCase):
     def _make_viewer(self):
         renderer = mock.MagicMock()
+        renderer.framebuffer_size.return_value = (1280, 720)
         renderer.window.get_framebuffer_size.return_value = (1280, 720)
         renderer.window.get_size.return_value = (1280, 720)
         with (

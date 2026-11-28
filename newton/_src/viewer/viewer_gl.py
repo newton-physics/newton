@@ -265,7 +265,7 @@ class ViewerGL(ViewerBase):
         self.renderer.set_title("Newton Viewer")
         self._image_logger = ImageLogger(device=self.device)
 
-        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        fb_w, fb_h = self.renderer.framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = paused
@@ -658,7 +658,7 @@ class ViewerGL(ViewerBase):
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
 
-        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        fb_w, fb_h = self.renderer.framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
 
         if prev_camera is not None and model is not None and prev_camera.up_axis == self.camera.up_axis:
@@ -2456,7 +2456,7 @@ class ViewerGL(ViewerBase):
             width: New window width.
             height: New window height.
         """
-        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        fb_w, fb_h = self.renderer.framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
         self._invalidate_pbo()
 
