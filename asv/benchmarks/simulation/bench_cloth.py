@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
+
 import numpy as np
 import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
@@ -56,6 +58,20 @@ DEFORMABLE_RIGID_CASES = (
     ("mixed_sparse", "mixed", 32, 64, 20, True),
     ("mixed_gpu", "mixed", 128, 64, 10, False),
 )
+
+
+# Cases with rigid meshes, repeated with the "sdf" mesh back-end.
+COARSE_CLOTH_RIGID_SDF_MESH_CASES = tuple(case for case in COARSE_CLOTH_RIGID_CASES if case[1] == "mesh")
+COARSE_CLOTH_VBD_SDF_MESH_CASES = tuple(case for case in COARSE_CLOTH_VBD_CASES if case[1] == "mesh")
+
+
+WRAPPED_CLOTH_PARTICLES = (81, 1089, 16641)
+WRAPPED_CLOTH_RIGID_TRIANGLES = (64, 16384)
+# Offset [m] of the cloth from the mesh surface; the contact gap is 0.05 m.
+WRAPPED_CLOTH_OFFSETS = {"none": 1.0, "all": 0.02}
+WRAPPED_CLOTH_MESH_BACKENDS = ("bvh", "sdf")
+# Soft-contact capacity of the one scene whose rows exceed the default capacity.
+WRAPPED_CLOTH_SOFT_CONTACT_MAX = {(16641, 16384, "all", "bvh"): 1250000}
 
 
 DEFORMABLE_RIGID_SCALE_CASES = (
@@ -174,6 +190,73 @@ def _make_deformable_rigid_world(kind, resolution, shape_count, sparse):
     return world
 
 
+@wp.kernel
+def _mesh_distance_along_rays(mesh: wp.uint64, directions: wp.array[wp.vec3], distances: wp.array[float]):
+    """Distance [m] from the origin to the mesh surface along each unit direction, or -1 on a miss."""
+    tid = wp.tid()
+    direction = directions[tid]
+    query = wp.mesh_query_ray(mesh, 4.0 * direction, -direction, 8.0)
+    distances[tid] = 4.0 - query.t if query.result else -1.0
+
+
+def _make_wrapped_cloth_world(cloth_particles, rigid_triangles, offset, mesh_sdf, device):
+    """Wrap a square cloth over a cap of a unit sphere mesh.
+
+    Every particle lies on a ray from the sphere centre, at *offset* [m] from
+    the point where the ray meets the faceted surface, so the cloth keeps the
+    same distance to the mesh at every mesh resolution.
+    """
+    resolution = round(np.sqrt(cloth_particles)) - 1
+    latitudes = round(np.sqrt(rigid_triangles / 4))
+    mesh = newton.Mesh.create_sphere(1.0, num_latitudes=latitudes, num_longitudes=2 * latitudes)
+    indices = np.asarray(mesh.indices).reshape(-1)
+    cap = 0.8  # tangent of the cap half-angle along each cloth axis
+
+    world = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    world.add_cloth_grid(
+        pos=wp.vec3(0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=resolution,
+        dim_y=resolution,
+        cell_x=2.0 * cap / resolution,
+        cell_y=2.0 * cap / resolution,
+        mass=0.1,
+        particle_radius=0.0,
+    )
+    if world.particle_count != cloth_particles or len(indices) != 3 * rigid_triangles:
+        raise ValueError(f"no wrapped-cloth scene has {cloth_particles} particles and {rigid_triangles} triangles")
+
+    # Ray directions in the particle order of the grid, whose first axis varies fastest.
+    grid = np.linspace(-cap, cap, resolution + 1)
+    v, u = np.meshgrid(grid, grid, indexing="ij")
+    directions = np.stack((np.ones_like(u), u, v), axis=-1).reshape(-1, 3)
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    ray_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(indices, dtype=wp.int32, device=device),
+    )
+    distances = wp.zeros(len(directions), dtype=float, device=device)
+    wp.launch(
+        _mesh_distance_along_rays,
+        dim=len(directions),
+        inputs=[ray_mesh.id, wp.array(directions, dtype=wp.vec3, device=device)],
+        outputs=[distances],
+        device=device,
+    )
+    distances = distances.numpy()
+    if np.any(distances < 0.0):
+        raise RuntimeError("a cloth ray missed the sphere mesh")
+    for index, position in enumerate(directions * (distances + offset)[:, None]):
+        world.particle_q[index] = wp.vec3(*position)
+
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+    if mesh_sdf:
+        cfg.configure_sdf(force_sdf=True)
+    world.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
+    return world
+
+
 class FastDeformableSelfCollision:
     """Benchmark self-collision detection in one large cloth and many replicated worlds."""
 
@@ -236,11 +319,25 @@ class DeformableRigidCollision:
     warmup_count = 2
     launch_count = 10
     timeout = 600
+    mesh_backend = "bvh"
+
+    def _mesh_backend_args(self):
+        """Return the pipeline argument selecting :attr:`mesh_backend`.
+
+        The default back-end passes nothing, so those benchmarks also run on
+        revisions that predate the argument.
+        """
+        if self.mesh_backend == "bvh":
+            return {}
+        if "rigid_soft_full_surface_mesh_backend" not in inspect.signature(newton.CollisionPipeline).parameters:
+            raise SkipNotImplemented
+        return {"rigid_soft_full_surface_mesh_backend": self.mesh_backend}
 
     def setup(self, case):
         device = wp.get_device()
         if not device.is_cuda:
             raise SkipNotImplemented
+        mesh_backend_args = self._mesh_backend_args()
 
         # ASV repeats setup per sample; collision-only graph replays preserve state.
         if getattr(self, "_case", None) == case:
@@ -261,6 +358,7 @@ class DeformableRigidCollision:
             soft_contact_gap=0.05,
             enable_rigid_soft_full_surface_contact=True,
             verify_buffers=False,
+            **mesh_backend_args,
         )
         self.contacts = self.pipeline.contacts()
 
@@ -313,6 +411,13 @@ class FastDeformableRigidCoarseCloth(DeformableRigidCollision):
     repeat = pr_gate_repeat(5)
 
 
+class FastDeformableRigidCoarseClothSdfMesh(FastDeformableRigidCoarseCloth):
+    """Guard collision latency of the ``"sdf"`` mesh back-end for small replicated scenes."""
+
+    params = (COARSE_CLOTH_RIGID_SDF_MESH_CASES,)
+    mesh_backend = "sdf"
+
+
 class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
     """Measure small-scene full-surface contact through the VBD solve."""
 
@@ -327,12 +432,23 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
         device = wp.get_device()
         if not device.is_cuda:
             raise SkipNotImplemented
+        mesh_backend_args = self._mesh_backend_args()
 
         _name, kind, resolution, world_count, shape_count, sparse = case
         builder = newton.ModelBuilder()
         builder.replicate(_make_deformable_rigid_world(kind, resolution, shape_count, sparse), world_count)
         builder.color()
-        self.model = builder.finalize(device=device)
+        self._capture_simulate(builder.finalize(device=device), mesh_backend_args)
+
+    def _capture_simulate(self, model, pipeline_args, restore_state=False):
+        """Capture one collision pass and one VBD step of *model* as the timed graph.
+
+        The VBD step advances the input state in place. With *restore_state*,
+        the graph first restores the initial particle state, so every launch
+        repeats the same work.
+        """
+        device = model.device
+        self.model = model
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.pipeline = newton.CollisionPipeline(
@@ -341,18 +457,24 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
             soft_contact_gap=0.05,
             enable_rigid_soft_full_surface_contact=True,
             verify_buffers=False,
+            **pipeline_args,
         )
         self.contacts = self.pipeline.contacts()
         self.solver = newton.solvers.SolverVBD(self.model, iterations=10)
         self.control = self.model.control()
 
-        for _ in range(self.warmup_count):
+        def simulate():
+            if restore_state:
+                wp.copy(self.state_in.particle_q, self.model.particle_q)
+                wp.copy(self.state_in.particle_qd, self.model.particle_qd)
             self.pipeline.collide(self.state_in, self.contacts)
             self.solver.step(self.state_in, self.state_out, self.control, self.contacts, 1.0 / 120.0)
+
+        for _ in range(self.warmup_count):
+            simulate()
         self._verify_contact_capacity()
         with wp.ScopedCapture(device=device) as capture:
-            self.pipeline.collide(self.state_in, self.contacts)
-            self.solver.step(self.state_in, self.state_out, self.control, self.contacts, 1.0 / 120.0)
+            simulate()
         self.graph = capture.graph
         # Keep one-time device work out of the samples.
         wp.capture_launch(self.graph)
@@ -360,6 +482,57 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self, case):
+        for _ in range(self.launch_count):
+            wp.capture_launch(self.graph)
+        wp.synchronize_device()
+
+
+class FastDeformableRigidCoarseClothVBDSdfMesh(FastDeformableRigidCoarseClothVBD):
+    """Measure small-scene contact of the ``"sdf"`` mesh back-end through the VBD solve."""
+
+    params = (COARSE_CLOTH_VBD_SDF_MESH_CASES,)
+    mesh_backend = "sdf"
+
+
+class DeformableRigidMeshBackendScaling(FastDeformableRigidCoarseClothVBD):
+    """Compare the mesh back-ends as the cloth, the rigid mesh, and the contact grow.
+
+    One cloth is wrapped over one static sphere mesh, either out of contact or
+    with all of it inside the contact gap. The ``"sdf"`` back-end runs on a
+    mesh with a volume SDF, the ``"bvh"`` back-end on the same mesh without one.
+    """
+
+    params = (
+        WRAPPED_CLOTH_PARTICLES,
+        WRAPPED_CLOTH_RIGID_TRIANGLES,
+        tuple(WRAPPED_CLOTH_OFFSETS),
+        WRAPPED_CLOTH_MESH_BACKENDS,
+    )
+    param_names = ["cloth_particles", "rigid_triangles", "contact", "mesh_backend"]
+    rounds = 1
+    repeat = 3
+    # Report the time of one collision pass and one VBD step, averaged over five.
+    number = 5
+    launch_count = 1
+
+    def setup(self, cloth_particles, rigid_triangles, contact, mesh_backend):
+        device = wp.get_device()
+        if not device.is_cuda:
+            raise SkipNotImplemented
+        self.mesh_backend = mesh_backend
+        pipeline_args = self._mesh_backend_args()
+        pipeline_args["soft_contact_max"] = WRAPPED_CLOTH_SOFT_CONTACT_MAX.get(
+            (cloth_particles, rigid_triangles, contact, mesh_backend)
+        )
+
+        builder = _make_wrapped_cloth_world(
+            cloth_particles, rigid_triangles, WRAPPED_CLOTH_OFFSETS[contact], mesh_backend == "sdf", device
+        )
+        builder.color()
+        self._capture_simulate(builder.finalize(device=device), pipeline_args, restore_state=True)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_simulate(self, cloth_particles, rigid_triangles, contact, mesh_backend):
         for _ in range(self.launch_count):
             wp.capture_launch(self.graph)
         wp.synchronize_device()
@@ -422,7 +595,10 @@ if __name__ == "__main__":
         "DeformableRigidCollision": DeformableRigidCollision,
         "DeformableRigidCollisionScale": DeformableRigidCollisionScale,
         "FastDeformableRigidCoarseCloth": FastDeformableRigidCoarseCloth,
+        "FastDeformableRigidCoarseClothSdfMesh": FastDeformableRigidCoarseClothSdfMesh,
         "FastDeformableRigidCoarseClothVBD": FastDeformableRigidCoarseClothVBD,
+        "FastDeformableRigidCoarseClothVBDSdfMesh": FastDeformableRigidCoarseClothVBDSdfMesh,
+        "DeformableRigidMeshBackendScaling": DeformableRigidMeshBackendScaling,
         "FastExampleClothManipulation": FastExampleClothManipulation,
         "FastExampleClothTwist": FastExampleClothTwist,
     }
