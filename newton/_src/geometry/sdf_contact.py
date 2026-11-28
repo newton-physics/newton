@@ -26,6 +26,7 @@ from .contact_reduction_global import (
 from .flags import MeshSignMethod
 from .kernels import mesh_query_point_sign, resolve_mesh_sign_method, triangle_closest_point
 from .sdf_planar_recovery import MeshRecoveryData, pair_was_recovered
+from .utils import scan_with_total
 
 # Upper bound (mesh-local units) on the closest-point search for the mesh sign
 # queries below. It is not a physical contact range: culling uses the tight
@@ -1172,6 +1173,9 @@ def compute_mesh_mesh_edge_counts(
     shape_edge_range: wp.array[wp.vec2i],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
+    minimum_edges_per_block: wp.array[wp.int32],
     edge_counts: wp.array[wp.int32],
     total_edge_count: wp.array[wp.int32],
     total_num_threads: int,
@@ -1188,6 +1192,7 @@ def compute_mesh_mesh_edge_counts(
         has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
         pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
         pair_edges = int(0)
+        minimum_edges = wp.int32(256)
         for mode in range(2):
             is_hfield = has_hfield and mode == 0
             shape_idx = pair[mode]
@@ -1196,6 +1201,15 @@ def compute_mesh_mesh_edge_counts(
                 pair_edges += get_edge_count(GeoType.HFIELD, wp.vec2i(-1, 0), hfd)
             else:
                 pair_edges += shape_edge_range[shape_idx][1]
+                if not has_hfield:
+                    sdf_index = shape_sdf_index[shape_idx]
+                    if sdf_index < 0 or sdf_index >= texture_sdf_table.shape[0]:
+                        minimum_edges = wp.int32(64)
+                    elif texture_sdf_table[sdf_index].coarse_texture.width == 0:
+                        minimum_edges = wp.int32(64)
+        # BVH edge searches are expensive enough to benefit from finer work
+        # assignment. Keep texture and heightfield pairs at their existing budget.
+        minimum_edges_per_block[i] = minimum_edges
         edge_counts[i] = wp.int32(pair_edges)
         wp.atomic_add(total_edge_count, 0, pair_edges)
 
@@ -1204,6 +1218,7 @@ def compute_mesh_mesh_edge_counts(
 def compute_block_counts_from_weights(
     total_weight_arr: wp.array[wp.int32],
     weights: wp.array[wp.int32],
+    minimum_edges_per_block: wp.array[wp.int32],
     pair_count_arr: wp.array[int],
     max_pairs: int,
     target_blocks: int,
@@ -1221,7 +1236,7 @@ def compute_block_counts_from_weights(
         total_weight = total_weight_arr[0]
         weight_per_block = int(total_weight)
         if target_blocks > 0 and total_weight > 0:
-            weight_per_block = wp.max(256, total_weight // target_blocks)
+            weight_per_block = wp.max(minimum_edges_per_block[i], total_weight // target_blocks)
 
         w = int(weights[i])
         if weight_per_block > 0:
@@ -1231,25 +1246,68 @@ def compute_block_counts_from_weights(
         block_counts[i] = wp.int32(blocks)
 
 
+@wp.kernel(enable_backward=False)
+def store_block_offsets_total(
+    pair_count_arr: wp.array[int],
+    max_pairs: int,
+    total: wp.array[int],
+    block_offsets: wp.array[wp.int32],
+):
+    """Store the block total after the active pairs' offsets, where the contact kernels look it up."""
+    block_offsets[wp.max(wp.min(pair_count_arr[0], max_pairs), 0)] = wp.int32(total[0])
+
+
+def scan_block_counts(
+    pair_count_arr: wp.array[int],
+    block_counts: wp.array[wp.int32],
+    block_offsets: wp.array[wp.int32],
+    scan_scratch: wp.array[wp.int64],
+    scan_total: wp.array[int],
+    device: str | None = None,
+    record_tape: bool = True,
+) -> None:
+    """Exclusively scan the active pairs' block counts into ``block_offsets``, total included.
+
+    The scan allocates nothing, so it can run inside any CUDA graph capture, including the
+    conditional bodies of a collision schedule.
+    """
+    max_pairs = block_counts.shape[0] - 1
+    scan_with_total(
+        block_counts[:max_pairs], block_offsets[:max_pairs], pair_count_arr, scan_total, scratch=scan_scratch
+    )
+    wp.launch(
+        store_block_offsets_total,
+        dim=1,
+        inputs=[pair_count_arr, max_pairs, scan_total],
+        outputs=[block_offsets],
+        device=device,
+        record_tape=record_tape,
+    )
+
+
 def compute_mesh_mesh_block_offsets_scan(
     shape_pairs_mesh_mesh: wp.array[wp.vec2i],
     shape_pairs_mesh_mesh_count: wp.array[int],
     shape_edge_range: wp.array[wp.vec2i],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
     target_blocks: int,
     block_offsets: wp.array[wp.int32],
     block_counts: wp.array[wp.int32],
     total_edge_count: wp.array[wp.int32],
     total_num_threads: int,
+    scan_scratch: wp.array[wp.int64],
+    scan_total: wp.array[int],
     device: str | None = None,
     record_tape: bool = True,
 ) -> None:
-    """Compute mesh-mesh block offsets using parallel kernels and array_scan.
+    """Compute mesh-mesh block offsets using parallel kernels and an allocation-free scan.
 
     Runs a three-stage parallel pipeline: per-pair edge counts and scalar
     accumulation, adaptive block counts, then an exclusive scan into
-    ``block_offsets``.
+    ``block_offsets`` (see :func:`scan_block_counts`).
     """
     n = block_counts.shape[0]
     launch_threads = min(n, total_num_threads)
@@ -1263,6 +1321,9 @@ def compute_mesh_mesh_block_offsets_scan(
             shape_edge_range,
             shape_heightfield_index,
             heightfield_data,
+            shape_sdf_index,
+            texture_sdf_table,
+            block_offsets,  # temporary per-pair work budgets until the final scan
             block_counts,  # reuse as temp storage for edge counts
             total_edge_count,
             launch_threads,
@@ -1277,17 +1338,20 @@ def compute_mesh_mesh_block_offsets_scan(
         inputs=[
             total_edge_count,
             block_counts,  # still holds per-pair edge counts, including heightfield edges
+            block_offsets,  # per-pair minimum edges per block from the first stage
             shape_pairs_mesh_mesh_count,
             shape_pairs_mesh_mesh.shape[0],
             target_blocks,
-            block_offsets,  # reuse as temp for block counts
+            block_counts,  # each pair's block count replaces its edge count
             launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
     # Step 3: exclusive scan of block counts → block_offsets
-    wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
+    scan_block_counts(
+        shape_pairs_mesh_mesh_count, block_counts, block_offsets, scan_scratch, scan_total, device, record_tape
+    )
 
 
 @lru_cache

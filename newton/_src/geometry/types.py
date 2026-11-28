@@ -136,6 +136,9 @@ class _ConvexSupportData(NamedTuple):
     lut: np.ndarray
     vertex_offsets: np.ndarray
     neighbors: np.ndarray
+    # Vertex count of the collision layout the tables index. Deduplication can
+    # shrink it, unless surface velocities keep the source mesh's vertices.
+    vertex_count: int = -1
 
 
 class Mesh:
@@ -183,6 +186,7 @@ class Mesh:
 
     # Older serialized meshes have no instance attribute for this lazy cache.
     _convex_support_data: _ConvexSupportData | None = None
+    _coplanar_edge_masks: np.ndarray | None = None
 
     def __init__(
         self,
@@ -1206,6 +1210,7 @@ class Mesh:
         self._canonical_ids = None
         self._collision_edges = None
         self._convex_support_data = None
+        self._coplanar_edge_masks = None
         self._is_watertight = None
         self._finalized_meshes = {}
 

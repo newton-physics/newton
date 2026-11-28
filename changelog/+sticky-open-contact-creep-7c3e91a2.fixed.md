@@ -1,0 +1,1 @@
+Keep replaying sticky contact witnesses while a matched contact opens by less than `contact_matching_pos_threshold`, so resting contacts that jitter open by microns keep their friction anchors instead of creeping.

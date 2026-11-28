@@ -1,0 +1,1 @@
+Fix squat cylinders touching side by side receiving a cap-to-cap contact normal with a penetration of their whole height, which launched them apart; their contacts now use the side normal and the true depth.

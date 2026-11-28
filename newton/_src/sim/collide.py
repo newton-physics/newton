@@ -373,7 +373,7 @@ def _mesh_surface_velocity(
     shape_mesh_properties: wp.array[int],
 ) -> wp.vec3:
     """Interpolate a mesh shape's local surface velocity at a world-space point."""
-    if shape_type[shape] != GeoType.MESH or not (shape_mesh_properties[shape] & int(MeshProperties.SURFACE_VELOCITY)):
+    if not (shape_mesh_properties[shape] & int(MeshProperties.SURFACE_VELOCITY)):
         return wp.vec3(0.0)
 
     mesh_id = shape_source_ptr[shape]
@@ -1982,6 +1982,7 @@ class CollisionPipeline:
                 body's world-oriented witness offset and in the world-space
                 witness separation stay within this threshold. A matched contact
                 keeps fresh geometry if either transported witness exceeds the
+                threshold or its fresh margin-aware gap opens wider than the
                 threshold; its identity is retained.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between

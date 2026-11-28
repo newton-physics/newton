@@ -1521,6 +1521,33 @@ class ViewerBase(ABC):
         self._log_joints(state)
         self._log_com(state)
 
+    def _log_picking_line(self):
+        """Log the line from the picked body point to the mouse picking target.
+
+        Viewers that support picking call this from :meth:`log_state` so the
+        line is drawn consistently through :meth:`log_lines`. The line is
+        cleared while nothing is picked.
+        """
+        picking = getattr(self, "picking", None)
+        if not self.picking_enabled or picking is None or not picking.is_picking():
+            self.log_lines("picking_line", None, None, None)
+            return
+
+        # Pick points are in physics space; shift them by the picked body's world offset.
+        pick_target = picking.pick_target
+        picked_point = picking.pick_point
+        if self.world_offsets is not None and self.world_offsets.shape[0] > 0 and self.model.body_world is not None:
+            body_world_idx = self.model.body_world.numpy()[picking.pick_body]
+            if 0 <= body_world_idx < self.world_offsets.shape[0]:
+                world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
+                pick_target = pick_target + world_offset
+                picked_point = picked_point + world_offset
+
+        starts = wp.array([picked_point], dtype=wp.vec3, device=self.device)
+        ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
+        colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
+        self.log_lines("picking_line", starts, ends, colors, hidden=False)
+
     def log_contacts(
         self,
         contacts: newton.Contacts,
@@ -2911,13 +2938,12 @@ class ViewerBase(ABC):
             and geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
         )
 
-        # check whether we can instance an already created shape with the same geometry.
-        # For the mirrored variant of a mesh-class shape, the cached geometry is
-        # independent of the actual scale magnitude (scale is applied at instance
-        # time), so we collapse the magnitude in the cache key. Combined with the
-        # ``mirror`` bit this guarantees at most one extra cached entry per source
-        # mesh, irrespective of how many distinct signed scales share that source.
-        hash_scale = (1.0, 1.0, 1.0) if mirror else tuple(geo_scale)
+        # Mesh scale belongs to the instance, not its uploaded vertices. Share
+        # each source across scales, with one extra winding-flipped prototype
+        # for mirrored instances. Primitive dimensions remain baked in geometry.
+        hash_scale = (
+            (1.0, 1.0, 1.0) if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else tuple(geo_scale)
+        )
         geo_hash = self._hash_geometry(
             int(geo_type),
             hash_scale,
@@ -3007,13 +3033,25 @@ class ViewerBase(ABC):
         shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
+        shape_opacity = np.ones(shape_count) if shape_display_opacity is None else shape_display_opacity.astype(float)
+        # Clamp to [0, 1] like max(0.0, min(1.0, opacity)), which also maps NaN to one.
+        shape_opacity = np.where(shape_opacity < 1.0, shape_opacity, 1.0)
+        shape_opacity = np.where(shape_opacity > 0.0, shape_opacity, 0.0)
+        shape_transparent = shape_opacity < OPAQUE_OPACITY_THRESHOLD
+        shape_opacity = shape_opacity.astype(np.float32)
         shape_transparent_mask = np.zeros(shape_count, dtype=bool)
         # Variant rows are instanced per notify from the variant shape they hold, see _variant_instances().
         variant_row = (
             self.model._shape_variant_row.numpy() if self.model._has_variant_rows else np.zeros(shape_count, bool)
         )
 
-        # loop over shapes
+        # Assign shapes to batches here; their instance data is gathered per batch below.
+        renders = []
+        render_ids = {}
+        shape_render = np.zeros(shape_count, dtype=np.int64)
+        batches = {}
+        batch_shapes = {}
+        fallback_colors = np.zeros((shape_count, 3), dtype=np.float32) if shape_display_color is None else None
         for s in range(shape_count):
             # skip shapes from non-visible worlds and variant rows
             if not self._should_render_world(shape_world[s]) or variant_row[s]:
@@ -3035,59 +3073,93 @@ class ViewerBase(ABC):
                 continue
 
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            geo_hash, mesh_name, flags, material, uses_scale = self._shape_render_geometry(
-                geo_type,
-                geo_scale,
+            # Shapes that share a source and its render options share render geometry.
+            # Mesh-class geometry depends on the scale only through its mirroring sign.
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
+                scale_key = geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
+            else:
+                scale_key = tuple(geo_scale)
+            render_key = (
+                int(geo_type),
+                scale_key,
                 float(shape_geo_thickness[s]),
                 bool(shape_geo_is_solid[s]),
-                geo_src,
+                id(geo_src),
                 int(shape_flags[s]),
-                sdf_idx,
+                sdf_idx >= 0,
             )
+            render = render_ids.get(render_key)
+            if render is None:
+                render = len(renders)
+                render_ids[render_key] = render
+                renders.append(
+                    self._shape_render_geometry(
+                        geo_type,
+                        geo_scale,
+                        float(shape_geo_thickness[s]),
+                        bool(shape_geo_is_solid[s]),
+                        geo_src,
+                        int(shape_flags[s]),
+                        sdf_idx,
+                    )
+                )
+            shape_render[s] = render
 
             # shape options
-            parent = shape_body[s]
-            static = parent == -1
-            opacity = float(shape_display_opacity[s]) if shape_display_opacity is not None else 1.0
-            opacity = max(0.0, min(1.0, opacity))
-            transparent = opacity < OPAQUE_OPACITY_THRESHOLD
+            static = shape_body[s] == -1
+            transparent = bool(shape_transparent[s])
             shape_transparent_mask[s] = transparent
-            batch = self._shape_batch(geo_hash, mesh_name, geo_type, static, flags, transparent)
+            batch = batches.get((render, static, transparent))
+            if batch is None:
+                geo_hash, mesh_name, flags, _material, _uses_scale = renders[render]
+                batch = self._shape_batch(geo_hash, mesh_name, geo_type, static, flags, transparent)
+                batches[render, static, transparent] = batch
+            batch_shapes.setdefault(id(batch), []).append(s)
 
-            xform = transform_from_array(shape_transform[s])
-            scale = np.asarray(geo_scale, dtype=np.float32) if uses_scale else np.array([1.0, 1.0, 1.0])
-
-            if shape_display_color is not None:
-                color = wp.vec3(shape_display_color[s])
-            elif (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
-                color = wp.vec3(0.5, 0.5, 0.5)
-            else:
-                # Use shape index for color to ensure each collision shape has a different color
-                color = wp.vec3(self._shape_color_map(s))
-            if uses_scale and shape_display_color is None and geo_src.color is not None:
-                color = wp.vec3(geo_src.color[0:3])
-            if geo_type == newton.GeoType.PLANE and shape_display_color is None:
-                color = wp.vec3(0.125, 0.125, 0.15)
-
-            # add render instance
-            batch.add(
-                parent=parent,
-                xform=xform,
-                scale=scale,
-                color=color,
-                material=material,
-                opacity=opacity,
-                shape_index=s,
-                world=shape_world[s],
-            )
+            if fallback_colors is not None:
+                uses_scale = renders[render][4]
+                if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
+                    color = (0.5, 0.5, 0.5)
+                else:
+                    # Use shape index for color to ensure each collision shape has a different color
+                    color = self._shape_color_map(s)
+                if uses_scale and geo_src.color is not None:
+                    color = geo_src.color[0:3]
+                if geo_type == newton.GeoType.PLANE:
+                    color = (0.125, 0.125, 0.15)
+                fallback_colors[s] = np.asarray(wp.vec3(*color))
 
         self._shape_transparent_mask = shape_transparent_mask
         self._shape_batches_have_transparency = bool(np.any(shape_transparent_mask))
 
+        render_materials = np.asarray([render[3] for render in renders], dtype=np.float32).reshape(-1, 4)
+        render_uses_scale = np.asarray([render[4] for render in renders], dtype=bool)
+        shape_colors = shape_display_color if shape_display_color is not None else fallback_colors
+        for batch in self._shape_instances.values():
+            shapes = batch_shapes.get(id(batch))
+            if shapes is None:
+                continue
+            shapes = np.asarray(shapes, dtype=np.int32)
+            render = shape_render[shapes]
+            scales = shape_geo_scale[shapes].astype(np.float32)
+            scales[~render_uses_scale[render]] = 1.0
+            batch._populated = {
+                "parents": shape_body[shapes].astype(np.int32),
+                "xforms": shape_transform[shapes].astype(np.float32).reshape(-1, 7),
+                "scales": scales,
+                "colors": shape_colors[shapes].astype(np.float32),
+                "opacities": shape_opacity[shapes],
+                "materials": render_materials[render],
+                "worlds": shape_world[shapes].astype(np.int32),
+                "model_shapes": shapes,
+            }
+            batch.model_shapes = shapes
+
         # Build shape -> batch reference mapping for change signalling
         shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
         for batch in self._shape_instances.values():
-            batch._freeze_populated()
+            if getattr(batch, "_populated", None) is None:
+                batch._freeze_populated()
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch

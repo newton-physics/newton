@@ -435,11 +435,31 @@ def trim_in_place(
 
 
 @wp.func
+def line_side_radius(geom: Any, feature_count: int, radius_eff: float) -> float:
+    """Radius [m] about the line of a capsule's or cylinder's side feature, else zero.
+
+    Args:
+        geom: Shape data of the feature's shape.
+        feature_count: Number of vertices of the contact feature.
+        radius_eff: Minkowski radius [m] split off a capsule's core, else zero.
+    """
+    if feature_count == 2:
+        if geom.shape_type == int(GeoType.CAPSULE):
+            # The collision core may stand in for the capsule; its sides curve with the full radius.
+            return wp.max(geom.scale[0], radius_eff)
+        if geom.shape_type == int(GeoType.CYLINDER) and geom.scale[2] == 0.0:
+            return geom.scale[0]
+    return 0.0
+
+
+@wp.func
 def trim_all_in_place(
     trim_poly: wp.array[wp.vec2],
     trim_poly_count: int,
     loop: wp.array[wp.vec2],
     loop_count: int,
+    trim_radius: float,
+    loop_radius: float,
 ) -> int:
     """
     Trim a polygon using all edges of another polygon (Sutherland-Hodgman clipping).
@@ -451,6 +471,10 @@ def trim_all_in_place(
         trim_poly_count: Number of vertices in the trimming polygon.
         loop: Array of vertices in the loop to be trimmed (2D).
         loop_count: Number of vertices in the loop.
+        trim_radius: Radius [m] with which a line feature of ``trim_poly``
+            curves away across its line, such as a cylinder side; zero for
+            sharp edges and polygons.
+        loop_radius: Same as ``trim_radius``, for ``loop``.
 
     Returns:
         New number of vertices in the trimmed loop.
@@ -464,9 +488,18 @@ def trim_all_in_place(
         # whose spacing grows as the crossing angle decreases.
         start = loop[0]
         end = loop[1]
-        if trim_poly_count == 2:
+        other_start = trim_poly[0]
+        other_end = trim_poly[1]
+        other_radius = trim_radius
+        if trim_poly_count == 2 and (loop_count != 2 or trim_radius <= loop_radius):
+            # Two lines clip the more curved one, and its contacts keep their
+            # witnesses on it. The flatter feature's witnesses then lie on its
+            # tangent plane off its line, within EPS of its surface (see below).
             start = trim_poly[0]
             end = trim_poly[1]
+            other_start = loop[0]
+            other_end = loop[1]
+            other_radius = loop_radius
         direction = end - start
         length_sq = wp.length_sq(direction)
         if length_sq <= EPS * EPS:
@@ -474,8 +507,6 @@ def trim_all_in_place(
         lo = float(0.0)
         hi = float(1.0)
         if trim_poly_count == 2 and loop_count == 2:
-            other_start = loop[0]
-            other_end = loop[1]
             other_direction = other_end - other_start
             # The pair already has a GJK/MPR contact. Project parallel
             # supporting lines onto a shared tangent to tolerate normal error.
@@ -498,8 +529,15 @@ def trim_all_in_place(
                 closest = float(0.0)
                 if separation_lo * separation_hi > 0.0:
                     closest = wp.min(wp.abs(separation_lo), wp.abs(separation_hi))
-                band_lo = (-(closest + EPS) - offset) / slope
-                band_hi = (closest + EPS - offset) / slope
+                # Sharp edges part as fast as their lines. A rounded side
+                # only curves away, by offset^2 / (2 radius), so its tangent-
+                # plane witnesses stay within EPS of its surface; the true gap
+                # between the features grows even more slowly.
+                width = closest + EPS
+                if other_radius > 0.0:
+                    width = wp.sqrt(closest * closest + 2.0 * other_radius * EPS)
+                band_lo = (-width - offset) / slope
+                band_hi = (width - offset) / slope
                 overlap = (hi - lo) * wp.sqrt(length_sq)
                 lo = wp.max(lo, wp.min(band_lo, band_hi))
                 hi = wp.min(hi, wp.max(band_lo, band_hi))
@@ -820,8 +858,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         is_line_side = geom.shape_type == int(GeoType.CAPSULE) or (
             geom.shape_type == int(GeoType.CYLINDER) and geom.scale[2] == 0.0
         )
-        if is_line_side and wp.abs(normal[2]) <= 1.0e-4:
-            # Allow GJK/MPR normal error in rotated frames. Radial
+        if is_line_side and wp.abs(normal[2]) < SIN_TILT_ANGLE:
+            # The perturbed directions reach both ends of the side, also for
+            # nearly parallel axes and GJK/MPR normal error. Radial
             # perturbations must not turn a side segment into a polygon.
             radial = wp.normalize(wp.vec3(normal[0], normal[1], 0.0)) * geom.scale[0]
             point[0] = radial[0]
@@ -933,7 +972,14 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         )
 
         redundant = bool(False)
-        loop_count = trim_all_in_place(m_a, m_a_count, m_b, m_b_count)
+        loop_count = trim_all_in_place(
+            m_a,
+            m_a_count,
+            m_b,
+            m_b_count,
+            line_side_radius(geom_a, m_a_count, contact_template.radius_eff_a),
+            line_side_radius(geom_b, m_b_count, contact_template.radius_eff_b),
+        )
 
         loop_count = remove_zero_length_edges(m_b, loop_count, merge_distance)
 

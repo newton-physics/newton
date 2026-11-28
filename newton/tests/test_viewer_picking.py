@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -598,6 +599,44 @@ def test_picking_closed_cable_uses_total_mass(test: TestPickingSetup, device):
     picking._update_os_inertia(state, body, point_world)
     expected = np.eye(3, dtype=np.float32) * np.sum(model.body_mass.numpy()[bodies])
     assert_np_equal(picking._pick_os_inertia.numpy()[0], expected, tol=1.0e-5)
+
+
+class TestPickingLine(unittest.TestCase):
+    def test_log_picking_line_follows_world_offset(self):
+        """Draw the shared cyan pick line from the picked point to the target, then clear it."""
+        world = newton.ModelBuilder()
+        body = world.add_body(xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()), mass=1.0)
+        world.add_shape_sphere(body, radius=0.1)
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 2)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        offsets = wp.array([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)], dtype=wp.vec3, device="cpu")
+
+        viewer = newton.viewer.ViewerNull()
+        viewer.device = model.device
+        viewer.model = model
+        viewer.world_offsets = offsets
+        viewer.picking = Picking(model, world_offsets=offsets)
+        # Pick the body in the second world through its visual (offset) position.
+        viewer.picking.pick(state, wp.vec3(2.0, 0.0, 2.0), wp.vec3(0.0, 0.0, -1.0))
+        self.assertEqual(viewer.picking.pick_body, 1)
+        viewer.picking.update(wp.vec3(2.0, 0.0, 2.0) + wp.vec3(0.0, 0.3, 0.0), wp.vec3(0.0, 0.0, -1.0))
+
+        with mock.patch.object(viewer, "log_lines") as log_lines:
+            viewer._log_picking_line()
+            name, starts, ends, colors = log_lines.call_args.args
+            self.assertEqual(name, "picking_line")
+            self.assertFalse(log_lines.call_args.kwargs["hidden"])
+            offset = offsets.numpy()[1]
+            np.testing.assert_allclose(starts.numpy()[0], np.asarray(viewer.picking.pick_point) + offset, atol=1.0e-6)
+            np.testing.assert_allclose(ends.numpy()[0], np.asarray(viewer.picking.pick_target) + offset, atol=1.0e-6)
+            np.testing.assert_allclose(starts.numpy()[0], (2.0, 0.0, 0.6), atol=1.0e-5)
+            np.testing.assert_allclose(colors.numpy()[0], (0.0, 1.0, 1.0))
+
+            viewer.picking.release()
+            viewer._log_picking_line()
+            log_lines.assert_called_with("picking_line", None, None, None)
 
 
 # Device-parameterized tests

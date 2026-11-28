@@ -506,6 +506,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             if is_duplicate:
                 break
 
+            previous_mask = simplex_usage_mask
             # Unsigned packed words avoid a slot scan on every GJK iteration.
             shift = wp.uint32(2) * simplex_usage_mask
             index0 = int((wp.static(wp.uint32(_SIMPLEX_SLOT_WORDS[0])) >> shift) & wp.uint32(3))
@@ -560,6 +561,12 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 # Shapes are overlapping
                 point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
                 return False, point_a, point_b, wp.vec3(0.0), 0.0
+
+            if simplex_usage_mask == previous_mask and new_v[0] == v[0] and new_v[1] == v[1] and new_v[2] == v[2]:
+                # The support point was dropped again without moving the closest
+                # point: rounding stalls the simplex, and every later iteration
+                # would repeat this one exactly.
+                break
 
             v = new_v
             dist_sq = wp.length_sq(v)

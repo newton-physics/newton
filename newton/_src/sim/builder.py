@@ -34,11 +34,13 @@ from ..core.host_transform import (
     pack_warp_values,
     quat_multiply_rows,
     quat_rotate_rows,
+    quat_to_matrix,
     store_transform_rows,
     transform_inverse,
     transform_inverse_rows,
     transform_multiply,
     transform_multiply_rows,
+    transform_point,
     warp_array_from_values,
 )
 from ..core.types import (
@@ -83,7 +85,7 @@ from ..geometry.inertia import (
 )
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
-from ..geometry.support_function import _CONVEX_HULL_VALID
+from ..geometry.support_function import _CONVEX_HULL_VALID, _MESH_COPLANAR_EDGES
 from ..geometry.types import Heightfield, _ConvexSupportData, _normalize_texture_input
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -239,6 +241,8 @@ _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
 # dispatch through overload resolution and would initialize the Warp runtime at import.
 _IDENTITY_TRANSFORM = np.asarray(wp.transformf((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), dtype=np.float32)
 _IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
+_IDENTITY3_F32 = np.eye(3, dtype=np.float32)
+_IDENTITY3_F32.setflags(write=False)
 
 
 _MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -251,6 +255,10 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 
 def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
     """Build a collision-only mesh containing each exact vertex position once."""
+    # Surface velocities are mutable per-vertex data owned by the source mesh.
+    # Preserve its topology and identity so updates reach the collision mesh.
+    if source.enable_surface_velocity:
+        return source
     vertices = source.vertices
     _, first_indices, inverse = np.unique(vertices, axis=0, return_index=True, return_inverse=True)
     if len(first_indices) == len(vertices):
@@ -287,6 +295,37 @@ def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
 
 _CONVEX_SUPPORT_MIN_VERTICES = 256
 _CONVEX_SUPPORT_LUT_RESOLUTION = 32
+
+
+def _coplanar_triangle_edges(source: Mesh) -> np.ndarray:
+    """Mark manifold interior edges shared by consistently wound coplanar faces."""
+    vertices, remap = np.unique(np.asarray(source.vertices, dtype=np.float64), axis=0, return_inverse=True)
+    triangles = remap[np.asarray(source.indices).reshape(-1, 3)]
+    masks = np.zeros(len(triangles), dtype=np.int32)
+    if len(triangles) < 2:
+        return masks
+    points = vertices[triangles]
+    normals = np.cross(points[:, 1] - points[:, 0], points[:, 2] - points[:, 0])
+    lengths = np.linalg.norm(normals, axis=1)
+    normals /= np.maximum(lengths[:, None], np.finfo(np.float64).tiny)
+    edges = np.stack((triangles, np.roll(triangles, -1, axis=1)), axis=-1).reshape(-1, 2)
+    keys = np.sort(edges, axis=1)
+    order = np.lexsort((keys[:, 1], keys[:, 0]))
+    sorted_keys = keys[order]
+    starts = np.r_[0, np.flatnonzero(np.any(sorted_keys[1:] != sorted_keys[:-1], axis=1)) + 1]
+    counts = np.diff(np.r_[starts, len(order)])
+    starts = starts[counts == 2]
+    first, second = order[starts], order[starts + 1]
+    a, b = first // 3, second // 3
+    valid = (
+        (lengths[a] > 0.0)
+        & (lengths[b] > 0.0)
+        & np.all(edges[first] == edges[second, ::-1], axis=1)
+        & (np.sum(normals[a] * normals[b], axis=1) > 1.0 - 1.0e-12)
+    )
+    np.bitwise_or.at(masks, a[valid], 1 << (first[valid] % 3))
+    np.bitwise_or.at(masks, b[valid], 1 << (second[valid] % 3))
+    return masks
 
 
 def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> tuple[list[set[int]], np.ndarray] | None:
@@ -482,13 +521,13 @@ def _build_convex_support_data(source: Mesh) -> _ConvexSupportData | None:
         if topology is None:
             return None
         empty = np.empty(0, dtype=np.int32)
-        return _ConvexSupportData(flags, empty, empty, edge_block)
+        return _ConvexSupportData(flags, empty, empty, edge_block, len(source.vertices))
 
     lut, offsets, neighbors = acceleration
     if topology is not None:
         offsets += len(edge_block)
         neighbors = np.concatenate((edge_block, neighbors))
-    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors)
+    return _ConvexSupportData(flags | _CONVEX_SUPPORT_LUT_RESOLUTION, lut, offsets, neighbors, len(source.vertices))
 
 
 def _build_joint_ancestor(
@@ -9951,6 +9990,9 @@ class ModelBuilder:
         """
         if xform is None:
             xform = wp.transform()
+        elif isinstance(xform, wp.transform):
+            # Copy without unpacking all seven components.
+            xform = wp.transform(xform)
         else:
             xform = wp.transform(*xform)
         if cfg is None:
@@ -10099,7 +10141,7 @@ class ModelBuilder:
 
         if shape_mass_props is not None:
             m, c, inertia = shape_mass_props
-            com_body = wp.transform_point(xform, c)
+            com_body = transform_point(xform, c) if isinstance(c, wp.vec3) else wp.transform_point(xform, c)
             self._update_body_mass(body, m, inertia, com_body, xform.q)
 
         # Process custom attributes
@@ -11426,16 +11468,21 @@ class ModelBuilder:
                 method = "bounding_box"
 
         if method == "bounding_box":
+            # Shapes sharing a source mesh and scale, e.g. USD instances, share one box.
+            boxes: dict[tuple, tuple[Mesh, wp.transform, wp.vec3]] = {}
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
                 mesh: Mesh = self.shape_source[shape]
                 scale = self.shape_scale[shape]
-                vertices = mesh.vertices * np.array([*scale])
-                tf, scale = compute_inertia_obb(vertices)
+                key = (id(mesh), *(float(s) for s in scale))
+                if key not in boxes:
+                    # The cache holds the mesh, so its id stays unique.
+                    boxes[key] = (mesh, *compute_inertia_obb(mesh.vertices * np.array([*scale])))
+                _, tf, scale = boxes[key]
                 self.shape_type[shape] = GeoType.BOX
                 self.shape_source[shape] = None
-                self.shape_scale[shape] = scale
+                self.shape_scale[shape] = wp.vec3(scale)
                 shape_tf = self.shape_transform[shape]
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)
@@ -14022,36 +14069,36 @@ class ModelBuilder:
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
         if i == -1:
             return
-
-        # find new COM
-        new_mass = self.body_mass[i] + m
-
-        if new_mass == 0.0:  # no mass
+        old_mass = self.body_mass[i]
+        new_mass = old_mass + m
+        if new_mass == 0.0:
             return
-
-        new_com = (self.body_com[i] * self.body_mass[i] + p * m) / new_mass
-
-        # shift inertia to new COM
-        com_offset = new_com - self.body_com[i]
-        shape_offset = new_com - p
-
-        new_inertia = transform_inertia(
-            self.body_mass[i], self.body_inertia[i], com_offset, wp.quat_identity()
-        ) + transform_inertia(m, inertia, shape_offset, q)
-
+        # Keep host accumulation in float32, matching the builder's Warp values.
+        # The existing body tensor already uses the body frame; only the new
+        # shape tensor needs rotation before the parallel-axis shifts.
+        old_com = np.asarray(self.body_com[i], dtype=np.float32)
+        shape_com = np.asarray(p, dtype=np.float32)
+        new_com = (old_com * np.float32(old_mass) + shape_com * np.float32(m)) / np.float32(new_mass)
+        com_offset = new_com - old_com
+        shape_offset = new_com - shape_com
+        rotation = np.asarray(quat_to_matrix(q) if isinstance(q, wp.quat) else wp.quat_to_matrix(q)).reshape(3, 3)
+        identity = _IDENTITY3_F32
+        old_inertia = np.asarray(self.body_inertia[i]).reshape(3, 3)
+        shape_inertia = np.asarray(inertia).reshape(3, 3)
+        combined = (
+            old_inertia
+            + np.float32(old_mass) * (np.dot(com_offset, com_offset) * identity - np.outer(com_offset, com_offset))
+        ) + (
+            rotation @ shape_inertia @ rotation.T
+            + np.float32(m) * (np.dot(shape_offset, shape_offset) * identity - np.outer(shape_offset, shape_offset))
+        )
+        # Unpacked floats build Warp values several times faster than arrays.
+        new_inertia = wp.mat33(*combined.ravel().tolist())
         self.body_mass[i] = new_mass
         self.body_inertia[i] = new_inertia
-        self.body_com[i] = new_com
-
-        if new_mass > 0.0:
-            self.body_inv_mass[i] = 1.0 / new_mass
-        else:
-            self.body_inv_mass[i] = 0.0
-
-        if any(x for x in new_inertia):
-            self.body_inv_inertia[i] = _inverse_inertia(new_inertia)
-        else:
-            self.body_inv_inertia[i] = new_inertia
+        self.body_com[i] = wp.vec3(*new_com.tolist())
+        self.body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
+        self.body_inv_inertia[i] = _inverse_inertia(combined) if np.any(combined) else new_inertia
 
     def _validate_parent_body(self, parent_body: int, child: int) -> None:
         """
@@ -16419,7 +16466,7 @@ class ModelBuilder:
                     if mesh_properties is None:
                         mesh_properties = int(MeshProperties.WATERTIGHT) if geo.is_watertight else 0
                         mesh_properties_by_geo_hash[geo_hash] = mesh_properties
-                    if shape_type_arr[shape_idx] == GeoType.MESH and geo.enable_surface_velocity:
+                    if geo.enable_surface_velocity:
                         mesh_properties |= int(MeshProperties.SURFACE_VELOCITY)
                     shape_mesh_properties[shape_idx] = mesh_properties
 
@@ -16469,6 +16516,7 @@ class ModelBuilder:
             support_offset_chunks = []
             support_neighbor_chunks = []
             support_cache = {}
+            triangle_cache = {}
             lut_offset = 0
             vertex_offset = 0
             neighbor_offset = 0
@@ -16484,7 +16532,8 @@ class ModelBuilder:
                         # its tables on the original mesh that owns the geometry.
                         owner = self.shape_source[shape_idx]
                         tables = owner._convex_support_data
-                        if tables is None:
+                        # Toggling surface velocities changes the deduplicated layout.
+                        if tables is None or tables.vertex_count != len(source.vertices):
                             tables = _build_convex_support_data(source)
                             owner._convex_support_data = tables
 
@@ -16501,6 +16550,29 @@ class ModelBuilder:
                             neighbor_offset += len(tables.neighbors)
                         support_cache[source_key] = packed
                     shape_support_data[shape_idx] = support_cache[source_key]
+
+            # Triangle meshes store per-triangle coplanar-edge masks in the
+            # neighbor storage so contacts can skip artificial seam features.
+            colliding_mesh_indices = np.flatnonzero(
+                (shape_type_arr == GeoType.MESH) & ((shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0)
+            )
+            for shape_idx in colliding_mesh_indices.tolist():
+                source = generated_shape_sources[shape_idx]
+                if isinstance(source, Mesh):
+                    source_key = hash(source)
+                    if source_key not in triangle_cache:
+                        owner = self.shape_source[shape_idx]
+                        masks = owner._coplanar_edge_masks
+                        if masks is None:
+                            masks = _coplanar_triangle_edges(source)
+                            owner._coplanar_edge_masks = masks
+                        packed = (-1, -1, -1, 0)
+                        if np.any(masks):
+                            packed = (-1, -1, neighbor_offset, _MESH_COPLANAR_EDGES)
+                            support_neighbor_chunks.append(masks)
+                            neighbor_offset += len(masks)
+                        triangle_cache[source_key] = packed
+                    shape_support_data[shape_idx] = triangle_cache[source_key]
 
             m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
             m._convex_support_lut = wp.array(
@@ -16666,14 +16738,16 @@ class ModelBuilder:
                         interior_pt = np.zeros(3, dtype=np.float32)
                         sc_np = np.array(sc_tuple)
                         if st == GeoType.MESH:
-                            vertices = shape_src.vertices
-                            lo64 = vertices.min(axis=0) * sc_np
-                            hi64 = vertices.max(axis=0) * sc_np
+                            # Reuse geometry bounds across differently scaled instances.
+                            lower, upper = shape_src._get_local_bounds()
+                            lo64 = lower * sc_np
+                            hi64 = upper * sc_np
                             aabb_lo = np.minimum(lo64, hi64)
                             aabb_hi = np.maximum(lo64, hi64)
                         elif st == GeoType.CONVEX_MESH:
-                            lo64 = shape_src.vertices.min(axis=0) * sc_np
-                            hi64 = shape_src.vertices.max(axis=0) * sc_np
+                            lower, upper = shape_src._get_local_bounds()
+                            lo64 = lower * sc_np
+                            hi64 = upper * sc_np
                             centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
                             interior_pt = (centroid * sc_np).astype(np.float32)
                             aabb_lo = np.minimum(lo64, hi64)

@@ -807,10 +807,8 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None, depth_certif
                 and minimum_depth > COLLIDE_EPSILON
                 and wp.abs(penetration - extend - minimum_depth) > COLLIDE_EPSILON
             )
-            if hit and penetration > bound_depth + extend + COLLIDE_EPSILON:
-                normal = bound_normal
-                valid = False
-                break
+            # Retries only run below the enclosing-box bound, so a deeper retry
+            # keeps the last portal normal; the box's shallowest axis may be a cap.
             if not hit or penetration > bound or wrong_depth:
                 normal = last_normal
                 valid = False

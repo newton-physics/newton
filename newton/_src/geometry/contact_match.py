@@ -478,17 +478,21 @@ def _save_sorted_state_kernel(data: _SaveStateData, reset_world_mask: wp.array[w
 
         p0 = data.src_point0[i]
         bid0 = data.shape_body[data.src_shape0[i]]
-        if bid0 == -1:
-            p0w = p0
-        else:
-            p0w = wp.transform_point(data.body_q[bid0], p0)
+        offset0 = p0
+        p0w = p0
+        if bid0 != -1:
+            pose0 = data.body_q[bid0]
+            offset0 = wp.quat_rotate(wp.transform_get_rotation(pose0), p0)
+            p0w = wp.transform_get_translation(pose0) + offset0
 
         p1 = data.src_point1[i]
         bid1 = data.shape_body[data.src_shape1[i]]
-        if bid1 == -1:
-            p1w = p1
-        else:
-            p1w = wp.transform_point(data.body_q[bid1], p1)
+        offset1 = p1
+        p1w = p1
+        if bid1 != -1:
+            pose1 = data.body_q[bid1]
+            offset1 = wp.quat_rotate(wp.transform_get_rotation(pose1), p1)
+            p1w = wp.transform_get_translation(pose1) + offset1
 
         data.dst_pos_world[i] = 0.5 * (p0w + p1w)
         data.dst_normal[i] = data.src_normal[i]
@@ -496,12 +500,9 @@ def _save_sorted_state_kernel(data: _SaveStateData, reset_world_mask: wp.array[w
         if data.has_sticky != 0:
             data.dst_point0_body[i] = p0
             data.dst_point1_body[i] = p1
-            data.dst_offset_world0[i] = p0
-            if bid0 != -1:
-                data.dst_offset_world0[i] = p0w - wp.transform_get_translation(data.body_q[bid0])
-            data.dst_offset_world1[i] = p1
-            if bid1 != -1:
-                data.dst_offset_world1[i] = p1w - wp.transform_get_translation(data.body_q[bid1])
+            # Keep the lever arms before adding the (possibly large) world origin.
+            data.dst_offset_world0[i] = offset0
+            data.dst_offset_world1[i] = offset1
             data.dst_separation[i] = p1w - p0w
             data.dst_offset0_body[i] = data.src_offset0[i]
             data.dst_offset1_body[i] = data.src_offset1[i]
@@ -578,7 +579,9 @@ def _replay_matched_kernel(data: _ReplayData):
         p1_world = wp.transform_point(data.body_q[body1], p1_world)
 
     fresh_gap = wp.dot(p1_world - p0_world, data.normal[tid]) - (data.margin0[tid] + data.margin1[tid])
-    if fresh_gap > wp.float32(0.0):
+    # Separation within the match tolerance keeps the old witnesses, like planar drift:
+    # a resting contact that jitters open by microns must keep its friction anchor.
+    if fresh_gap > wp.float32(0.0) and fresh_gap * fresh_gap > data.pos_threshold_sq:
         return
 
     # A contact that travelled with one body keeps its identity but not its old witnesses

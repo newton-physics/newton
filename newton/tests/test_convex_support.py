@@ -258,6 +258,32 @@ class TestConvexSupportAcceleration(unittest.TestCase):
                 for actual, expected in zip(edited, finalize(mesh.copy()), strict=True):
                     np.testing.assert_array_equal(actual, expected)
 
+    def test_finalize_rebuilds_support_data_for_surface_velocity_layout(self):
+        """Rebuild cached support tables when surface velocities keep duplicate vertices."""
+        source = newton.Mesh.create_sphere(
+            0.5, num_latitudes=16, num_longitudes=24, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        # Give each face its own vertices so deduplication changes the collision layout.
+        mesh = newton.Mesh(source.vertices[source.indices], np.arange(len(source.indices)), compute_inertia=False)
+
+        def finalize(mesh):
+            builder = newton.ModelBuilder()
+            builder.add_shape_convex_hull(body=-1, mesh=mesh)
+            model = builder.finalize(device="cpu")
+            return (
+                model._shape_support_data.numpy(),
+                model._convex_support_lut.numpy(),
+                model._convex_support_vertex_offsets.numpy(),
+                model._convex_support_neighbors.numpy(),
+            )
+
+        deduplicated = finalize(mesh)
+        mesh.enable_surface_velocity = True
+        layout_kept = finalize(mesh)
+        self.assertFalse(all(np.array_equal(a, b) for a, b in zip(deduplicated, layout_kept, strict=True)))
+        for actual, expected in zip(layout_kept, finalize(mesh.copy()), strict=True):
+            np.testing.assert_array_equal(actual, expected)
+
     def test_finalize_accepts_mesh_pickled_without_support_cache(self):
         """Build support tables for a mesh whose serialized state predates the cache."""
         mesh = newton.Mesh.create_box(1.0, 1.0, 1.0, duplicate_vertices=False, compute_inertia=False)

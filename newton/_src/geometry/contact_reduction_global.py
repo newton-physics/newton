@@ -91,6 +91,9 @@ from .support_function import (
     create_triangle_prism_penetration_refiner,
     extract_shape_data,
     support_map_accelerated,
+    triangle_seam_normal,
+    triangle_smooth_edges,
+    triangle_witness_tolerance,
 )
 from .types import GeoType
 
@@ -3088,6 +3091,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
             mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
             X_ws_a = shape_transform[shape_a]
             shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_ws_a, tri_idx)
+            shape_data_a.smooth_edges = triangle_smooth_edges(
+                shape_support_data[shape_a], support_neighbors, tri_idx, mesh_scale_a
+            )
 
         # Extract shape B data
         pos_b, quat_b, shape_data_b, _scale_b, margin_offset_b = extract_shape_data(
@@ -3142,6 +3148,15 @@ def mesh_triangle_contacts_to_reducer_kernel(
                 contact_normal = surface_normal / wp.sqrt(normal_length_sq)
                 contact_position = pos_b - 0.5 * sphere_radius * contact_normal
 
+            on_seam, face = triangle_seam_normal(shape_data_a, closest - pos_a, contact_normal, pos_b - pos_a)
+            if on_seam:
+                # The face supports the sphere unless the sphere reaches deeper below it.
+                face_distance = wp.dot(pos_b - closest, face) - sphere_radius
+                if face_distance < contact_distance - triangle_witness_tolerance(closest - pos_a):
+                    continue
+                contact_normal = face
+                contact_distance = face_distance
+                contact_position = pos_b - (sphere_radius + 0.5 * contact_distance) * contact_normal
             if contact_distance < gap_sum + margin_offset_a + margin_offset_b:
                 contact_data = ContactData()
                 contact_data.contact_point_center = contact_position

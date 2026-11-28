@@ -41,6 +41,7 @@ BOX_SUPPORT_DEADBAND = 1.0e-10
 _CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
 # Hull certification is independent of the support-walk lookup-table resolution.
 _CONVEX_HULL_VALID = wp.constant(1 << 16)
+_MESH_COPLANAR_EDGES = wp.constant(1 << 17)
 _CONVEX_SUPPORT_RESOLUTION_MASK = wp.constant((1 << 16) - 1)
 
 TRIANGLE_PRISM_EXTRUSION = 1.0
@@ -130,6 +131,151 @@ class GenericShapeData:
     center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
     bounds_half: wp.vec3  # Optional enclosing local AABB half-extents for penetration bounds.
     shape_index: int  # Index for optional model-owned support-map acceleration data.
+    smooth_edges: int  # Mesh triangle AB/BC/CA edges with coplanar manifold neighbors.
+
+
+@wp.func
+def triangle_smooth_edges(metadata: wp.vec4i, topology: wp.array[int], triangle: int, scale: wp.vec3) -> int:
+    mask = int(0)
+    if metadata[3] & _MESH_COPLANAR_EDGES:
+        mask = topology[metadata[2] + triangle]
+        if scale[0] * scale[1] * scale[2] < 0.0:
+            mask = ((mask & 1) << 2) | (mask & 2) | ((mask & 4) >> 2)
+    return mask
+
+
+@wp.func
+def triangle_barycentric(ab: wp.vec3, ac: wp.vec3, point: wp.vec3) -> tuple[float, float, wp.vec3, float]:
+    """Return the barycentric coordinates of ``point`` along ``ab`` and ``ac``, the unit normal, and twice the area.
+
+    Cross products avoid the cancellation of the Gram determinant, which
+    float32 rounds to zero for slivers that still have a well-defined plane.
+    A collapsed triangle returns zero area.
+
+    Args:
+        ab: Edge from vertex A to B [m].
+        ac: Edge from vertex A to C [m].
+        point: Point relative to vertex A [m], projected along the normal.
+    """
+    normal = wp.cross(ab, ac)
+    area_sq = wp.dot(normal, normal)
+    if area_sq <= 0.0:
+        return 0.0, 0.0, wp.vec3(0.0), 0.0
+    u = wp.dot(wp.cross(point, ac), normal) / area_sq
+    v = wp.dot(wp.cross(ab, point), normal) / area_sq
+    area = wp.sqrt(area_sq)
+    return u, v, normal / area, area
+
+
+@wp.func
+def triangle_witness_tolerance(point: wp.vec3) -> float:
+    """Return the world-distance accuracy [m] of a convex-query witness at ``point``."""
+    return 1.0e-5 * wp.max(1.0, wp.length(point))
+
+
+@wp.func
+def triangle_seam_normal(
+    geom: GenericShapeData, point: wp.vec3, normal: wp.vec3, interior: wp.vec3
+) -> tuple[bool, wp.vec3]:
+    """Return the face normal for a contact at a coplanar seam of mesh triangle ``geom``.
+
+    An internal edge between coplanar triangles is not a surface feature, but a
+    query against one triangle can lean its normal across that edge. Callers
+    replace such a normal with the face normal, oriented toward the other
+    shape's ``interior``, when the face supports the other shape there, and
+    reject the contact otherwise. Real boundaries, creases, and vertices keep
+    ``normal``.
+
+    Args:
+        geom: Triangle shape data in its local frame, with ``smooth_edges`` set.
+        point: Contact witness on the triangle [m], in the triangle frame.
+        normal: Unit contact normal, in the triangle frame.
+        interior: A point inside the other shape [m], in the triangle frame.
+
+    Returns:
+        Whether the witness lies on a coplanar seam, and the face normal if so.
+    """
+    mask = geom.smooth_edges
+    if mask == 0:
+        return False, normal
+    ab, ac = geom.scale, geom.auxiliary
+    u, v, face, area = triangle_barycentric(ab, ac, point)
+    if area <= 0.0:
+        return False, normal
+    if wp.dot(face, interior) < 0.0:
+        face = -face
+    # Match MPR's world-distance witness accuracy, rather than using a
+    # dimensionless barycentric tolerance that varies with triangle size.
+    tolerance = triangle_witness_tolerance(point)
+    edge_ab = wp.abs(v) * area <= tolerance * wp.length(ab)
+    edge_bc = wp.abs(1.0 - u - v) * area <= tolerance * wp.length(ac - ab)
+    edge_ca = wp.abs(u) * area <= tolerance * wp.length(ac)
+    smooth = False
+    if edge_ab and edge_ca:
+        smooth = (mask & 5) == 5
+    elif edge_ab and edge_bc:
+        smooth = (mask & 3) == 3
+    elif edge_bc and edge_ca:
+        smooth = (mask & 6) == 6
+    else:
+        smooth = (edge_ab and (mask & 1) != 0) or (edge_bc and (mask & 2) != 0) or (edge_ca and (mask & 4) != 0)
+    if not smooth:
+        # A shape overlapping the triangle by a sliver along a seam leaves the
+        # penetration witness anywhere inside that sliver, beyond the tolerance.
+        # The feature the normal leans out of is exact: the triangle's support
+        # along it. A lean out of a seam, or out of a vertex between seams, is
+        # still on the continued face.
+        top = wp.max(0.0, wp.max(wp.dot(ab, normal), wp.dot(ac, normal)))
+        on_a = top <= tolerance
+        on_b = top - wp.dot(ab, normal) <= tolerance
+        on_c = top - wp.dot(ac, normal) <= tolerance
+        if on_a and on_b and on_c:
+            smooth = False
+        elif on_a and on_b:
+            smooth = (mask & 1) != 0
+        elif on_b and on_c:
+            smooth = (mask & 2) != 0
+        elif on_c and on_a:
+            smooth = (mask & 4) != 0
+        elif on_a:
+            smooth = (mask & 5) == 5
+        elif on_b:
+            smooth = (mask & 3) == 3
+        else:
+            smooth = (mask & 6) == 6
+    if smooth:
+        return True, face
+    return False, normal
+
+
+@wp.func
+def triangle_contains_projection(geom: GenericShapeData, point: wp.vec3, tolerance: float) -> bool:
+    """Return whether ``point`` projects onto mesh triangle ``geom`` along its face normal.
+
+    Args:
+        geom: Triangle shape data in its local frame, with vertex A at the origin.
+        point: Point [m] in the triangle frame.
+        tolerance: Distance [m] by which the projection may lie outside the triangle.
+    """
+    ab, ac = geom.scale, geom.auxiliary
+    u, v, _face, area = triangle_barycentric(ab, ac, point)
+    if area <= 0.0:
+        return False
+    # Compare each barycentric coordinate with the distance to its opposite edge.
+    return (
+        v * area >= -tolerance * wp.length(ab)
+        and (1.0 - u - v) * area >= -tolerance * wp.length(ac - ab)
+        and u * area >= -tolerance * wp.length(ac)
+    )
+
+
+@wp.func
+def triangle_edge_outward(start: wp.vec3, end: wp.vec3, opposite: wp.vec3) -> wp.vec3:
+    """Return the unit normal of edge ``start``-``end`` in the triangle's plane, pointing away from ``opposite``."""
+    edge = end - start
+    inward = opposite - start
+    inward = inward - edge * (wp.dot(inward, edge) / wp.max(wp.dot(edge, edge), 1.0e-30))
+    return -wp.normalize(inward)
 
 
 @wp.func

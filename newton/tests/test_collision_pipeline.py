@@ -4077,7 +4077,65 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     test.assertGreater(contact_count, 0)
 
 
-def test_rigid_mesh_contacts_export_surface_velocity(test, device):
+def test_mesh_convex_midphase_per_thread_matches_tiled(test, device):
+    """Find the same triangles with one thread per query as with one tiled block per query."""
+    rng = np.random.default_rng(3)
+    cfg = newton.ModelBuilder.ShapeConfig(margin=0.002, gap=0.004)
+    builder = newton.ModelBuilder()
+    # A wavy plate, plus a wall whose bounds cover queries that touch none of its triangles.
+    n = 24
+    gx, gy = np.meshgrid(np.linspace(-1.5, 1.5, n + 1), np.linspace(-1.5, 1.5, n + 1))
+    plate = np.c_[gx.ravel(), gy.ravel(), 0.02 * np.sin(4.0 * gx.ravel()) * np.cos(3.0 * gy.ravel())]
+    quads = np.array(
+        [
+            (j * (n + 1) + i, j * (n + 1) + i + 1, (j + 1) * (n + 1) + i + 1, (j + 1) * (n + 1) + i)
+            for j in range(n)
+            for i in range(n)
+        ]
+    )
+    indices = np.concatenate([quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]])
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh(plate.astype(np.float32), indices.astype(np.int32)), cfg=cfg)
+    wall = newton.Mesh.create_box(0.02, 1.5, 0.3, compute_inertia=False)
+    builder.add_shape_mesh(body=-1, xform=wp.transform((1.5, 0.0, 0.3), wp.quat_identity()), mesh=wall, cfg=cfg)
+    hull = newton.Mesh.create_cylinder(0.03, 0.01, compute_inertia=False)
+    for k in range(1600):
+        x, y = rng.uniform(-1.45, 1.45, 2)
+        q = wp.quat_rpy(*rng.uniform(-0.4, 0.4, 3))
+        body = builder.add_body(xform=wp.transform((x, y, rng.uniform(0.0, 0.08)), q))
+        kind = k % 4
+        if kind == 0:
+            builder.add_shape_sphere(body, radius=0.03, cfg=cfg)
+        elif kind == 1:
+            builder.add_shape_box(body, hx=0.03, hy=0.02, hz=0.025, cfg=cfg)
+        elif kind == 2:
+            builder.add_shape_cylinder(body, radius=0.03, half_height=0.04, cfg=cfg)
+        else:
+            builder.add_shape_convex_hull(body, mesh=hull, cfg=cfg)
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=200_000)
+    narrow = pipeline.narrow_phase
+    contacts = pipeline.contacts()
+
+    def triangles(blocks):
+        narrow.num_tile_blocks = blocks
+        pipeline.collide(state, contacts)
+        pair_count = int(narrow.shape_pairs_mesh_count.numpy()[0])
+        count = int(narrow.triangle_pairs_count.numpy()[0])
+        found = {tuple(t) for t in narrow.triangle_pairs.numpy()[:count]}
+        test.assertEqual(len(found), count)
+        return pair_count, found
+
+    default_blocks = narrow.num_tile_blocks
+    pair_count, per_thread = triangles(default_blocks)
+    # Past one query per block, the per-thread kernel runs.
+    test.assertGreater(pair_count, default_blocks)
+    _, tiled = triangles(pair_count + 1)
+    test.assertGreater(len(per_thread), 100)
+    test.assertEqual(per_thread, tiled)
+
+
+def test_rigid_mesh_contacts_export_surface_velocity(test, device, convex=False):
     """Transform and export a varying mesh velocity field at contacts."""
     vertices = np.array(
         [
@@ -4089,6 +4147,11 @@ def test_rigid_mesh_contacts_export_surface_velocity(test, device):
         dtype=np.float32,
     )
     indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    if convex:
+        hull = newton.Mesh.create_box(1.0, 1.0, 0.1, duplicate_vertices=True)
+        vertices = hull.vertices.copy()
+        vertices[:, 2] -= 0.1
+        indices = hull.indices
     mesh = newton.Mesh(vertices, indices, compute_inertia=False, enable_surface_velocity=True)
     mesh_xform = wp.transform(
         wp.vec3(0.4, -0.3, 0.0),
@@ -4099,7 +4162,8 @@ def test_rigid_mesh_contacts_export_surface_velocity(test, device):
     velocity_local = vertices.copy()
 
     builder = newton.ModelBuilder()
-    mesh_shape = builder.add_shape_mesh(body=-1, xform=mesh_xform, mesh=mesh, scale=mesh_scale)
+    add_mesh = builder.add_shape_convex_hull if convex else builder.add_shape_mesh
+    mesh_shape = add_mesh(body=-1, xform=mesh_xform, mesh=mesh, scale=mesh_scale)
     sphere_body = builder.add_body(xform=wp.transform(wp.vec3(*contact_point_world[:2], 0.09), wp.quat_identity()))
     sphere_shape = builder.add_shape_sphere(
         body=sphere_body,
@@ -4118,6 +4182,7 @@ def test_rigid_mesh_contacts_export_surface_velocity(test, device):
     shape1 = contacts.rigid_contact_shape1.numpy()[:count]
     point0 = contacts.rigid_contact_point0.numpy()[:count]
     point1 = contacts.rigid_contact_point1.numpy()[:count]
+    test.assertIsNotNone(contacts.rigid_contact_surface_velocity)
     contact_velocity = contacts.rigid_contact_surface_velocity.numpy()[:count]
     for i in range(count):
         mesh_point = point1[i] if shape1[i] == mesh_shape else point0[i]
@@ -4132,6 +4197,15 @@ add_function_test(
     "test_rigid_mesh_contacts_export_surface_velocity",
     test_rigid_mesh_contacts_export_surface_velocity,
     devices=get_test_devices(),
+)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_rigid_convex_contacts_export_surface_velocity",
+    test_rigid_mesh_contacts_export_surface_velocity,
+    devices=get_test_devices(),
+    convex=True,
 )
 
 
@@ -5534,6 +5608,14 @@ add_function_test(
     TestMeshConvexMidphase,
     "test_mesh_convex_midphase_queries_margin_shell",
     test_mesh_convex_midphase_queries_margin_shell,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_mesh_convex_midphase_per_thread_matches_tiled",
+    test_mesh_convex_midphase_per_thread_matches_tiled,
     devices=get_cuda_test_devices(),
     check_output=False,
 )

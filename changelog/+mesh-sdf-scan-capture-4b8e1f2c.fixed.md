@@ -1,0 +1,1 @@
+Fix `CollisionSubstepScheduler` failing on scenes with mesh-mesh or mesh-plane SDF contacts: the narrow phase scanned its per-pair block counts with `warp.utils.array_scan`, which allocates scratch memory that CUDA graph conditional bodies cannot record. The scans now use preallocated scratch and produce identical contacts.

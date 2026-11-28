@@ -11,7 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.support_function import _CONVEX_HULL_VALID
+from newton._src.geometry.support_function import _CONVEX_HULL_VALID, GenericShapeData, triangle_seam_normal
 from newton.tests.test_convex_contact_witness import (
     _create_witness_kernel,
     _failed_distance_query,
@@ -32,6 +32,7 @@ def _contacts(
     swap=False,
     split=False,
     margin=0.0,
+    gap=1.0e-3,
     triangle=False,
     hull_box=False,
     ground=None,
@@ -44,7 +45,7 @@ def _contacts(
     ground = wp.transform_identity() if ground is None else ground
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
-    cfg = builder.ShapeConfig(margin=margin, gap=1.0e-3, density=0.0)
+    cfg = builder.ShapeConfig(margin=margin, gap=gap, density=0.0)
     mesh = newton.Mesh(vertices, np.asarray(indices, dtype=np.int32).ravel(), compute_inertia=False)
     box_index = -1
     for box in (False, True) if swap else (True, False):
@@ -98,6 +99,7 @@ def test_refinement_signed_separation(test, device):
     planes = ConvexHull((corners[:, None] - partner[None, :]).reshape(-1, 3)).equations
     plane = planes[np.argmax(planes[:, 3])]
     expected_normal, gap = plane[:3], plane[3]
+    shape_gap, margin = 1.0e-3, 1.0e-5
     for split, swap, shift in product(
         (False, True) if device.is_cuda else (False,), (False, True), (0.0, -gap, -2.0 * gap)
     ):
@@ -113,7 +115,8 @@ def test_refinement_signed_separation(test, device):
                 scale,
                 swap=swap,
                 split=split,
-                margin=1.0e-5,
+                margin=margin,
+                gap=shape_gap,
             )
             test.assertTrue(np.all(np.isfinite(normals)))
             # Check actual shape surfaces independently of the reported normal/depth.
@@ -128,11 +131,15 @@ def test_refinement_signed_separation(test, device):
             np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-5)
             test.assertGreater(float(np.min(normals @ expected_normal)), 0.99)
             depths = np.sum((pa - pb) * normals, axis=1)
-            np.testing.assert_allclose(depths, -(gap + shift), atol=1.0e-5)
+            # A tilted hull can contribute neighboring vertices within the contact gap.
+            # The Minkowski reference gives the depth of its closest witness.
+            np.testing.assert_allclose(pa - pb, depths[:, None] * normals, atol=surface_tolerance)
+            test.assertGreaterEqual(float(np.min(depths)), -2.0 * (shape_gap + margin) - surface_tolerance)
+            np.testing.assert_allclose(np.max(depths), -(gap + shift), atol=1.0e-5)
             if shift == 0.0:
                 test.assertTrue(np.all(depths < 0.0))
             elif shift == -2.0 * gap:
-                test.assertTrue(np.all(depths > 0.0))
+                test.assertGreater(float(np.max(depths)), 0.0)
 
     # A near-touching box-hull pair can have a valid portal but an uncertified
     # GJK shortcut. Keep the portal witnesses and depth when that query fails.
@@ -294,9 +301,6 @@ def test_refinement_triangle_box_seam(test, device):
     vertices = np.array([[-0.2, -0.2, 0.0], [0.2, -0.2, 0.0], [0.2, 0.2, 0.0], [-0.2, 0.2, 0.0]], dtype=np.float32)
     box_pose = wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), pitch))
     expected_depth = half[0] * np.sin(pitch) + half[2] * np.cos(pitch) - height
-    # Besides the mesh face, a triangle's seam can contact the tilted box edge.
-    # Its normal is perpendicular to the diagonal and the box's rotated X edge.
-    edge_normal = wp.normalize(wp.vec3(-np.sin(pitch), np.sin(pitch), -np.cos(pitch)))
     frames = (
         wp.transform_identity(),
         wp.transform(wp.vec3(0.3, -0.2, 0.4), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.4, 0.2)), 0.35)),
@@ -319,12 +323,7 @@ def test_refinement_triangle_box_seam(test, device):
                 ground=pose,
             )
             rotation = wp.transform_get_rotation(frame)
-            expected_normals = np.array(
-                [
-                    wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, -1.0)),
-                    wp.quat_rotate(rotation, edge_normal),
-                ]
-            )
+            expected_normals = np.array([wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, -1.0))])
             error = np.linalg.norm(normals[:, None, :] - expected_normals[None, :, :], axis=2)
             np.testing.assert_allclose(np.min(error, axis=1), 0.0, atol=1.0e-5)
             depths = np.sum((pa - pb) * normals, axis=1)
@@ -333,6 +332,339 @@ def test_refinement_triangle_box_seam(test, device):
             np.testing.assert_allclose(local_mesh[:, 2], 0.0, atol=1.0e-5)
             local_box = np.array([wp.transform_point(wp.transform_inverse(pose), wp.vec3(point)) for point in pa])
             np.testing.assert_allclose(np.max(np.abs(local_box) - half, axis=1), 0.0, atol=1.0e-5)
+
+    # A single triangle's diagonal is a real boundary, not an internal seam.
+    # A nearby box at the plane's height must still see its lateral normal.
+    for indices in ([0, 1, 2], [0, 1, 2, 0, 2, 3]):
+        for mirrored in (False, True):
+            with test.subTest(boundary=len(indices) == 3, mirrored=mirrored):
+                scale = np.array([-1.0 if mirrored else 1.0, 1.0, 1.0])
+                center = np.array([-0.1005, 0.0, 0.0 if len(indices) == 3 else 0.04998])
+                center *= scale
+                _, _, normals = _contacts(
+                    test,
+                    device,
+                    np.full(3, 0.05),
+                    vertices,
+                    indices,
+                    wp.transform_identity(),
+                    scale,
+                    triangle=True,
+                    ground=wp.transform(wp.vec3(center), wp.quat_identity()),
+                )
+                if len(indices) == 3:
+                    test.assertGreater(float(np.max(np.linalg.norm(normals[:, :2], axis=1))), 0.9)
+                else:
+                    np.testing.assert_allclose(normals[:, :2], 0.0, atol=2.0e-5)
+
+    # Joining a sloped neighbor creates a physical crease, not a smooth seam.
+    creased = vertices.copy()
+    creased[3, 2] = -0.2
+    _, _, normals = _contacts(
+        test,
+        device,
+        np.full(3, 0.05),
+        creased,
+        [0, 1, 2, 0, 2, 3],
+        wp.transform_identity(),
+        np.ones(3),
+        triangle=True,
+        ground=wp.transform(wp.vec3(-0.1005, 0.0, 0.0), wp.quat_identity()),
+    )
+    test.assertGreater(float(np.max(np.linalg.norm(normals[:, :2], axis=1))), 0.1)
+
+
+def _bottle_heel_hull():
+    """Return the beveled bottle-heel hull of the bottling-plant products."""
+    angles = np.arange(21) * (2.0 * np.pi / 21)
+    vertices = np.array(
+        [
+            (radius * np.cos(angle), radius * np.sin(angle), z)
+            for radius, z in ((0.025605, 0.0), (0.028303897, 0.0015), (0.030505, 0.016))
+            for angle in angles
+        ],
+        dtype=np.float32,
+    )
+    return newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+
+
+@requires("scipy")
+def test_refinement_triangle_hull_seam_support(test, device):
+    """Retain near-face support for a beveled hull crossing a flat mesh seam."""
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, gap=0.002)
+    # Retain the factory-scale coordinates: world-transform roundoff contributes
+    # to the nearly vertical portal normal at the seam.
+    belt = newton.Mesh(
+        np.array(
+            [
+                [1.2278625, 0.04005, 0.005],
+                [1.2278625, -0.04005, 0.005],
+                [2.0464375, -0.04005, 0.005],
+                [2.0464375, 0.04005, 0.005],
+            ],
+            dtype=np.float32,
+        ),
+        [0, 1, 2, 0, 2, 3],
+        compute_inertia=False,
+    )
+    builder.add_shape_mesh(
+        -1,
+        mesh=belt,
+        cfg=cfg,
+        xform=wp.transform(wp.vec3(54.5125, 28.616438, 0.945), wp.quat(0, 0, -0.70710677, 0.70710677)),
+    )
+    hull = _bottle_heel_hull()
+    body = builder.add_body(
+        xform=wp.transform(
+            wp.vec3(54.5123558, 26.8382854, 0.949995875),
+            wp.quat(-0.0002334115, 0.0003483940, 0.991417944, 0.130729795),
+        ),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_convex_hull(body, mesh=hull, cfg=cfg)
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts, state = pipeline.contacts(), model.state()
+    poses = state.body_q.numpy()
+    for offset in (-0.003, 0.0, 0.003):
+        with test.subTest(offset=offset):
+            poses[body, 1] = 26.8382854 + offset
+            state.body_q.assign(poses)
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0, "flat seam removed the hull's support")
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            test.assertTrue(np.all(normals[:, 2] > 0.9999))
+
+
+@requires("scipy")
+def test_refinement_triangle_hull_tilted_seam_support(test, device):
+    """Support a tilted hull whose witnesses lie on coplanar seams of every triangle.
+
+    Each triangle under the heel reports its witness on a shared internal edge,
+    with a normal a few milliradians off vertical. Rejecting those seam normals
+    removed all of the heel's contacts and let a pasteuriser bottle sink 16 mm.
+    """
+    builder = newton.ModelBuilder()
+    # Two deck strips, triangulated like the factory's process decks.
+    deck = newton.Mesh(
+        np.array(
+            [[x, y, 0.95] for x in (4.4, 4.5, 4.6) for y in (37.23, 39.57)],
+            dtype=np.float32,
+        ),
+        [0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5],
+        compute_inertia=False,
+    )
+    builder.add_shape_mesh(-1, mesh=deck, cfg=builder.ShapeConfig(density=0.0, gap=0.001))
+    body = builder.add_body(
+        xform=wp.transform(
+            wp.vec3(4.4745235, 38.8095512, 0.9500155),
+            wp.quat(4.538547e-05, 6.589243e-04, -8.697915e-05, 0.99999982),
+        ),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_convex_hull(body, mesh=_bottle_heel_hull(), cfg=builder.ShapeConfig(density=0.0, gap=0.002))
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "coplanar seams removed the heel's support")
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999))
+
+
+@requires("scipy")
+def test_refinement_triangle_hull_chamfer_seam(test, device):
+    """Keep a heel straddling two chamfered belts on their top faces.
+
+    The heel's witness on a chamfer strip's internal diagonal lies at the
+    strip's crease with the top face. The chamfer plane does not continue
+    past that crease, so the contact must not take the chamfer's normal.
+    """
+    builder = newton.ModelBuilder()
+    profile = [(-0.0413, -0.005), (-0.0413, 0.0038), (-0.04, 0.005), (0.04, 0.005), (0.0413, 0.0038), (0.0413, -0.005)]
+    bar = newton.Mesh(
+        np.array([(x, y, z) for x in (0.0, 0.748) for y, z in profile], dtype=np.float32),
+        [0, 1, 2],
+        compute_inertia=False,
+    ).compute_convex_hull()
+    for y in (38.3575, 38.4425):
+        builder.add_shape_mesh(
+            -1,
+            mesh=bar,
+            xform=wp.transform(wp.vec3(43.4605, y, 0.945), wp.quat_identity()),
+            cfg=builder.ShapeConfig(density=0.0, gap=0.002),
+        )
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(43.80, 38.4, 0.94999), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_convex_hull(body, mesh=_bottle_heel_hull(), cfg=builder.ShapeConfig(density=0.0, gap=0.002))
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts, state = pipeline.contacts(), model.state()
+    poses = state.body_q.numpy()
+    for offset in (-0.012, -0.004, 0.0, 0.004, 0.012):
+        with test.subTest(offset=offset):
+            poses[body, 1] = 38.4 + offset
+            state.body_q.assign(poses)
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0, "belt tops lost the heel's support")
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            test.assertTrue(np.all(np.abs(normals[:, 2]) > 0.9999), f"chamfer normals {normals.round(3).tolist()}")
+
+
+@requires("scipy")
+def test_refinement_triangle_hull_rim_on_seam(test, device):
+    """Keep the face normal where a heel's rim just crosses a coplanar seam.
+
+    The triangle past the seam overlaps the rim by a 0.1 mm sliver. The witness
+    of its leaning normal lies inside that sliver, beyond the on-edge tolerance,
+    so the lean along the belt survived and pushed the heel back.
+    """
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, gap=0.001)
+    # Two flat belt sections meeting at x = 0, across the heel's travel.
+    top = newton.Mesh(
+        np.array([(x, y, 0.005) for x in (-0.748, 0.0, 0.748) for y in (-0.04005, 0.04005)], dtype=np.float32),
+        [1, 2, 3, 1, 0, 2, 3, 2, 4, 3, 4, 5],
+        compute_inertia=False,
+    )
+    origin = wp.vec3(43.4605, 38.3575, 0.945)
+    builder.add_shape_mesh(-1, mesh=top, cfg=cfg, xform=wp.transform(origin, wp.quat_identity()))
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    builder.add_shape_convex_hull(body, mesh=_bottle_heel_hull(), cfg=cfg)
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts, state = pipeline.contacts(), model.state()
+    poses = state.body_q.numpy()
+    for dx, yaw in ((-0.0255, 0.1), (-0.0255, 0.2), (0.0255, 0.0)):
+        with test.subTest(dx=dx, yaw=yaw):
+            q = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), yaw)
+            poses[body] = (origin[0] + dx, origin[1], origin[2] + 0.005 - 1.0e-5, *q)
+            state.body_q.assign(poses)
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            test.assertGreater(float(np.min(normals[:, 2])), 0.9999, normals)
+
+
+@wp.kernel(enable_backward=False)
+def _sliver_seam_normal_kernel(on_seam: wp.array[int], face: wp.array[wp.vec3]):
+    geom = GenericShapeData()
+    geom.scale = wp.vec3(10.0, 0.0, 0.0)
+    geom.auxiliary = wp.vec3(10.0, 0.001, 0.0)
+    geom.smooth_edges = 1
+    seam, normal = triangle_seam_normal(
+        geom, wp.vec3(5.0, 0.0, 0.0), wp.normalize(wp.vec3(0.0, -1.0, 1.0)), wp.vec3(5.0, 0.0, 1.0)
+    )
+    on_seam[0] = int(seam)
+    face[0] = normal
+
+
+def test_refinement_triangle_sliver_seam_normal(test, device):
+    """Resolve the seam of a sliver triangle whose float32 Gram determinant cancels to zero."""
+    on_seam = wp.zeros(1, dtype=int, device=device)
+    face = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_sliver_seam_normal_kernel, dim=1, outputs=[on_seam, face], device=device)
+    test.assertEqual(int(on_seam.numpy()[0]), 1)
+    np.testing.assert_allclose(face.numpy()[0], [0.0, 0.0, 1.0], atol=1.0e-6)
+
+
+def test_refinement_triangle_capsule_sunk_across_seam(test, device):
+    """Push a capsule sunk through a flat two-triangle mesh out along the face.
+
+    The capsule stands on the internal diagonal. Each triangle's shallowest
+    exit leans across that seam, while the capsule reaches deeper below the
+    face. Its deepest point lies over the triangles, so the face supports it.
+    """
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(density=0.0, margin=0.0, gap=0.0)
+    ground = newton.Mesh(
+        np.array([(-5.0, -5.0, 0.0), (5.0, -5.0, 0.0), (5.0, 5.0, 0.0), (-5.0, 5.0, 0.0)], dtype=np.float32),
+        [0, 1, 2, 0, 2, 3],
+        compute_inertia=False,
+    )
+    builder.add_shape_mesh(-1, mesh=ground, cfg=cfg)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+    )
+    builder.add_shape_capsule(body, radius=0.05, half_height=0.15, cfg=cfg)
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "coplanar seam rejected the sunk capsule's contacts")
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    test.assertGreater(float(np.min(np.abs(normals[:, 2]))), 0.9999, normals)
+
+
+def test_refinement_triangle_board_across_strand_side(test, device):
+    """Keep a board crossing a belt strand's free end from a deep side-face contact.
+
+    A pallet's bottom deck board lies across a narrow chain strand (a box mesh),
+    sunk 0.04 mm into its top face, and its rear edge sits on the strand's end.
+    The witness on the strand's side face lands where that face's diagonal seam
+    meets the end corner. The board's far end lies 80 mm beyond the side face
+    and projects onto it, but the board also reaches past the side face's top
+    edge, a crease, so the side face does not support it there. A side-face
+    contact 80 mm deep pushed full pallets sideways off a wrap-line conveyor.
+    """
+    builder = newton.ModelBuilder()
+    box = newton.Mesh.create_box(0.5, compute_inertia=False)
+    strand = newton.Mesh(box.vertices, box.indices, compute_inertia=False)
+    builder.add_shape_mesh(
+        -1,
+        mesh=strand,
+        xform=wp.transform(wp.vec3(0.0, -0.5375, 0.48), wp.quat_identity()),
+        scale=(1.8596, 0.036, 0.04),
+        cfg=builder.ShapeConfig(density=0.0, gap=0.01, margin=0.0),
+    )
+    # Pallet pose one step before the kick in a full pallet's crossing.
+    pallet = wp.transform(
+        wp.vec3(0.5296056, -1.4537889e-05, 0.4998623),
+        wp.normalize(wp.quat(-1.0956683e-06, -8.50166e-06, 5.773905e-05, 1.0)),
+    )
+    board = builder.add_body(
+        xform=wp.transform_multiply(pallet, wp.transform(wp.vec3(0.4497, 0.0, 0.0101), wp.quat_identity())),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    builder.add_shape_box(board, hx=0.05, hy=0.6, hz=0.01, cfg=builder.ShapeConfig(density=0.0, gap=0.001, margin=0.0))
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "the strand lost the board's support")
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    points0 = contacts.rigid_contact_point0.numpy()[:count]
+    points1 = contacts.rigid_contact_point1.numpy()[:count]
+    shape_body = model.shape_body.numpy()
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    pose = state.body_q.numpy()
+
+    def world(shape, point):
+        body = shape_body[shape]
+        if body < 0:
+            return point
+        return np.asarray(wp.transform_point(wp.transform(pose[body, :3], pose[body, 3:]), wp.vec3(point)))
+
+    depths = [
+        float(np.dot(normals[k], world(shape1[k], points1[k]) - world(shape0[k], points0[k]))) for k in range(count)
+    ]
+    # Honest contacts here are the 0.04 mm top-face sink and sub-millimetre end-cap slivers.
+    test.assertGreater(min(depths), -0.002, (normals, depths))
 
 
 def test_refinement_triangle_box_tilted_rest(test, device):
@@ -617,6 +949,13 @@ for function in (
     test_refinement_unconverged_query_separation,
     test_refinement_triangle_box_depth,
     test_refinement_triangle_box_seam,
+    test_refinement_triangle_hull_seam_support,
+    test_refinement_triangle_hull_tilted_seam_support,
+    test_refinement_triangle_hull_chamfer_seam,
+    test_refinement_triangle_hull_rim_on_seam,
+    test_refinement_triangle_sliver_seam_normal,
+    test_refinement_triangle_capsule_sunk_across_seam,
+    test_refinement_triangle_board_across_strand_side,
     test_refinement_triangle_box_tilted_rest,
     test_refinement_triangle_thin_box_face,
     test_refinement_triangle_box_tilted_face,

@@ -23,6 +23,7 @@ from ..geometry.collision_core import (
     create_find_contacts,
     get_triangle_shape_from_mesh,
     mesh_vs_convex_midphase,
+    mesh_vs_convex_midphase_thread,
     post_process_axial_on_discrete_contact,
     post_process_minkowski_only,
 )
@@ -77,6 +78,7 @@ from ..geometry.sdf_contact import (
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
+    scan_block_counts,
 )
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_planar_recovery import (
@@ -96,8 +98,10 @@ from ..geometry.support_function import (
     support_map_accelerated,
     support_map_lean,
     support_map_lean_accelerated,
+    triangle_smooth_edges,
 )
 from ..geometry.types import GeoType
+from ..geometry.utils import _scan_scratch_size
 from ..utils.heightfield import (
     HeightfieldData,
     get_triangle_shape_from_heightfield,
@@ -1902,9 +1906,11 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
 
     The wide kernel (``narrow_ratio == 0``) runs a tile block per query while
     there are at most as many queries as blocks. Beyond that, BVH traversal
-    latency bounds the midphase, and a narrow kernel launched with
-    ``narrow_ratio`` times as many one-warp blocks runs instead.
+    latency bounds the midphase, and a kernel with one thread per query
+    (``narrow_ratio > 0``, launched with ``narrow_ratio`` times the wide
+    kernel's blocks) runs instead.
     """
+    per_thread = narrow_ratio > 0
 
     @wp.kernel(enable_backward=False, module=f"narrow_phase_mesh_overlaps_{narrow_ratio}")
     def narrow_phase_find_mesh_triangle_overlaps_kernel(
@@ -1936,18 +1942,22 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
         Outputs triples of ``(mesh_or_hfield_shape, other_shape, triangle_idx)``.
         """
         tid, j = wp.tid()
+        stride = total_num_threads
+        if wp.static(per_thread):
+            tid = tid * wp.block_dim() + j
+            stride = total_num_threads * wp.block_dim()
 
         num_mesh_pairs = shape_pairs_mesh_count[0]
         if wp.static(narrow_ratio == 0):
             # The wide GPU launch gives each query a block; past one query per
-            # block, the narrow launch takes over all of them.
+            # block, the per-thread launch takes over all of them.
             if wp.block_dim() > _MIDPHASE_NARROW_TILE_SIZE and num_mesh_pairs > total_num_threads:
                 return
         elif num_mesh_pairs <= total_num_threads // narrow_ratio:
             return
 
         # Strided loop over mesh pairs
-        for i in range(tid, num_mesh_pairs, total_num_threads):
+        for i in range(tid, num_mesh_pairs, stride):
             pair = shape_pairs_mesh[i]
             shape_a = pair[0]
             shape_b = pair[1]
@@ -1961,7 +1971,7 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
             # -----------------------------------------------------------------
             if type_a == GeoType.HFIELD:
                 # Only run on j==0; the j dimension is for tiled BVH queries (mesh only).
-                if j != 0:
+                if j != 0 and not wp.static(per_thread):
                     continue
                 hfd = heightfield_data[shape_heightfield_index[shape_a]]
                 heightfield_vs_convex_midphase(
@@ -2017,22 +2027,38 @@ def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
             margin_mesh = shape_data[mesh_shape][3]
             contact_threshold = gap_sum + margin_non_mesh + margin_mesh
 
-            # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
-            mesh_vs_convex_midphase(
-                j,
-                mesh_shape,
-                non_mesh_shape,
-                X_mesh_ws,
-                X_ws,
-                mesh_id,
-                shape_types,
-                shape_data,
-                shape_source,
-                contact_threshold,
-                shape_interior_point[non_mesh_shape],
-                triangle_pairs,
-                triangle_pairs_count,
-            )
+            if wp.static(per_thread):
+                mesh_vs_convex_midphase_thread(
+                    mesh_shape,
+                    non_mesh_shape,
+                    X_mesh_ws,
+                    X_ws,
+                    mesh_id,
+                    shape_types,
+                    shape_data,
+                    shape_source,
+                    contact_threshold,
+                    shape_interior_point[non_mesh_shape],
+                    triangle_pairs,
+                    triangle_pairs_count,
+                )
+            else:
+                # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
+                mesh_vs_convex_midphase(
+                    j,
+                    mesh_shape,
+                    non_mesh_shape,
+                    X_mesh_ws,
+                    X_ws,
+                    mesh_id,
+                    shape_types,
+                    shape_data,
+                    shape_source,
+                    contact_threshold,
+                    shape_interior_point[non_mesh_shape],
+                    triangle_pairs,
+                    triangle_pairs_count,
+                )
 
     return narrow_phase_find_mesh_triangle_overlaps_kernel
 
@@ -2107,6 +2133,9 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
                 mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
                 X_ws_a = shape_transform[shape_a]
                 shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_ws_a, tri_idx)
+                shape_data_a.smooth_edges = triangle_smooth_edges(
+                    shape_support_data[shape_a], support_neighbors, tri_idx, mesh_scale_a
+                )
 
             # Extract shape B data
             pos_b, quat_b, shape_data_b, _scale_b, margin_offset_b = extract_shape_data(
@@ -2170,6 +2199,7 @@ def compute_mesh_plane_vert_counts(
     shape_pairs_mesh_plane: wp.array[wp.vec2i],
     shape_pairs_mesh_plane_count: wp.array[int],
     shape_source: wp.array[wp.uint64],
+    minimum_vertices_per_block: wp.array[wp.int32],
     vert_counts: wp.array[wp.int32],
     total_vert_count: wp.array[wp.int32],
     total_num_threads: int,
@@ -2187,6 +2217,7 @@ def compute_mesh_plane_vert_counts(
         pair_verts = int(0)  # noqa: RUF046, RUF100 - explicit cast required by Warp codegen
         if mesh_id != wp.uint64(0):
             pair_verts = wp.mesh_get(mesh_id).points.shape[0]
+        minimum_vertices_per_block[i] = 256
         vert_counts[i] = wp.int32(pair_verts)
         wp.atomic_add(total_vert_count, 0, pair_verts)
 
@@ -2200,10 +2231,12 @@ def compute_mesh_plane_block_offsets_scan(
     block_counts: wp.array[wp.int32],
     total_vert_count: wp.array[wp.int32],
     total_num_threads: int,
+    scan_scratch: wp.array[wp.int64],
+    scan_total: wp.array[int],
     device: str | None = None,
     record_tape: bool = True,
 ):
-    """Compute mesh-plane block offsets using parallel kernels and array_scan."""
+    """Compute mesh-plane block offsets using parallel kernels and an allocation-free scan."""
     n = block_counts.shape[0]
     launch_threads = min(n, total_num_threads)
     # Step 1: compute per-pair vertex counts in parallel
@@ -2214,6 +2247,7 @@ def compute_mesh_plane_block_offsets_scan(
             shape_pairs_mesh_plane,
             shape_pairs_mesh_plane_count,
             shape_source,
+            block_offsets,  # temporary per-pair work budgets until the final scan
             block_counts,  # reuse as temp storage for vert counts
             total_vert_count,
             launch_threads,
@@ -2228,17 +2262,20 @@ def compute_mesh_plane_block_offsets_scan(
         inputs=[
             total_vert_count,
             block_counts,  # still holds vert counts
+            block_offsets,  # unchanged mesh-plane budget of 256 vertices per block
             shape_pairs_mesh_plane_count,
             shape_pairs_mesh_plane.shape[0],
             target_blocks,
-            block_offsets,  # reuse as temp for block counts
+            block_counts,  # each pair's block count replaces its vert count
             launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
     # Step 3: exclusive scan of block counts → block_offsets
-    wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
+    scan_block_counts(
+        shape_pairs_mesh_plane_count, block_counts, block_offsets, scan_scratch, scan_total, device, record_tape
+    )
 
 
 @lru_cache
@@ -3208,18 +3245,17 @@ class NarrowPhase:
             else None
         )
         # Split-convex blocks distribute independent serial pair queries across
-        # lanes. Use one warp while preserving the block distribution; lanes
-        # grid-stride over larger block queues. That suits the accelerated
-        # hill-climb support map, whose per-pair cost is long and uneven. The
-        # exhaustive support scan is shorter and far more uniform, and does
-        # better with the full block: num_blocks is sized against self.block_dim,
-        # so the narrower block also launches a quarter of the threads used by
-        # the rest of the narrow phase, which throttles large replicated scenes.
+        # lanes. One-warp blocks suit the accelerated hill-climb support map,
+        # whose per-pair cost is long and uneven; the exhaustive support scan is
+        # shorter and far more uniform, and does better with the full block.
+        # Either way the launch keeps the narrow phase's thread count: the
+        # latency-bound GJK queries need every resident warp (a factory with
+        # 215k bottle pairs ran 1.2 ms per pass on a quarter of the threads).
         if device_obj.is_cuda:
             self.split_convex_block_dim = 32 if convex_support_acceleration else self.block_dim
         else:
             self.split_convex_block_dim = self.block_dim
-        self.split_convex_total_num_threads = self.split_convex_block_dim * num_blocks
+        self.split_convex_total_num_threads = self.total_num_threads
         # One-warp blocks spread sparse, serial-per-lane triangle solves across
         # more SMs without reducing the total number of launched threads.
         self.mesh_triangle_block_dim = 32 if device_obj.is_cuda else self.block_dim
@@ -3244,12 +3280,20 @@ class NarrowPhase:
             mesh_mesh_scan_size = self.max_mesh_mesh_pairs + 1
             self.mesh_mesh_block_offsets = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
             self.mesh_mesh_block_counts = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
+            self._mesh_mesh_scan_scratch = wp.zeros(
+                _scan_scratch_size(self.max_mesh_mesh_pairs, device), dtype=wp.int64, device=device
+            )
+            self._mesh_mesh_scan_total = wp.zeros(1, dtype=int, device=device)
             # Mesh-plane
             self.num_mesh_plane_blocks = target_blocks
             self.mesh_plane_target_blocks = target_blocks
             mesh_plane_scan_size = self.max_mesh_plane_pairs + 1
             self.mesh_plane_block_offsets = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
             self.mesh_plane_block_counts = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
+            self._mesh_plane_scan_scratch = wp.zeros(
+                _scan_scratch_size(self.max_mesh_plane_pairs, device), dtype=wp.int64, device=device
+            )
+            self._mesh_plane_scan_total = wp.zeros(1, dtype=int, device=device)
         else:
             self.num_mesh_mesh_blocks = self.num_tile_blocks
             self.mesh_mesh_target_blocks = self.num_tile_blocks
@@ -3860,6 +3904,8 @@ class NarrowPhase:
                         block_counts=self.mesh_plane_block_counts,
                         total_vert_count=self.mesh_plane_total_weight,
                         total_num_threads=self.total_num_threads,
+                        scan_scratch=self._mesh_plane_scan_scratch,
+                        scan_total=self._mesh_plane_scan_total,
                         device=device,
                         record_tape=False,
                     )
@@ -4045,11 +4091,15 @@ class NarrowPhase:
                         shape_edge_range=shape_edge_range,
                         shape_heightfield_index=shape_heightfield_index,
                         heightfield_data=heightfield_data,
+                        shape_sdf_index=shape_sdf_index,
+                        texture_sdf_table=texture_sdf_data,
                         target_blocks=self.num_mesh_mesh_blocks,
                         block_offsets=self.mesh_mesh_block_offsets,
                         block_counts=self.mesh_mesh_block_counts,
                         total_edge_count=self.mesh_mesh_total_weight,
                         total_num_threads=self.total_num_threads,
+                        scan_scratch=self._mesh_mesh_scan_scratch,
+                        scan_total=self._mesh_mesh_scan_total,
                         device=device,
                         record_tape=False,
                     )

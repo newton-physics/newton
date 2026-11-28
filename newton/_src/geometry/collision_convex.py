@@ -22,6 +22,12 @@ from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
 from .penetration import create_solve_box_penetration
 from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
+from .support_function import (
+    triangle_contains_projection,
+    triangle_edge_outward,
+    triangle_seam_normal,
+    triangle_witness_tolerance,
+)
 
 
 @wp.struct
@@ -147,6 +153,90 @@ def create_write_convex_query_result(
     return write_convex_query_result
 
 
+def _create_triangle_seam_contact(support_map_b: Any):
+    """Create the resolution of contacts at coplanar mesh seams."""
+
+    @wp.func
+    def reaches_past_boundary(
+        geom_a: Any,
+        geom_b: Any,
+        relative_orientation_b: wp.quat,
+        relative_position_b: wp.vec3,
+        data_provider: Any,
+        tolerance: float,
+    ) -> bool:
+        """Return whether B extends, in the face plane, past an edge of triangle A without a coplanar neighbor."""
+        # Triangle vertex A is the frame origin; B and C are stored relative to it.
+        a = wp.vec3(0.0)
+        b = geom_a.scale
+        c = geom_a.auxiliary
+        mask = geom_a.smooth_edges
+        # Edge bits: 1 = AB, 2 = BC, 4 = CA.
+        if (mask & 1) == 0:
+            outward = triangle_edge_outward(a, b, c)
+            reach = support_map_b(geom_b, outward, relative_orientation_b, relative_position_b, data_provider)
+            if wp.dot(outward, reach - a) > tolerance:
+                return True
+        if (mask & 2) == 0:
+            outward = triangle_edge_outward(b, c, a)
+            reach = support_map_b(geom_b, outward, relative_orientation_b, relative_position_b, data_provider)
+            if wp.dot(outward, reach - b) > tolerance:
+                return True
+        if (mask & 4) == 0:
+            outward = triangle_edge_outward(c, a, b)
+            reach = support_map_b(geom_b, outward, relative_orientation_b, relative_position_b, data_provider)
+            if wp.dot(outward, reach - c) > tolerance:
+                return True
+        return False
+
+    @wp.func
+    def triangle_seam_contact(
+        geom_a: Any,
+        geom_b: Any,
+        relative_orientation_b: wp.quat,
+        relative_position_b: wp.vec3,
+        data_provider: Any,
+        point_a: wp.vec3,
+        point_b: wp.vec3,
+        normal: wp.vec3,
+        signed_distance: float,
+    ):
+        """Return whether to keep a contact, then its witnesses, normal, and distance.
+
+        At a coplanar seam, the face supports B if no point of B lies deeper
+        below the face than the contact found, so the face is a minimum
+        penetration direction. Such a contact takes the face normal, measured
+        from B's witness. The face also supports B's deepest point when that
+        point lies over the triangle, and the contact then moves there.
+        Otherwise the leaning normal is an artifact of the triangle's boundary
+        and the contact is rejected.
+        """
+        interior_b = wp.quat_rotate(relative_orientation_b, geom_b.center) + relative_position_b
+        on_seam, face = triangle_seam_normal(geom_a, point_a, normal, interior_b)
+        if not on_seam:
+            return True, point_a, point_b, normal, signed_distance
+        deepest = support_map_b(geom_b, -face, relative_orientation_b, relative_position_b, data_provider)
+        # Triangle vertex A is the frame origin, so the face plane passes through it.
+        deepest_depth = wp.dot(face, deepest)
+        tolerance = triangle_witness_tolerance(point_a)
+        if deepest_depth < signed_distance - tolerance:
+            # A shape sunk through a flat triangulated surface reaches deepest
+            # over the face, while the shallowest direction leans across a seam.
+            # The face is the surface there only if B lies within the face's
+            # true boundary. Past a crease or open edge, as when a board
+            # overhangs the end cap of a belt strand, the deepest point is just
+            # B's far end beyond that boundary, not a penetration.
+            if triangle_contains_projection(geom_a, deepest, tolerance) and not reaches_past_boundary(
+                geom_a, geom_b, relative_orientation_b, relative_position_b, data_provider, tolerance
+            ):
+                return True, deepest - deepest_depth * face, deepest, face, deepest_depth
+            return False, point_a, point_b, normal, signed_distance
+        depth = wp.dot(face, point_b)
+        return True, point_b - depth * face, point_b, face, depth
+
+    return triangle_seam_contact
+
+
 def create_solve_convex_multi_contact(
     support_func: Any,
     writer_func: Any,
@@ -174,6 +264,7 @@ def create_solve_convex_multi_contact(
     )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     has_penetration_refiner = penetration_refiner is not None
+    triangle_seam_contact = _create_triangle_seam_contact(support_funcs[0])
 
     @wp.func
     def solve_convex_multi_contact(
@@ -254,6 +345,20 @@ def create_solve_convex_multi_contact(
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
+        keep, point_a, point_b, normal, signed_distance = triangle_seam_contact(
+            geom_a,
+            geom_b,
+            relative_orientation_b,
+            relative_position_b,
+            data_provider,
+            point_a,
+            point_b,
+            normal,
+            signed_distance,
+        )
+        if not keep:
+            return 0
+
         if skip_multi_contact or signed_distance > contact_threshold:
             # Transform to world space only for the single-contact early-out.
             point = 0.5 * (point_a + point_b)
@@ -322,6 +427,7 @@ def create_solve_convex_single_contact(
     )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     has_penetration_refiner = penetration_refiner is not None
+    triangle_seam_contact = _create_triangle_seam_contact(support_funcs[0])
 
     @wp.func
     def solve_convex_single_contact(
@@ -392,6 +498,20 @@ def create_solve_convex_single_contact(
                 data_provider,
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
+
+        keep, point_a, point_b, normal, signed_distance = triangle_seam_contact(
+            geom_a,
+            geom_b,
+            relative_orientation_b,
+            relative_position_b,
+            data_provider,
+            point_a,
+            point_b,
+            normal,
+            signed_distance,
+        )
+        if not keep:
+            return 0
 
         # Transform results back to world space (once).
         point = 0.5 * (point_a + point_b)

@@ -1125,6 +1125,8 @@ class Model:
 
         The final entry packs the LUT resolution in its low 16 bits and the
         strict hull-validity flag in bit 16. Zero resolution disables acceleration.
+        For triangle meshes, bit 17 marks a block of per-triangle coplanar-edge
+        masks at the neighbor-block start (AB, BC, and CA in bits 0, 1, and 2).
         """
         self._convex_support_lut: wp.array[wp.int32] | None = None
         """Packed octahedral directional seed tables shared by convex geometries."""
@@ -1139,6 +1141,7 @@ class Model:
         A verified hull's block starts with its edge count and one ``(a, b, c1, c2)``
         record per edge (vertex indices of the edge and of its two outward faces),
         followed by the CSR vertex neighbors of accelerated hulls.
+        Triangle meshes share this storage for their coplanar-edge mask blocks.
         """
         self.shape_scale: wp.array[wp.vec3] | None = None
         """Shape 3D scale, shape [shape_count], vec3."""

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import warnings
 from collections import defaultdict
@@ -102,7 +103,8 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
             vertices = np.asarray(src.vertices, dtype=np.float64)
             aabb_lo, aabb_hi = vertices.min(axis=0), vertices.max(axis=0)
         extent = (aabb_hi - aabb_lo) * np.abs(np.asarray(scale, dtype=np.float64))
-        return float(0.5 * np.linalg.norm(extent))
+        # np.linalg.norm of a float64 vector, without its dispatch overhead.
+        return 0.5 * math.sqrt(extent.dot(extent))
     elif geo_type == GeoType.PLANE:
         # Use magnitudes for the finite-vs-infinite check so that legacy callers that
         # pass negative components still classify correctly. The infinite-plane sentinel
