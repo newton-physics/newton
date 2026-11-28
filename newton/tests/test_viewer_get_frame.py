@@ -241,6 +241,24 @@ class TestViewerGLGetFrame(unittest.TestCase):
         finally:
             viewer.close()
 
+    def test_headless_frame_size_ignores_window_backing_scale(self):
+        """Keep headless frames at the requested size when the hidden window is HiDPI-scaled."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+
+        try:
+            # A hidden pyglet window on a Retina display reports a framebuffer
+            # twice the requested size; headless capture must not follow it.
+            with mock.patch.object(viewer.renderer.window, "get_framebuffer_size", return_value=(128, 96)):
+                viewer.renderer._on_window_resize(64, 48)
+                viewer.set_model(_make_box_model("cpu"))
+                viewer.begin_frame(0.0)
+                viewer.end_frame()
+                frame = viewer.get_frame()
+
+            self.assertEqual(frame.shape, (48, 64, 3))
+        finally:
+            viewer.close()
+
     def test_large_quad_is_stable_under_parallel_camera_translation(self):
         """Keep a large uniform quad stable while translating the camera parallel to it."""
         viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)

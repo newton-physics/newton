@@ -1217,6 +1217,7 @@ class RendererGL:
             self._check_gl_version(gl.current_context)
 
         self._title = title
+        self._headless_size = (int(screen_width), int(screen_height))
 
         try:
             # try to enable MSAA
@@ -1284,7 +1285,7 @@ class RendererGL:
         # making window current opengl rendering context
         self._make_current()
 
-        self._screen_width, self._screen_height = self.window.get_framebuffer_size()
+        self._screen_width, self._screen_height = self.framebuffer_size()
 
         self._camera_speed = 0.04
         self._last_x, self._last_y = self._screen_width // 2, self._screen_height // 2
@@ -1607,8 +1608,22 @@ class RendererGL:
                 self._dwm_flush()
             self.window.flip()
 
+    def framebuffer_size(self) -> tuple[int, int]:
+        """Return the size in pixels of the frames the renderer draws.
+
+        A visible window renders at its framebuffer size, which a HiDPI display
+        scales (for example 2x on a macOS Retina display). Headless rendering
+        draws only into offscreen buffers, so it keeps the requested size
+        instead of the hidden window's scaled framebuffer.
+        """
+        if self.headless:
+            return self._headless_size
+        return self.window.get_framebuffer_size()
+
     def resize(self, width, height):
-        self._screen_width, self._screen_height = self.window.get_framebuffer_size()
+        if self.headless:
+            self._headless_size = (int(width), int(height))
+        self._screen_width, self._screen_height = self.framebuffer_size()
         self._setup_frame_buffer()
 
     def set_title(self, title):
