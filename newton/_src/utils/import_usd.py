@@ -1055,7 +1055,7 @@ def parse_usd(
                     **shape_visual_kwargs,
                 )
             elif type_name == "mesh":
-                subset_meshes = visuals.get_visual_material_subset_meshes(prim)
+                subset_meshes = None if is_site else visuals.get_visual_material_subset_meshes(prim)
                 if subset_meshes:
                     for subset_path, subset_mesh in subset_meshes:
                         subset_shape_id = builder.add_shape_mesh(

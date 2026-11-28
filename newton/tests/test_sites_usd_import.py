@@ -552,6 +552,21 @@ def Xform "World" {{
                 mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
                 mesh.GetPrim().AddAppliedSchema(schema_name)
 
+                # Mesh site fully covered by two material-bound subsets should retain canonical parent label
+                from pxr import UsdShade
+
+                subset_mesh = UsdGeom.Mesh.Define(stage, "/Body/SubsetMeshSite")
+                subset_mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)])
+                subset_mesh.CreateFaceVertexCountsAttr([3, 3])
+                subset_mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
+                subset_mesh.GetPrim().AddAppliedSchema(schema_name)
+                mat1 = UsdShade.Material.Define(stage, "/Body/Mat1")
+                mat2 = UsdShade.Material.Define(stage, "/Body/Mat2")
+                sub1 = UsdGeom.Subset.CreateGeomSubset(subset_mesh, "sub1", UsdGeom.Tokens.face, [0])
+                sub2 = UsdGeom.Subset.CreateGeomSubset(subset_mesh, "sub2", UsdGeom.Tokens.face, [1])
+                UsdShade.MaterialBindingAPI.Apply(sub1.GetPrim()).Bind(mat1)
+                UsdShade.MaterialBindingAPI.Apply(sub2.GetPrim()).Bind(mat2)
+
                 gaussian = stage.DefinePrim("/Body/GaussianSite", "ParticleField3DGaussianSplat")
                 gaussian.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
                 gaussian.AddAppliedSchema(schema_name)
@@ -566,6 +581,7 @@ def Xform "World" {{
                 expected = (
                     ("/Body/PlaneSite", GeoType.PLANE),
                     ("/Body/MeshSite", GeoType.MESH),
+                    ("/Body/SubsetMeshSite", GeoType.MESH),
                     ("/Body/GaussianSite", GeoType.GAUSSIAN),
                 )
                 for label, expected_type in expected:
@@ -574,6 +590,13 @@ def Xform "World" {{
                     self.assertFalse(bool(shape_flags[idx] & ShapeFlags.COLLIDE_SHAPES))
                     self.assertFalse(bool(shape_flags[idx] & ShapeFlags.COLLIDE_PARTICLES))
                     self.assertEqual(int(shape_types[idx]), int(expected_type))
+
+                # Ensure material subsets did not create duplicate/subset-labeled sites
+                subset_site_labels = [
+                    lbl for i, lbl in enumerate(model.shape_label)
+                    if "SubsetMeshSite" in lbl and (shape_flags[i] & ShapeFlags.SITE)
+                ]
+                self.assertEqual(subset_site_labels, ["/Body/SubsetMeshSite"])
 
 
 if __name__ == "__main__":

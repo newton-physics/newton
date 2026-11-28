@@ -425,13 +425,15 @@ class TestSiteInvariantEnforcement(unittest.TestCase):
         mesh_site = builder.add_shape_mesh(body=body, mesh=mesh, as_site=True, label="mesh_site")
         gaussian_site = builder.add_shape_gaussian(body=body, gaussian=gaussian, as_site=True, label="gaussian_site")
 
-        with self.assertRaises(ValueError):
+        shape_count_before = builder.shape_count
+        with self.assertRaisesRegex(ValueError, "Gaussian sites cannot have a collision_proxy"):
             builder.add_shape_gaussian(
                 body=body,
                 gaussian=gaussian,
                 as_site=True,
-                collision_proxy="convex_hull",
+                collision_proxy=mesh,
             )
+        self.assertEqual(builder.shape_count, shape_count_before)
 
         model = builder.finalize()
         flags = model.shape_flags.numpy()

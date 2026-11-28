@@ -10655,8 +10655,11 @@ class ModelBuilder:
                 default). If ``as_site=True`` and ``cfg`` is provided, a copy is
                 made and site invariants are enforced via ``mark_as_site()``.
             as_site: If ``True``, creates a site (non-colliding reference point)
-                instead of a regular Gaussian shape. Defaults to ``False``.
-            collision_proxy: Collision strategy. Options:
+                instead of a regular Gaussian shape. Cannot be combined with a
+                non-``None`` ``collision_proxy`` (raises ``ValueError``).
+                Defaults to ``False``.
+            collision_proxy: Collision strategy (must be ``None`` when
+                ``as_site=True``). Options:
 
                 - ``None``: no collision (render-only).
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
@@ -10669,6 +10672,10 @@ class ModelBuilder:
 
         Returns:
             The index of the Gaussian shape or site.
+
+        Raises:
+            TypeError: If ``gaussian`` is ``None`` or ``collision_proxy`` has an unsupported type.
+            ValueError: If ``as_site=True`` and ``collision_proxy`` is not ``None``.
         """
         if gaussian is None:
             raise TypeError("'gaussian' is required when adding a Gaussian shape.")
