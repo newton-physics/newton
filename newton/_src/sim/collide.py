@@ -35,6 +35,7 @@ from ..geometry.contact_reduction_body_pairs import (
 from ..geometry.contact_reduction_global import CONTACT_ID_BITS, MAX_GROUP_ID
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.flags import MeshProperties, ShapeFlags
+from ..geometry.heightfield_recovery import HEIGHTFIELD_RECOVERY_DEPTH
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase, _PipelineNarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
@@ -639,6 +640,8 @@ def _create_shape_aabb_kernel(tight_tetrahedra: bool = False) -> wp.Kernel:
             # so we only need to handle the rotation here.
             local_lo = shape_collision_aabb_lower[shape_id]
             local_hi = shape_collision_aabb_upper[shape_id]
+            if geo_type == GeoType.HFIELD:
+                local_lo[2] -= HEIGHTFIELD_RECOVERY_DEPTH
             # Pad rounded gap and margin sums before adding them to the bounds.
             rounding = (wp.abs(shape_gap[shape_id]) + wp.abs(margin)) * (2.0 * 1.1920928955078125e-7)
             margin_vec = wp.vec3(effective_gap + rounding)

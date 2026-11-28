@@ -85,6 +85,7 @@ from .contact_reduction import (
     get_spatial_direction_2d,
     project_point_to_plane,
 )
+from .heightfield_recovery import create_heightfield_recovery
 from .support_function import (
     AcceleratedSupportMapDataProvider,
     closest_point_on_triangle,
@@ -3163,6 +3164,25 @@ def mesh_triangle_contacts_to_reducer_kernel(
         data_provider.support_neighbors = support_neighbors
         data_provider.support_lut = support_lut
         data_provider.support_vertex_offsets = support_vertex_offsets
+        if type_a == GeoType.HFIELD and wp.static(
+            create_heightfield_recovery(support_map_accelerated, write_contact_to_reducer)
+        )(
+            shape_data_a,
+            shape_data_b,
+            hfd,
+            heightfield_elevations,
+            X_ws_a,
+            pos_a,
+            pos_b,
+            quat_b,
+            triple,
+            margin_offset_a,
+            margin_offset_b,
+            gap_sum,
+            data_provider,
+            reducer_data,
+        ):
+            continue
         wp.static(
             create_compute_gjk_mpr_contacts(
                 write_contact_to_reducer,

@@ -22,6 +22,7 @@ from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
 from .penetration import create_solve_box_penetration
 from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
+from .support_function import triangle_prism_witness_on_proxy_face
 
 
 @wp.struct
@@ -253,6 +254,9 @@ def create_solve_convex_multi_contact(
                 data_provider,
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
+            if wp.static(has_penetration_refiner):
+                if triangle_prism_witness_on_proxy_face(geom_a, point_a):
+                    return 0
 
         if skip_multi_contact or signed_distance > contact_threshold:
             # Transform to world space only for the single-contact early-out.
@@ -392,6 +396,9 @@ def create_solve_convex_single_contact(
                 data_provider,
                 max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
+            if wp.static(has_penetration_refiner):
+                if triangle_prism_witness_on_proxy_face(geom_a, point_a):
+                    return 0
 
         # Transform results back to world space (once).
         point = 0.5 * (point_a + point_b)

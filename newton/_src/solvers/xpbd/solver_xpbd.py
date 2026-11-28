@@ -862,6 +862,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self.body_inv_mass_effective,
                             self.body_inv_inertia_effective,
                             model.shape_body,
+                            model.shape_type if model.heightfield_count else None,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_point0,
                             contacts.rigid_contact_point1,
