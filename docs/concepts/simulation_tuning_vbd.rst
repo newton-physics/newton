@@ -209,9 +209,11 @@ deprecation warning, so always pass both.
 
 .. _vbd-rigid-compliance:
 
-Rigid constraints use compliant ALM. Initially keep ``rigid_avbd_alpha`` and
-``rigid_avbd_gamma`` at their defaults. Scenes tuned for the removed legacy
-AVBD path need revalidation; the same settings can produce different behavior.
+Rigid constraints use compliant ALM. The ``rigid_avbd_alpha``,
+``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``, and
+``rigid_avbd_gamma`` arguments are deprecated; omit them. Scenes tuned for the
+removed legacy AVBD path need revalidation; the same settings can produce
+different behavior.
 
 Finite stiffness permits some stretch, joint displacement, or contact
 penetration even after convergence. If deformation is larger than expected,

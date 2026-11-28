@@ -93,7 +93,7 @@ class _ActuatorBenchmark:
             )
             self.response = JointSpaceResponse(model)
             self.actuator.set_effort_mode_implicit(self.response)
-            self.solve_inverse = None
+            self.refresh_from_solve = None
             self.bias_force = None
             if drive == "implicit_bias":
                 dof_count = model.joint_dof_count
@@ -108,9 +108,12 @@ class _ActuatorBenchmark:
                 def solve_inverse(x, y):
                     mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
-                self.solve_inverse = solve_inverse
-                # Factorize the inertia once so the first captured refresh reads a valid one.
-                self._step(self.state_0, self.state_1)
+                def refresh_from_solve():
+                    # The solver's step does not factorize the inertia.
+                    mujoco_warp.factor_m(solver.mjw_model, solver.mjw_data)
+                    self.response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+
+                self.refresh_from_solve = refresh_from_solve
 
             for _ in range(10):
                 self._step(self.state_0, self.state_1)
@@ -122,8 +125,8 @@ class _ActuatorBenchmark:
             wp.synchronize_device()
 
     def _step(self, state_in, state_out):
-        if self.solve_inverse is not None:
-            self.response.refresh_from_solve(self.solve_inverse, dof_map=self.solver.mjc_dof_to_newton_dof)
+        if self.refresh_from_solve is not None:
+            self.refresh_from_solve()
         else:
             self.response.refresh(state_in)
         if self.bias_force is not None:

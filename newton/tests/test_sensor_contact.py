@@ -780,10 +780,10 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         model = builder.finalize()
         mass_a, mass_b = 45.0, 4.0  # kg (from density * volume)
 
-        solver = SolverMuJoCo(model, njmax=200)
+        solver = SolverMuJoCo(model, njmax=200, use_mujoco_contacts=False)
 
         sensor = SensorContact(model, sensing_bodies=["a", "b"], counterpart_shapes="*")
-        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
+        pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         allocated = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
         observables = allocated.select(sensor.solver_observable_kinds)
@@ -797,10 +797,14 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps to allocate both buffers)
+            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+            pipeline.collide(state_out, contacts)
             solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             with wp.ScopedCapture(device) as capture:
+                pipeline.collide(state_in, contacts)
                 solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+                pipeline.collide(state_out, contacts)
                 solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             graph = capture.graph
 
@@ -810,14 +814,17 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             if use_graph:
                 wp.capture_launch(graph)
             else:
+                pipeline.collide(state_in, contacts)
                 solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
                 state_in, state_out = state_out, state_in
         if use_graph and remaining % 2 == 1:
+            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         forces_acc = np.zeros((2, 3))
         for _ in range(avg_steps):
+            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
             sensor.update(state_in, contacts, observables=observables)
@@ -861,7 +868,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         model = builder.finalize()
         mass_a = 4.5
 
-        solver = SolverMuJoCo(model, njmax=200)
+        solver = SolverMuJoCo(model, njmax=200, use_mujoco_contacts=True)
 
         sensor = SensorContact(model, sensing_bodies=["a"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
@@ -911,11 +918,11 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         model = builder.finalize()
         mass_a, mass_b, mass_c = 4.5, 0.4, 2.0  # kg
 
-        solver = SolverMuJoCo(model, njmax=200)
+        solver = SolverMuJoCo(model, njmax=200, use_mujoco_contacts=False)
 
         sensor_abc = SensorContact(model, sensing_bodies=["a", "b", "c"])
         sensor_base = SensorContact(model, sensing_shapes=["base"])
-        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
+        pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         observables = solver.observables(contacts=contacts, kinds=sensor_abc.solver_observable_kinds)
 
@@ -928,10 +935,14 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps to allocate both buffers)
+            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+            pipeline.collide(state_out, contacts)
             solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             with wp.ScopedCapture(device) as capture:
+                pipeline.collide(state_in, contacts)
                 solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+                pipeline.collide(state_out, contacts)
                 solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             graph = capture.graph
 
@@ -941,15 +952,18 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             if use_graph:
                 wp.capture_launch(graph)
             else:
+                pipeline.collide(state_in, contacts)
                 solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
                 state_in, state_out = state_out, state_in
         if use_graph and remaining % 2 == 1:
+            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         forces_acc = np.zeros((3, 3))
         base_acc = np.zeros((1, 3))
         for _ in range(avg_steps):
+            pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
             sensor_abc.update(state_in, contacts, observables=observables)

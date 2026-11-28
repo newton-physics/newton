@@ -820,8 +820,12 @@ def test_restitution_mujoco(test, device, solver_fn, use_mujoco_cpu):
     num_steps = int(total_time / sim_dt)
     y_elastic_arr = []
     y_inelastic_arr = []
+    pipeline = None if use_mujoco_cpu else newton.CollisionPipeline(model)
+    contacts = None if pipeline is None else pipeline.contacts()
     for _ in range(num_steps):
-        solver.step(state_0, state_1, None, None, sim_dt)
+        if pipeline is not None:
+            pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
         body_q = state_0.body_q.numpy()
         y_elastic_arr.append(float(body_q[0, 1]))
@@ -1763,7 +1767,9 @@ for device in devices:
             "test_restitution_mujoco_warp",
             test_restitution_mujoco,
             devices=[device],
-            solver_fn=requires(*MUJOCO_MODULES)(lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)),
+            solver_fn=requires(*MUJOCO_MODULES)(
+                lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
+            ),
             use_mujoco_cpu=False,
         )
 

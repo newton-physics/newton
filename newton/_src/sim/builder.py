@@ -32,6 +32,7 @@ from ..core.host_transform import (
     join_warp_values,
     pack_transforms,
     pack_warp_values,
+    quat_multiply_rows,
     quat_rotate_rows,
     store_transform_rows,
     transform_inverse,
@@ -1181,7 +1182,12 @@ class ModelBuilder:
         ke: float = 2.5e3
         """The normal contact stiffness [N/m]."""
         kd: float = 100.0
-        """The normal contact damping coefficient [N·s/m]."""
+        """The normal contact damping coefficient [N·s/m].
+
+        With ``HydroelasticSDF.Config(generate_damping=True)``, hydroelastic
+        contacts use ``kd / ke`` as a shape relaxation time;
+        see :ref:`hydroelastic damping <hydroelastic-contact-damping>`.
+        """
         kf: float = 1000.0
         """The contact friction gain [N·s/m].
 
@@ -1678,7 +1684,7 @@ class ModelBuilder:
 
         Built-in string names are also supported (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
-              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
+              ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
               ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
 
         For experimental deformable object types, use ``Model.AttributeFrequency.CURVE``,
@@ -1770,8 +1776,8 @@ class ModelBuilder:
           entities. Keys are ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``,
           ``"joint_coord"``, ``"joint_constraint"``, ``"articulation"``, ``"particle"``,
           ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
-          ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``,
-          ``"constraint_mimic"``, and ``"attachment_particle_body"``.
+          ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``, and
+          ``"attachment_particle_body"``.
         - ``"custom_frequency_offsets"`` (``dict[str, int]``): Destination row counts
           before this copy's custom attributes are merged, keyed by full frequency name
           (for example, ``"mujoco:tendon"``). Missing keys have offset zero.
@@ -2794,22 +2800,6 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # deprecated sparse mimic constraints
-        self.constraint_mimic_joint0: list[int] = []
-        """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
-        self.constraint_mimic_joint1: list[int] = []
-        """Leader joint indices accumulated for :attr:`Model.constraint_mimic_joint1`."""
-        self.constraint_mimic_coef0: list[float] = []
-        """Offset coefficients accumulated for :attr:`Model.constraint_mimic_coef0`."""
-        self.constraint_mimic_coef1: list[float] = []
-        """Scale coefficients accumulated for :attr:`Model.constraint_mimic_coef1`."""
-        self.constraint_mimic_enabled: list[bool] = []
-        """Enabled flags accumulated for :attr:`Model.constraint_mimic_enabled`."""
-        self.constraint_mimic_label: list[str] = []
-        """Mimic constraint labels accumulated for :attr:`Model.constraint_mimic_label`."""
-        self.constraint_mimic_world: list[int] = []
-        """World indices accumulated for :attr:`Model.constraint_mimic_world`."""
-
         # per-world entity start indices
         self.particle_world_start: list[int] = []
         """Per-world particle starts accumulated for :attr:`Model.particle_world_start`."""
@@ -2846,6 +2836,8 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
         self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
         """Row counts covered by the latest custom-frequency owner resolution."""
+        self._placement_filled_attribute_keys: set[str] = set()
+        """Custom attributes a placed copy extended past their authored rows; :meth:`finalize` accepts them short."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
@@ -4846,6 +4838,59 @@ class ModelBuilder:
                     self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
 
+        self._placement_filled_attribute_keys |= builder._placement_filled_attribute_keys
+        eq_count = builder._equality_constraint_count
+        if eq_count and len(moved_copies):
+            eq_base = self._equality_constraint_count - copy_count * eq_count
+            self._transform_world_equalities(builder, eq_base + moved_copies * eq_count, moved_xforms)
+
+    def _transform_world_equalities(self, builder: ModelBuilder, starts: np.ndarray, xforms: np.ndarray) -> None:
+        """Place the world-side equality frames of the copies of ``builder`` whose rows begin at ``starts``."""
+        # Import locally to avoid a cycle while the public simulation package initializes.
+        from ..solvers.mujoco.enums import EqType  # noqa: PLC0415
+        from ..solvers.mujoco.equality import MJC_OBJ_BODY, MJC_OBJ_UNKNOWN  # noqa: PLC0415
+
+        def source(name: str) -> list:
+            return builder._eq_list(f"equality_constraint_{name}")
+
+        def destination(name: str, targets: np.ndarray) -> list:
+            attr = self._eq_attr(f"equality_constraint_{name}")
+            if attr.values is None:
+                attr.values = []
+            if targets.max() >= len(attr.values):
+                # Rows past the authored column get values, so one added later without this frame is no missed row.
+                attr.values.extend([None] * (self._equality_constraint_count - len(attr.values)))
+                self._placement_filled_attribute_keys.add(attr.key)
+            return attr.values
+
+        # Rows are selected once in the source; arrays below are shaped (moved copy, row, ...).
+        kind, body1, body2 = (np.asarray(source(name)) for name in ("type", "body1", "body2"))
+        on_bodies = np.isin(source("objtype"), (MJC_OBJ_UNKNOWN, MJC_OBJ_BODY))
+        weld = on_bodies & (kind == EqType.WELD)
+        world_first = np.flatnonzero(weld & (body1 < 0))
+        world_second = np.flatnonzero(weld & (body1 >= 0) & (body2 < 0))
+        anchored = np.concatenate((np.flatnonzero(on_bodies & (kind == EqType.CONNECT) & (body1 < 0)), world_second))
+
+        if len(anchored):
+            anchors = source("anchor")
+            points = pack_warp_values([anchors[row] for row in anchored.tolist()], wp.vec3)
+            points = quat_rotate_rows(xforms[:, None, 3:], points[None]) + xforms[:, None, :3]
+            targets = starts[:, None] + anchored[None]
+            values = destination("anchor", targets)
+            for target, point in zip(targets.ravel().tolist(), points.reshape(-1, 3), strict=True):
+                values[target] = wp.vec3.from_buffer_copy(point)
+        welded = np.concatenate((world_first, world_second))
+        if len(welded):
+            relposes = source("relpose")
+            poses = pack_transforms([relposes[row] for row in welded.tolist()])
+            first = transform_multiply_rows(xforms[:, None], poses[None, : len(world_first)])
+            # Match collapse_fixed_joints: body2's anchor moves, but relpose.p stays in body1.
+            second = np.tile(poses[len(world_first) :], (len(xforms), 1, 1))
+            second[..., 3:] = quat_multiply_rows(second[..., 3:], transform_inverse_rows(xforms)[:, None, 3:])
+            targets = starts[:, None] + welded[None]
+            placed = np.concatenate((first, second), axis=1)
+            store_transform_rows(destination("relpose", targets), targets.ravel(), placed.reshape(-1, 7))
+
     def _model_value_key(self, attribute: CustomAttribute) -> int:
         """Return the value key of a ``ONCE`` or ``WORLD`` attribute in the current world context.
 
@@ -4881,8 +4926,6 @@ class ModelBuilder:
             count = getattr(builder, count_attr, None)
             if count is not None:
                 counts[key] = count
-            elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
-                counts[key] = len(builder.constraint_mimic_joint0)
             elif key in cls._BUILDER_GROUP_REFERENCES:
                 counts[key] = len(getattr(builder, f"{key}_label"))
         return counts
@@ -5545,12 +5588,12 @@ class ModelBuilder:
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
                 colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the scene's ``mjc:flag:filterparent``, which sets ``collision_filter_parent`` on imported joints that do not author ``physics:collisionEnabled``, is then ignored as well. Default is True.
-            convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
-                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
-                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+            convert_mjc_equality_constraints: Whether MuJoCo CONNECT and WELD equality schemas should be converted to
+                Newton loop joints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld becomes a FIXED
+                loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds and MuJoCo
+                welds" in the articulation docs). If False, they are preserved only in the
                 ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
-                ``model.mujoco.equality_constraint_*``.
+                ``model.mujoco.equality_constraint_*``. Joint equalities are always preserved this way.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -5926,14 +5969,12 @@ class ModelBuilder:
             collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             verbose: If True, log additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
-            convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
-                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld
-                becomes a FIXED loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds
-                and MuJoCo welds" in the articulation docs). If False, equality constraints are preserved in the
+            convert_mjc_equality_constraints: Whether MuJoCo CONNECT and WELD equality constraints should be converted to
+                Newton loop joints while preserving MuJoCo equality metadata for SolverMuJoCo. A weld becomes a FIXED
+                loop joint, or a BALL loop joint when its ``torquescale`` is 0 (see "Link-break welds and MuJoCo
+                welds" in the articulation docs). If False, they are preserved only in the
                 ``mujoco:equality_constraint`` custom-attribute namespace and finalize under
-                ``model.mujoco.equality_constraint_*``. Joint equalities that omit ``joint2`` or target a multi-DoF
-                joint (such as joints sharing a body) are preserved this way even when True, with a
-                :class:`~newton.NewtonWarning`; only SolverMuJoCo enforces them.
+                ``model.mujoco.equality_constraint_*``. Joint equalities are always preserved this way.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint.
                 Nonzero scalar spring rest coordinates cannot be preserved by this conversion; it warns and uses
                 an identity rest orientation. Default is False.
@@ -6610,8 +6651,6 @@ class ModelBuilder:
 
                     if target_kind == 1:
                         return target + entity_offsets["joint"]
-                    if target_kind == 2:
-                        return target + entity_offsets["constraint_mimic"]
                     return value
 
                 def transform_value(
@@ -6879,7 +6918,10 @@ class ModelBuilder:
             xform: Optional transform that places the copy. It moves the root bodies and
                 root joint frames, static shapes, particles, tetrahedral rest poses, and
                 free-root joint state and targets, and rotates their world-frame velocities.
-                Other world-frame data, such as custom attributes, is copied unchanged.
+                It also moves the world-side ``mujoco:equality_constraint_anchor`` and
+                ``mujoco:equality_constraint_relpose`` frames of ``CONNECT`` and ``WELD``
+                equality constraints between a body and the world. Other world-frame data,
+                such as other custom attributes, is copied unchanged.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
@@ -8655,78 +8697,6 @@ class ModelBuilder:
         self.joint_mimic_joint[joint] = reference_joint
         self.joint_mimic_coeffs[joint] = (offset, multiplier)
 
-    def add_constraint_mimic(
-        self,
-        joint0: int,
-        joint1: int,
-        coef0: float = 0.0,
-        coef1: float = 1.0,
-        enabled: bool = True,
-        label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a mimic constraint to the model.
-
-        .. deprecated:: 1.7
-            Use :meth:`set_joint_mimic` for joints with matching dimensions.
-            Mimic metadata is now stored per joint rather than as a separate
-            constraint.
-
-        A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
-        following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
-        multi-DOF joints are supported. For multi-DOF joints, the mimic behavior is
-        applied equally to all degrees of freedom.
-
-        Args:
-            joint0: Index of the follower joint (the one being constrained)
-            joint1: Index of the leader joint (the one being mimicked)
-            coef0: Offset added after scaling
-            coef1: Scale factor applied to joint1's position/angle
-            enabled: Whether constraint is active
-            label: Optional constraint label
-            custom_attributes: Custom attributes to set on the constraint
-
-        Returns:
-            Constraint index
-        """
-        warnings.warn(
-            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
-            "use set_joint_mimic() for joints with matching dimensions instead.",
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        joint_count = self.joint_count
-        if joint0 < 0 or joint0 >= joint_count:
-            raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
-        if joint1 < 0 or joint1 >= joint_count:
-            raise ValueError(f"Invalid leader joint index {joint1}; expected 0..{joint_count - 1}")
-        if self.joint_world[joint0] != self.current_world or self.joint_world[joint1] != self.current_world:
-            raise ValueError(
-                "Mimic constraint joints must belong to the current world. "
-                f"joint0_world={self.joint_world[joint0]}, joint1_world={self.joint_world[joint1]}, "
-                f"current_world={self.current_world}."
-            )
-
-        self.constraint_mimic_joint0.append(joint0)
-        self.constraint_mimic_joint1.append(joint1)
-        self.constraint_mimic_coef0.append(coef0)
-        self.constraint_mimic_coef1.append(coef1)
-        self.constraint_mimic_enabled.append(enabled)
-        self.constraint_mimic_label.append(label or "")
-        self.constraint_mimic_world.append(self.current_world)
-
-        constraint_idx = len(self.constraint_mimic_joint0) - 1
-
-        # Process custom attributes
-        if custom_attributes:
-            self._process_custom_attributes(
-                entity_index=constraint_idx,
-                custom_attrs=custom_attributes,
-                expected_frequency=Model.AttributeFrequency.CONSTRAINT_MIMIC,
-            )
-
-        return constraint_idx
-
     # endregion
 
     def plot_articulation(
@@ -9737,25 +9707,6 @@ class ModelBuilder:
                     enabled_values.append(None)
                 enabled_values[i] = False
 
-        # Remap mimic constraint joint indices
-        for i in range(len(self.constraint_mimic_joint0)):
-            old_joint0 = self.constraint_mimic_joint0[i]
-            old_joint1 = self.constraint_mimic_joint1[i]
-
-            if old_joint0 in joint_remap:
-                self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
-            elif old_joint0 != -1:
-                if verbose:
-                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint0)
-                self.constraint_mimic_enabled[i] = False
-
-            if old_joint1 in joint_remap:
-                self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
-            elif old_joint1 != -1:
-                if verbose:
-                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint1)
-                self.constraint_mimic_enabled[i] = False
-
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
         target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
         if target_kind_attr is not None and target_attr is not None and target_attr.values:
@@ -9781,9 +9732,6 @@ class ModelBuilder:
                     else:
                         target_attr.values[eq_idx] = -1
                         target_kind_attr.values[eq_idx] = 0
-                elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
-                    target_attr.values[eq_idx] = -1
-                    target_kind_attr.values[eq_idx] = 0
 
         # Remap particle-body attachments onto the reindexed bodies. When the anchored body was
         # merged into its parent, the local anchor must be re-expressed in the surviving parent's
@@ -14609,7 +14557,6 @@ class ModelBuilder:
                 ("joint_world", self.joint_world),
                 ("articulation_world", self.articulation_world),
                 ("equality_constraint_world", self._eq_list("equality_constraint_world")),
-                ("constraint_mimic_world", self.constraint_mimic_world),
             ]
 
         all_world_indices = set()
@@ -17621,15 +17568,6 @@ class ModelBuilder:
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
-            # deprecated sparse mimic constraints
-            m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
-            m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
-            m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
-            m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
-            m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
-            m.constraint_mimic_label = self.constraint_mimic_label
-            m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
-
             # ---------------------
             # per-world start indices
             m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
@@ -17663,7 +17601,6 @@ class ModelBuilder:
             m.articulation_count = len(self.articulation_start)
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
-            m.constraint_mimic_count = len(self.constraint_mimic_joint0)
             m.actuator_count = self.actuator_count
 
             m._shape_contact_pair_data = _ShapeContactPairs(
@@ -17819,13 +17756,13 @@ class ModelBuilder:
             # Only MODEL attributes are checked here; non-MODEL ones are filled at runtime via
             # _add_custom_attributes. An empty values list opts into defaults and stays silent;
             # partial population (some values, but fewer than the frequency expects) usually
-            # signals a missed row, so it warns.
+            # signals a missed row, so it warns, unless a placed copy extended the column.
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
                 if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
-                    if 0 < attr_count < expected_count:
+                    if 0 < attr_count < expected_count and full_key not in self._placement_filled_attribute_keys:
                         warnings.warn(
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",
@@ -18216,12 +18153,6 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
     "joint_limit_kd": wp.float32,
     "joint_world": wp.int32,
     "articulation_world": wp.int32,
-    "constraint_mimic_joint0": wp.int32,
-    "constraint_mimic_joint1": wp.int32,
-    "constraint_mimic_coef0": wp.float32,
-    "constraint_mimic_coef1": wp.float32,
-    "constraint_mimic_enabled": wp.bool,
-    "constraint_mimic_world": wp.int32,
 }
 """Builder attributes retained as NumPy arrays between replication and finalization."""
 # could be replaced by introspection if Model instance attribute annotations were moved to class level

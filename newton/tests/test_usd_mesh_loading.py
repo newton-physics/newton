@@ -426,17 +426,58 @@ class TestUsdMeshHelpers(unittest.TestCase):
                         else:
                             self.assertIsNone(uv_indices)
                         if not load_uvs:
-                            # No split: include even the unused point in the identity map.
-                            np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
+                            # No split: the identity map without the point no face references.
+                            np.testing.assert_array_equal(point_indices, [0, 1, 2, 3])
 
         mesh, uv_indices, point_indices = newton.usd.get_mesh(
             prim=source.GetPrim(), return_uv_indices=True, return_source_point_indices=True, compute_inertia=False
         )
         self.assertIsNone(uv_indices)
-        np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
+        np.testing.assert_array_equal(point_indices, [0, 1, 2, 3])
         mesh, uv_indices = newton.usd.get_mesh(source.GetPrim(), return_uv_indices=True, compute_inertia=False)
         self.assertIsNone(uv_indices)
         np.testing.assert_array_equal(mesh.indices, [2, 1, 0, 3, 2, 0])
+
+    def test_get_mesh_drops_points_no_face_references(self):
+        """Drop points no face references with their per-point data, but keep a face-less point cloud."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        source = UsdGeom.Mesh.Define(stage, "/Quad")
+        points = np.array([(0, 0, 0), (9, 9, 9), (1, 0, 0), (1, 1, 0), (0, 1, 0)], dtype=np.float32)
+        normals = np.array([(0, 0, 1), (1, 0, 0), (0, 1, 0), (0, 0, -1), (0, -1, 0)], dtype=np.float32)
+        uvs = np.array([(0, 0), (0.5, 0.5), (1, 0), (1, 1), (0, 1)], dtype=np.float32)
+        source.CreatePointsAttr(points)
+        source.CreateFaceVertexCountsAttr([4])
+        source.CreateFaceVertexIndicesAttr([0, 2, 3, 4])
+        source.CreateNormalsAttr(normals)
+        source.SetNormalsInterpolation("vertex")
+        UsdGeom.PrimvarsAPI(source).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "vertex").Set(uvs)
+
+        mesh, uv_indices, point_indices = newton.usd.get_mesh(
+            source.GetPrim(),
+            load_normals=True,
+            load_uvs=True,
+            return_uv_indices=True,
+            return_source_point_indices=True,
+        )
+
+        used = [0, 2, 3, 4]
+        np.testing.assert_array_equal(point_indices, used)
+        np.testing.assert_array_equal(mesh.vertices, points[used])
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 2, 3])
+        np.testing.assert_array_equal(mesh.normals, normals[used])
+        np.testing.assert_array_equal(mesh.uvs, uvs[used])
+        np.testing.assert_array_equal(uv_indices, mesh.indices)
+
+        source.GetFaceVertexIndicesAttr().Set([0, 2, 3, -1])
+        with self.assertRaisesRegex(ValueError, "negative index -1"):
+            newton.usd.get_mesh(source.GetPrim(), compute_inertia=False)
+
+        source.GetFaceVertexCountsAttr().Set([])
+        source.GetFaceVertexIndicesAttr().Set([])
+        mesh = newton.usd.get_mesh(source.GetPrim(), compute_inertia=False)
+        np.testing.assert_array_equal(mesh.vertices, points)
 
     def test_get_mesh_applies_root_relative_transform_and_stage_units(self):
         """Apply root-relative transforms and authored stage units."""

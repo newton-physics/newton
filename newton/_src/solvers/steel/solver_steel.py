@@ -202,7 +202,7 @@ from .kernels import (
     rotate_mf_body_Hinv_to_free_root_anchor,
     rotate_mf_rows_to_free_root_anchor,
     rotate_propagation_rows_to_free_root_anchor,
-    scale_array_inplace,
+    scale_shape_friction,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
     snapshot_contact_warmstart,
@@ -244,6 +244,8 @@ _DEFAULT_ANGULAR_DAMPING = 0.05
 _ATTRIBUTE_NAMESPACE = "steel"
 # Per-world preset of the first rejected row slot: no reservation was rejected.
 _ROW_SLOT_UNBOUNDED = 2**31 - 1
+# Sentinel of the first-invalid-shape flags, larger than any shape index.
+_NO_INVALID_SHAPE = 2**31 - 1
 _CONTACT_BUILD_THREAD_CAP = 65536
 _CONTACT_JACOBIAN_WORKER_CAP = 4096
 _CONTACT_JACOBIAN_MAX_DOF = 10
@@ -370,8 +372,8 @@ def _validate_solve_mode(solve_mode, articulated_contact_response) -> None:
 def _validate_supported_model(model: Model) -> None:
     """Reject model features this solver does not simulate instead of ignoring them.
 
-    Joint-owned and legacy mimic relationships and loop-closing joints are validated
-    when the solver builds their constraint rows.
+    Joint-owned mimic relationships and loop-closing joints are validated when the
+    solver builds their constraint rows.
     """
     if model.particle_count:
         raise NotImplementedError("SolverSteel does not simulate particles.")
@@ -401,11 +403,11 @@ def _model_has_bilateral_constraints(model: Model) -> bool:
     These become dense bilateral rows wherever the solver supports them. Disabled joints
     count too, because a released closure can be re-enabled without rebuilding the solver.
     """
-    if int(getattr(model, "constraint_mimic_count", 0)):
-        return True
     if not model.joint_count:
         return False
     if model.joint_mimic_joint is not None and np.any(model.joint_mimic_joint.numpy() >= 0):
+        return True
+    if _joint_equality_rows(model).size:
         return True
     if model.joint_articulation is None or not model.body_count:
         return False
@@ -418,19 +420,50 @@ def _model_has_bilateral_constraints(model: Model) -> bool:
     return bool(np.any(owned[joint_child[closure]]))
 
 
-def _unprojected_equality_constraints(model: Model) -> np.ndarray:
-    """Return the enabled MuJoCo equality rows that no Newton loop joint or mimic enforces.
+def _joint_equality_rows(model: Model) -> np.ndarray:
+    """Return the MuJoCo JOINT equality rows that SolverSteel enforces as mimic rows.
 
-    The MJCF and USD importers convert MuJoCo equalities to Newton loop joints or mimic
-    constraints by default and keep the original row in ``model.mujoco.equality_constraint_*``
-    with a ``target_kind`` / ``target`` link to the projected entity. Such a row is enforced
-    (or rejected) through that entity. A row without a valid link is MuJoCo-only physics.
+    These couple two whole REVOLUTE or PRISMATIC joints of one articulation; the rows'
+    enabled flags are not considered.
+    """
+    from ..mujoco.enums import EqType  # noqa: PLC0415
+
+    mujoco = getattr(model, "mujoco", None)
+    count = int(getattr(mujoco, "equality_constraint_count", 0) or 0) if mujoco is not None else 0
+    if not count or not model.joint_count or model.joint_articulation is None:
+        return np.zeros(0, dtype=np.int32)
+
+    def field(name: str) -> np.ndarray:
+        values = getattr(mujoco, f"equality_constraint_{name}", None)
+        return values.numpy() if values is not None else np.full(count, -1, dtype=np.int32)
+
+    joint1, joint2 = field("joint1"), field("joint2")
+    rows = (field("type") == int(EqType.JOINT)) & (joint1 >= 0) & (joint2 >= 0) & (joint1 != joint2)
+    scalar = np.isin(model.joint_type.numpy(), (int(JointType.REVOLUTE), int(JointType.PRISMATIC)))
+    articulation = model.joint_articulation.numpy()
+    follower, leader = np.where(rows, joint1, 0), np.where(rows, joint2, 0)
+    rows &= scalar[follower] & scalar[leader]
+    # A DoF selector may only name the scalar joint's own DoF.
+    joint_qd_start = model.joint_qd_start.numpy()
+    for selector, joint in ((field("joint1_dof"), follower), (field("joint2_dof"), leader)):
+        rows &= (selector < 0) | (selector == joint_qd_start[joint])
+    rows &= (articulation[follower] >= 0) & (articulation[follower] == articulation[leader])
+    return np.flatnonzero(rows).astype(np.int32)
+
+
+def _unprojected_equality_constraints(model: Model) -> np.ndarray:
+    """Return the enabled MuJoCo equality rows that SolverSteel does not enforce.
+
+    A JOINT row is enforced directly when :func:`_joint_equality_rows` accepts it. The MJCF and
+    USD importers convert CONNECT and WELD equalities to Newton loop joints by default and keep
+    the original row in ``model.mujoco.equality_constraint_*`` with a ``target_kind`` /
+    ``target`` link to the joint. Such a row is enforced (or rejected) through that joint. Any
+    other row is MuJoCo-only physics.
 
     A link is valid only when the target is structurally the row's projection, as the importers
     build it: a CONNECT row links a ball joint and a WELD row a fixed joint (a ball joint when its
     torquescale is 0) outside any articulation that joins the row's two bodies (or its body and the
-    world), and a JOINT row links a mimic constraint between the row's two joints. Anchors and
-    coefficients are not compared.
+    world). Anchors are not compared.
     """
     from ..mujoco.enums import EqType  # noqa: PLC0415
     from ..mujoco.equality import MjcEqualityTargetKind  # noqa: PLC0415
@@ -444,6 +477,7 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
     target_kind = getattr(mujoco, "equality_constraint_target_kind", None)
     target = getattr(mujoco, "equality_constraint_target", None)
     projected = np.zeros(count, dtype=bool)
+    projected[_joint_equality_rows(model)] = True
     if target_kind is not None and target is not None:
         target_kind = target_kind.numpy()
         target = target.numpy()
@@ -455,7 +489,6 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
         eq_type = field("type")
         body1, body2 = field("body1"), field("body2")
         torquescale = field("torquescale")
-        joint1, joint2 = field("joint1"), field("joint2")
         joint_count = int(model.joint_count)
         joint_type = model.joint_type.numpy() if joint_count else None
         joint_parent = model.joint_parent.numpy() if joint_count else None
@@ -463,9 +496,6 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
         joint_articulation = (
             model.joint_articulation.numpy() if joint_count and model.joint_articulation is not None else None
         )
-        mimic_count = int(getattr(model, "constraint_mimic_count", 0) or 0)
-        mimic_joint0 = model.constraint_mimic_joint0.numpy() if mimic_count else None
-        mimic_joint1 = model.constraint_mimic_joint1.numpy() if mimic_count else None
         loop_joint_types = {int(EqType.CONNECT): {int(JointType.BALL)}, int(EqType.WELD): {int(JointType.FIXED)}}
         for row in range(count):
             kind, index = int(target_kind[row]), int(target[row])
@@ -484,12 +514,6 @@ def _unprojected_equality_constraints(model: Model) -> np.ndarray:
                     and int(joint_child[index]) >= 0
                     and joint_bodies == rows_bodies
                 )
-            elif kind == int(MjcEqualityTargetKind.MIMIC) and 0 <= index < mimic_count:
-                projected[row] = (
-                    int(eq_type[row]) == int(EqType.JOINT)
-                    and int(mimic_joint0[index]) == int(joint1[row])
-                    and int(mimic_joint1[index]) == int(joint2[row])
-                )
     return np.flatnonzero(enabled & ~projected).astype(np.int32)
 
 
@@ -499,10 +523,10 @@ def _validate_equality_constraints(model: Model) -> None:
     if rows.size:
         raise NotImplementedError(
             f"SolverSteel does not enforce MuJoCo equality constraints: model.mujoco.equality_constraint "
-            f"rows {rows[:16].tolist()} are enabled and not converted to a Newton loop joint or mimic "
-            "constraint. Import with convert_mjc_equality_constraints=True (joint equalities that omit joint2 or "
-            "target a multi-DoF joint, such as joints sharing a body, stay MuJoCo rows even then), model the "
-            "constraint with Newton joints, or disable the rows (equality_constraint_enabled)."
+            f"rows {rows[:16].tolist()} are enabled, and they are neither converted to a Newton loop joint nor "
+            "joint equalities between two REVOLUTE or PRISMATIC joints of one articulation. Import with "
+            "convert_mjc_equality_constraints=True, model the constraint with Newton joints, or disable the "
+            "rows (equality_constraint_enabled)."
         )
 
 
@@ -594,12 +618,14 @@ def _reset_solver_status(
     overflow: wp.array[wp.bool],
     disabled_tree_joint: wp.array[wp.bool],
     joint_friction_invalid: wp.array[wp.bool],
+    shape_mu_invalid_world: wp.array[wp.bool],
+    shape_friction_rejected: wp.array[wp.bool],
     fk_id_valid: wp.array[int],
 ):
     """Clear the status of selected worlds, request a mass refresh of their articulations and drop their carried kinematics.
 
-    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid`` and ``world_mask`` share the
-    ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
+    ``overflow``, ``disabled_tree_joint``, ``joint_friction_invalid``, ``shape_mu_invalid_world``,
+    ``shape_friction_rejected`` and ``world_mask`` share the ``(world_count + 1,)`` layout. ``articulation_world`` holds the model's articulation worlds, so
     global articulations (world ``-1``) are selected by the final mask entry.
     """
     tid = wp.tid()
@@ -608,10 +634,24 @@ def _reset_solver_status(
             overflow[tid] = False
             disabled_tree_joint[tid] = False
             joint_friction_invalid[tid] = False
+            # Worlds still using a flagged shape stay reported.
+            shape_friction_rejected[tid] = shape_mu_invalid_world[tid]
     if tid < mass_update_requested.shape[0]:
         if not world_mask or reset_world_selected(articulation_world[tid], world_mask, world_count):
             mass_update_requested[tid] = 1
             fk_id_valid[tid] = 0
+
+
+@wp.kernel
+def _reset_shape_friction_rejected(
+    world_mask: wp.array[wp.bool],
+    shape_mu_invalid_world: wp.array[wp.bool],
+    shape_friction_rejected: wp.array[wp.bool],
+):
+    """Reset the shape-friction rejection record of selected worlds to the worlds of currently flagged shapes."""
+    tid = wp.tid()
+    if not world_mask or world_mask[tid]:
+        shape_friction_rejected[tid] = shape_mu_invalid_world[tid]
 
 
 @wp.kernel
@@ -1439,10 +1479,14 @@ class SolverSteel(SolverBase, CouplingInterface):
     - Experimental dry joint friction: with ``enable_joint_friction=True``,
       :attr:`~newton.Model.joint_friction` of PRISMATIC, REVOLUTE, BALL and D6 DOFs bounds one
       row per DOF.
-    - Mimic joints (:meth:`~newton.ModelBuilder.set_joint_mimic`, and the deprecated
-      mimic constraints) within one articulation: one bilateral row per follower
-      coordinate enforces ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The
-      coefficients are read every step.
+    - Mimic joints (:meth:`~newton.ModelBuilder.set_joint_mimic`) within one articulation:
+      one bilateral row per follower coordinate enforces
+      ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The coefficients are read every step.
+    - MuJoCo joint equalities (``model.mujoco.equality_constraint_*`` rows of type ``JOINT``)
+      between two REVOLUTE or PRISMATIC joints of one articulation: one bilateral row
+      enforces ``q_joint1 = polycoef[0] + polycoef[1] * q_joint2``. The coefficients and the
+      row's enabled flag are read every step; higher-order ``polycoef`` terms are not
+      enforced.
     - Loop-closing BALL, REVOLUTE and FIXED joints (joints outside the articulation tree whose
       child belongs to an articulation): three bilateral rows pin the joint's parent and
       child anchors together, a REVOLUTE closure adds two rows that keep the child's
@@ -1499,15 +1543,19 @@ class SolverSteel(SolverBase, CouplingInterface):
       loop closures between two dynamic articulations raise
       :class:`NotImplementedError`. :attr:`~newton.Model.joint_enabled` is supported only
       for loop-closing joints: construction raises for a disabled tree joint, and a tree
-      joint disabled later is reported by :meth:`check_constraint_capacity`. Enabled MuJoCo equality constraints
-      (``model.mujoco.equality_constraint_*``) are enforced through the loop joint or mimic
-      constraint the importer converted them to; an enabled row without such a conversion
-      raises :class:`NotImplementedError`, also when it is enabled later and
+      joint disabled later is reported by :meth:`check_constraint_capacity`. Enabled MuJoCo
+      CONNECT and WELD equality constraints (``model.mujoco.equality_constraint_*``) are enforced
+      through the loop joint the importer converted them to; an enabled row without such a
+      conversion, or a joint equality other than the supported ones above, raises
+      :class:`NotImplementedError`, also when it is enabled later and
       :meth:`notify_model_changed` is called with
       :attr:`~newton.ModelFlags.CONSTRAINT_PROPERTIES`. A row counts as converted only
-      when its ``target_kind`` / ``target`` link names a loop joint or mimic constraint
-      between the row's own bodies or joints. Particles are not simulated.
+      when its ``target_kind`` / ``target`` link names a loop joint between the row's own
+      bodies. Particles are not simulated.
     - Gradients are not supported.
+    - Bias (Coriolis and centrifugal) forces are explicit, so articulated chains with high joint
+      speeds can gain energy; a smaller ``dt`` reduces it and more ``iterations`` do not. See
+      :ref:`Tuning Solver Reference`.
 
     On CUDA, branched articulations use sparse mass factors when
     every articulated (non-free-body) response group shares one joint topology with at most
@@ -1549,6 +1597,25 @@ class SolverSteel(SolverBase, CouplingInterface):
     :attr:`constraint_overflow`. The constructor warns once if the model's shape flags and
     collision groups allow such contacts. Use world geometry or a kinematic free body for
     scenery shared by all worlds, or add the body to every world.
+
+    Treat row and contact-buffer overflow as a sizing error and raise those capacities until no world is flagged.
+    The capacities are set at construction and :meth:`reset` clears the flags without restoring the simulation state,
+    so to recover, discard the output of the flagged steps, restore a state from before the overflow, rebuild with
+    larger capacities and capture new graphs. Row capacities are solver arguments, so a row overflow needs a new
+    solver. The contact capacity is the :class:`~newton.Contacts` buffer's ``rigid_contact_max``, and the solver sizes
+    its contact scratch from :attr:`model.rigid_contact_max <newton.Model.rigid_contact_max>` when it is constructed.
+    For a contact-buffer overflow, construct a new :class:`~newton.CollisionPipeline` with a larger
+    ``rigid_contact_max``, which it publishes to the model, allocate a new :class:`~newton.Contacts` from it, and then
+    construct a new solver. For contacts dropped by mesh contact reduction, construct the pipeline with larger
+    reduction capacities, such as ``max_triangle_pairs`` and ``contact_reduction_hashtable_size_factor``. With
+    ``body_pair_reduction``, raw contacts are staged in a buffer sized by the larger of ``rigid_contact_max`` and the
+    automatic contact estimate, so a staging overflow needs a ``rigid_contact_max`` above that estimate, rebuilt as for
+    a contact-buffer overflow. When the group table is too small, a frame keeps every primitive and convex contact,
+    which can overflow the contact buffer; raise ``BodyPairReductionConfig.hashtable_size_factor`` for that.
+    The unsolvable cross-world contacts above set the same flag, and no capacity clears them. Which
+    contacts keep their rows is described under ``deterministic``. As that set changes, a contact that penetrated
+    while it had no rows is pushed out by the position correction when it regains them, which can add energy and
+    make the state diverge.
 
     Solver observables:
         :attr:`~newton.solvers.SolverBase.Observables.body_parent_f` is populated when
@@ -1945,10 +2012,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             iterations: Number of projected Gauss-Seidel iterations per step.
             baumgarte: Baumgarte position-correction factor of contact and joint-limit rows,
                 as a fraction of the position error removed per step.
-            cfm: Constraint force mixing added to every row's effective-mass diagonal,
-                which regularizes redundant rows. Drive rows of ``drive_mode="rows"`` use
-                their exact unit response instead, and the coupled contact solves of a
-                ``friction_mode`` other than ``"fixed_normal"`` leave it off their contact blocks.
+            cfm: Shift added to the step denominator ``J H^-1 J^T`` of the scalar PGS rows. Drive
+                rows of ``drive_mode="rows"`` use their exact unit response instead, the coupled contact
+                solves of a ``friction_mode`` other than ``"fixed_normal"`` leave it off their contact
+                blocks, and compliant normal rows replace it with their compliance term. It damps
+                unconverged sweeps, leaves the converged solution of unregularized rows unchanged and
+                scales the penetration of rows regularized by ``contact_regularization``; to soften
+                contacts use ``contact_regularization`` or ``contact_compliance``.
             relaxation: Successive over-relaxation factor of the PGS sweep.
             update_mass_matrix_interval: Rebuild and refactor the mass matrix every this many
                 calls to :meth:`step`; ``1`` rebuilds it every step. Larger values reuse a
@@ -2188,7 +2258,12 @@ class SolverSteel(SolverBase, CouplingInterface):
                 the free-body contact rows, then the velocity limits. ``"contact_then_internal"``
                 runs every iteration of the contact rows first, then every iteration of the
                 internal rows (drive, mimic, connect, joint-limit and joint-friction rows) and
-                the velocity limits. ``"phased"`` approximates the order PhysX uses for grasping: each
+                the velocity limits. In the position solve, internal-row corrections never reach the
+                contacts, so a contact load carried by an internal row (e.g. a body on a link at its
+                joint limit) sinks, and a heavy one falls through at any iteration count; use
+                ``"interleaved"`` or ``"phased"`` there. ``velocity_iterations`` start from the
+                corrected velocities, so they change the output velocity but not the integrated
+                positions. ``"phased"`` approximates the order PhysX uses for grasping: each
                 iteration solves the internal rows, then the contact rows, then the velocity
                 limits, each in a launch of its own; the propagation responses use this order
                 with ``"interleaved"`` as well. Contact torsion and contact compliance require
@@ -2236,7 +2311,11 @@ class SolverSteel(SolverBase, CouplingInterface):
                 coefficient (:attr:`~newton.Model.shape_material_mu`) in the solver's copy of
                 the materials, refreshed at construction and by :meth:`notify_model_changed`
                 with ``SHAPE_PROPERTIES``. It scales the friction rows, patches and the torsion
-                budget; the model's coefficients are unchanged.
+                budget; the model's coefficients are unchanged. Each scaled coefficient must be
+                finite in float32: construction and an eager notification raise
+                :class:`ValueError` otherwise, and :meth:`check_constraint_capacity` reports
+                any notification that found one until a reset of its worlds. A shape pair uses
+                the mean of its two scaled coefficients.
             contact_friction_position_iterations: Number of position iterations that solve
                 tangential friction rows. ``-1`` (the default) solves them in every position iteration;
                 ``k >= 0`` solves them only in the last ``k`` position iterations (``0`` never),
@@ -2327,7 +2406,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 hydroelastic material arrays. The rows are prepared on the device, so
                 :meth:`step` can be captured in a CUDA graph. Invalid input (for example a
                 compliant contact lost to a row capacity, even with ``warn_constraint_overflow``
-                off, or a positive shape restitution) makes an eager step raise. In a captured step the error is
+                off, a positive shape restitution, or a friction weight whose product with the
+                pair friction is not finite in float32) makes an eager step raise. In a captured step the error is
                 deferred: :meth:`check_constraint_capacity` raises after the replays, until
                 :meth:`reset`, and their results are invalid; eager steps do not report it. Contacts the allocator excludes on
                 purpose are counted in ``compliance_skipped_contact_count`` and compliant contacts
@@ -2350,7 +2430,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 shapes (other notifications and changes to static or kinematic owners wake
                 every island). Driven articulations (nonzero drive gains) and articulations with
                 passive springs (nonzero :attr:`~newton.Model.joint_stiffness` on a PRISMATIC,
-                REVOLUTE or D6 tree joint) stay awake.
+                REVOLUTE or D6 tree joint) stay awake. For resting stacks that stay awake with the
+                default contact order, see :ref:`Tuning Solver Reference`.
                 Sleeping is configured at construction; rebuild captured graphs to change it. Construction raises :class:`ValueError` with ``contact_warmstart``
                 or ``velocity_iterations``, or for a model without articulations, and
                 :class:`NotImplementedError` with ``articulated_contact_response="propagation"`` and
@@ -3001,8 +3082,14 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._row_dropped_propagation = self._row_dropped_all[2]
 
         self._shape_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        # First shape whose scaled friction coefficient is not finite; written by each material refresh.
+        self._shape_mu_invalid = wp.full(1, _NO_INVALID_SHAPE, dtype=wp.int32, device=model.device)
+        # Worlds of the shapes the last refresh flagged, and of those flagged since each world's reset.
+        self._shape_mu_invalid_world = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
+        self._shape_friction_rejected = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
         self._shape_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
+        self._validate_shape_friction()
 
         self._contact_torsion_device = bool(contact_torsion_device)
         self._device_torsion = None
@@ -3084,19 +3171,34 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
         # Users may replace the model arrays; captured graphs keep these buffers' addresses.
         model = self.model
-        for buffer, values in (
-            (self._shape_mu, model.shape_material_mu),
-            (self._shape_restitution, model.shape_material_restitution),
-        ):
-            if values is not None and model.shape_count:
-                wp.copy(buffer, values, count=model.shape_count)
-        if self._contact_friction_scale != 1.0 and model.shape_count:
+        if model.shape_material_restitution is not None and model.shape_count:
+            wp.copy(self._shape_restitution, model.shape_material_restitution, count=model.shape_count)
+        self._shape_mu_invalid.fill_(_NO_INVALID_SHAPE)
+        self._shape_mu_invalid_world.zero_()
+        if model.shape_material_mu is not None and model.shape_count:
             wp.launch(
-                scale_array_inplace,
+                scale_shape_friction,
                 dim=model.shape_count,
-                inputs=[self._shape_mu, self._contact_friction_scale],
+                inputs=[
+                    model.shape_material_mu,
+                    self._contact_friction_scale,
+                    model.shape_world,
+                    int(model.world_count),
+                ],
+                outputs=[
+                    self._shape_mu,
+                    self._shape_mu_invalid,
+                    self._shape_mu_invalid_world,
+                    self._shape_friction_rejected,
+                ],
                 device=model.device,
             )
+
+    def _validate_shape_friction(self) -> None:
+        """Raise if the last material refresh found a scaled friction coefficient that is not finite."""
+        shape = int(self._shape_mu_invalid.numpy()[0])
+        if shape != _NO_INVALID_SHAPE:
+            raise ValueError(f"Steel: shape_material_mu * contact_friction_scale is not finite for shape {shape}")
 
     @property
     def _rebound_velocity_threshold(self) -> float:
@@ -3282,8 +3384,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         carried bias wrench one step later unless ``MODEL_PROPERTIES`` is notified. A kinematic free
         body that was removed from the response at construction cannot become dynamic
         again; reconstruct the solver in that case. Constraint changes re-check the MuJoCo
-        equality rows: enabling one that is not converted to a Newton loop joint or mimic
-        constraint raises :class:`NotImplementedError`. Capacity status in
+        equality rows: enabling one that the solver does not enforce raises
+        :class:`NotImplementedError`. Capacity status in
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
         Body, inertial, joint DOF, DOF inertial and shape changes discard the warm-start
@@ -3291,9 +3393,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         also discard the anchors of the bodies whose collision geometry changed, in every world.
 
         Joint, joint DOF (including the DOF inertial, force and reference-pose flags), body
-        inertial and shape notifications run on the device without host synchronization, so
-        they can be captured in a CUDA graph and replayed after the model arrays are edited in
-        place. A captured
+        inertial and shape notifications run on the device without host synchronization, apart
+        from the eager checks below, so they can be captured in a CUDA graph and replayed after
+        the model arrays are edited in place. A captured
         notification reads the arrays it was captured with; after replacing a model array,
         notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
         Sleeping, and the positive-restitution check of sparse mass factors (with restitution
@@ -3307,7 +3409,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         DOF inputs and axes on the host to warn about the ones a closure ignores. When any DOF carries no
         Steel spring, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_stiffness` on the host, whatever its values, to warn about stiffness
-        Steel ignores. A captured notification skips all three checks.
+        Steel ignores. A captured notification skips all three checks. An eager shape notification reads
+        the scaled friction coefficients on the host and raises :class:`ValueError` when one is not finite in
+        float32; a captured one leaves the error to :meth:`check_constraint_capacity`.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3319,6 +3423,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
+            if self._mimic_reads_equality:
+                # The mimic rows read these every step; follow arrays replaced on the model.
+                self._equality_enabled = self.model.mujoco.equality_constraint_enabled
+                self._equality_polycoef = self.model.mujoco.equality_constraint_polycoef
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         if self._sleeping is not None:
@@ -3392,6 +3500,8 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._clear_warmstart_history(world_mask)
         if self._enable_joint_friction and flags & dof_force and not wp.get_stream(self.model.device).is_capturing:
             self._validate_joint_friction()
+        if flags & ModelFlags.SHAPE_PROPERTIES and not self.model.device.is_capturing:
+            self._validate_shape_friction()
         joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
         if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
             self._warn_ignored_revolute_loop_inputs(stacklevel=3)
@@ -3577,12 +3687,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         is selected. Global articulations share world 0's rows, so selecting the global
         entry also discards world 0's warm-start impulses while a dynamic global
         articulation exists. Any reset, whatever its mask, also clears the solver-wide contact
-        torsion input error; it clears the disabled-tree-joint and invalid-joint-friction status of the
-        selected worlds. The reset is launched on the device without host synchronization and can be
-        captured in a CUDA graph. A full reset (``world_mask=None``) also restarts the host-side step
-        cadence (mass-matrix refresh interval, ``dt`` change detection, double-buffer schedule and
-        warm-start history) for subsequent eager :meth:`step` calls; CUDA graphs captured before the
-        reset keep the cadence captured into them.
+        torsion input error; it clears the disabled-tree-joint, invalid-joint-friction and
+        rejected-shape-friction status of the selected worlds, keeping the last while a shape of the
+        world still has a coefficient that is not finite. The reset is launched on the device
+        without host synchronization and can be captured in a CUDA graph. A full reset
+        (``world_mask=None``) also restarts the host-side step cadence (mass-matrix refresh interval,
+        ``dt`` change detection, double-buffer schedule and warm-start history) for subsequent eager
+        :meth:`step` calls; CUDA graphs captured before the reset keep the cadence captured into them.
 
         Args:
             state: Simulation state; left unchanged. With ``enable_sleeping``, a masked reset
@@ -3622,6 +3733,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             else:
                 self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
+            wp.launch(
+                _reset_shape_friction_rejected,
+                dim=self._shape_friction_rejected.shape[0],
+                inputs=[world_mask, self._shape_mu_invalid_world],
+                outputs=[self._shape_friction_rejected],
+                device=self.model.device,
+            )
             self._retake_status_snapshot()
             return
 
@@ -3638,6 +3756,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 self.constraint_overflow,
                 self._disabled_tree_joint,
                 self._joint_friction_invalid,
+                self._shape_mu_invalid_world,
+                self._shape_friction_rejected,
                 self._fk_id_valid,
             ],
             device=self.model.device,
@@ -4081,29 +4201,29 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _build_mimic_plan(self, model) -> None:
         """Build the static lookup tables of the mimic rows.
 
-        Rows come from joint-owned mimics (:attr:`~newton.Model.joint_mimic_joint`, one row
-        per follower coordinate) and from the deprecated ``Model.constraint_mimic_*``
-        entries, which take precedence for their follower joint as in
-        :class:`~newton.solvers.SolverMuJoCo`. Both joints of a row must belong to the same
-        articulation and have distinct DOFs; legacy entries must couple REVOLUTE or
-        PRISMATIC joints. Unsupported relationships raise :class:`NotImplementedError`.
-        Coefficients and ``constraint_mimic_enabled`` are read every step. All buffers are
-        allocated here, so the per-step launches are compatible with CUDA graph capture.
+        Rows come from the MuJoCo joint equalities that :func:`_joint_equality_rows` accepts
+        and from joint-owned mimics (:attr:`~newton.Model.joint_mimic_joint`, one row per
+        follower coordinate). Both joints of a row must belong to the same articulation and
+        have distinct DOFs. Unsupported joint-owned mimics raise :class:`NotImplementedError`.
+        Coefficients and the equalities' enabled flags are read every step; an equality
+        contributes its constant and linear ``polycoef`` terms. All buffers are allocated
+        here, so the per-step launches are compatible with CUDA graph capture.
         """
         self._mimic_count = 0
+        self._mimic_reads_equality = False
         self._mimic_art_start_np = None
         self._mimic_sizes = frozenset()
         self._mimic_slot = None
         if not model.articulation_count or not model.joint_count:
             return
 
-        legacy_count = int(getattr(model, "constraint_mimic_count", 0) or 0)
         joint_mimic = (
             model.joint_mimic_joint.numpy().astype(np.int32, copy=False)
             if model.joint_mimic_joint is not None
             else np.full(model.joint_count, -1, dtype=np.int32)
         )
-        if legacy_count == 0 and not np.any(joint_mimic >= 0):
+        equality_rows = _joint_equality_rows(model)
+        if equality_rows.size == 0 and not np.any(joint_mimic >= 0):
             return
 
         joint_type = model.joint_type.numpy()
@@ -4114,8 +4234,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         articulation_world = self._model_plan.articulation_world
 
         # Per row: follower/leader DOF and coordinate, articulation, and the coefficient
-        # source (legacy constraint index, or the follower joint for joint-owned rows).
-        dof0, dof1, q0, q1, row_art, legacy, owner = [], [], [], [], [], [], []
+        # source (equality row, or the follower joint for joint-owned rows).
+        dof0, dof1, q0, q1, row_art, equality, owner = [], [], [], [], [], [], []
 
         def add_row(name: str, follower_dof: int, leader_dof: int, follower_q: int, leader_q: int, joints, source):
             a0, a1 = (int(joint_articulation[j]) for j in joints)
@@ -4133,38 +4253,36 @@ class SolverSteel(SolverBase, CouplingInterface):
             q0.append(follower_q)
             q1.append(leader_q)
             row_art.append(a0)
-            legacy.append(source[0])
+            equality.append(source[0])
             owner.append(source[1])
 
-        legacy_followers = set()
-        if legacy_count:
-            j0 = model.constraint_mimic_joint0.numpy().astype(np.int32, copy=False)
-            j1 = model.constraint_mimic_joint1.numpy().astype(np.int32, copy=False)
-            labels = list(model.constraint_mimic_label or [])
-            one_dof = (int(JointType.REVOLUTE), int(JointType.PRISMATIC))
-            legacy_followers = {int(j) for j in j0}
-            for k in range(legacy_count):
-                name = labels[k] if k < len(labels) and labels[k] else f"constraint_mimic_{k}"
-                follower, leader = int(j0[k]), int(j1[k])
-                if int(joint_type[follower]) not in one_dof or int(joint_type[leader]) not in one_dof:
-                    raise NotImplementedError(
-                        f"SolverSteel: mimic constraint '{name}' must couple REVOLUTE or PRISMATIC joints."
-                    )
+        if equality_rows.size:
+            mujoco = model.mujoco
+            eq_joint1 = mujoco.equality_constraint_joint1.numpy()
+            eq_joint2 = mujoco.equality_constraint_joint2.numpy()
+            higher_order = np.any(mujoco.equality_constraint_polycoef.numpy()[equality_rows, 2:] != 0.0, axis=1)
+            if np.any(higher_order):
+                warnings.warn(
+                    f"SolverSteel: joint equality rows {equality_rows[higher_order][:16].tolist()} use "
+                    "higher-order polycoef terms; only the constant and linear terms are enforced.",
+                    NewtonWarning,
+                    stacklevel=3,
+                )
+            for row in equality_rows.tolist():
+                follower, leader = int(eq_joint1[row]), int(eq_joint2[row])
                 add_row(
-                    name,
+                    f"equality_constraint_{row}",
                     int(joint_qd_start[follower]),
                     int(joint_qd_start[leader]),
                     int(joint_q_start[follower]),
                     int(joint_q_start[leader]),
                     (follower, leader),
-                    (k, -1),
+                    (row, -1),
                 )
 
         joint_qd_end = np.append(joint_qd_start[1:], model.joint_dof_count)
         joint_q_end = np.append(joint_q_start[1:], model.joint_coord_count)
         for follower in np.flatnonzero(joint_mimic >= 0).tolist():
-            if follower in legacy_followers:
-                continue
             leader = int(joint_mimic[follower])
             for joint in (follower, leader):
                 if joint_q_end[joint] - joint_q_start[joint] != joint_qd_end[joint] - joint_qd_start[joint]:
@@ -4203,16 +4321,15 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._mimic_dof1 = wp.array(dof1, dtype=wp.int32, device=device)
         self._mimic_q0 = wp.array(q0, dtype=wp.int32, device=device)
         self._mimic_q1 = wp.array(q1, dtype=wp.int32, device=device)
-        self._mimic_legacy = wp.array(legacy, dtype=wp.int32, device=device)
+        self._mimic_equality = wp.array(equality, dtype=wp.int32, device=device)
         self._mimic_owner = wp.array(owner, dtype=wp.int32, device=device)
-        if legacy_count:
-            self._mimic_enabled = model.constraint_mimic_enabled
-            self._mimic_coef0 = model.constraint_mimic_coef0
-            self._mimic_coef1 = model.constraint_mimic_coef1
+        self._mimic_reads_equality = bool(equality_rows.size)
+        if self._mimic_reads_equality:
+            self._equality_enabled = model.mujoco.equality_constraint_enabled
+            self._equality_polycoef = model.mujoco.equality_constraint_polycoef
         else:
-            self._mimic_enabled = wp.zeros(1, dtype=wp.bool, device=device)
-            self._mimic_coef0 = wp.zeros(1, dtype=wp.float32, device=device)
-            self._mimic_coef1 = wp.zeros(1, dtype=wp.float32, device=device)
+            self._equality_enabled = wp.zeros(1, dtype=wp.bool, device=device)
+            self._equality_polycoef = wp.zeros((1, 5), dtype=wp.float32, device=device)
         self._joint_mimic_coeffs = (
             model.joint_mimic_coeffs
             if model.joint_mimic_coeffs is not None
@@ -4468,7 +4585,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.launch(
                     allocate_mimic_slots,
                     dim=self._mimic_count,
-                    inputs=[self._mimic_legacy, self._mimic_enabled, self._mimic_world, max_constraints],
+                    inputs=[self._mimic_equality, self._equality_enabled, self._mimic_world, max_constraints],
                     outputs=[
                         self._mimic_slot,
                         self._slot_counter,
@@ -4498,10 +4615,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                         self._mimic_dof1,
                         self._mimic_q0,
                         self._mimic_q1,
-                        self._mimic_legacy,
+                        self._mimic_equality,
                         self._mimic_owner,
-                        self._mimic_coef0,
-                        self._mimic_coef1,
+                        self._equality_polycoef,
                         self._joint_mimic_coeffs,
                         state_in.joint_q,
                     ],
@@ -8313,7 +8429,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         also raises if a step read invalid :attr:`~newton.Model.joint_friction` or
         ``steel:joint_friction_load_coefficient``; DOFs with invalid friction built no friction row
         and invalid load coefficients were ignored, so discard the output, repair the coefficients
-        and :meth:`reset`. With
+        and :meth:`reset`. Also raises while the friction coefficients of the last
+        ``SHAPE_PROPERTIES`` notification, times ``contact_friction_scale``, include one that is not
+        finite in float32, and for the worlds of such a shape until their :meth:`reset`, even after a
+        later notification with finite coefficients; a global shape flags every world. Such a notification
+        raises at once unless it was captured. The solver uses zero as the coefficient of each flagged shape
+        until a notification with finite coefficients, so discard the output of the flagged worlds since the
+        notification, repair the coefficients and :meth:`reset` those worlds. With
         ``contact_torsion_device``, also raises if contact torsion rejected its input since
         the last :meth:`reset`; a failing captured step restored its output motion arrays to the
         input, while a failing eager step raised from :meth:`step`. Torsion rows dropped for
@@ -8378,6 +8500,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             if self._namespaced_attribute("joint_friction_load_coefficient") is not None:
                 names += " or steel:joint_friction_load_coefficient"
             raise RuntimeError(f"Steel: {names} was invalid at a step in worlds {worlds[:16].tolist()}.")
+        shape = int(arrays["shape_friction_invalid"].numpy()[0])
+        if shape != _NO_INVALID_SHAPE:
+            raise RuntimeError(f"Steel: shape_material_mu * contact_friction_scale is not finite for shape {shape}.")
+        rejected = np.flatnonzero(arrays["shape_friction_rejected"].numpy())
+        if rejected.size:
+            worlds = np.where(rejected == self.model.world_count, -1, rejected)
+            raise RuntimeError(f"Steel: scaled shape friction was not finite in worlds {worlds[:16].tolist()}.")
         flags = arrays["constraint_overflow"].numpy()
         worlds = np.flatnonzero(flags[:-1])
         global_flagged = bool(flags[-1])
@@ -8401,6 +8530,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         sources = {
             "disabled_tree_joint": self._disabled_tree_joint,
             "joint_friction_invalid": self._joint_friction_invalid,
+            "shape_friction_invalid": self._shape_mu_invalid,
+            "shape_friction_rejected": self._shape_friction_rejected,
             "constraint_overflow": self.constraint_overflow,
         }
         if self._device_torsion is not None:

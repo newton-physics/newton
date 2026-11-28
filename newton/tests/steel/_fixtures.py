@@ -1049,11 +1049,12 @@ def _build_mixed_response_model(
     return replicated.finalize(device=device)
 
 
-def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
+def _build_two_revolute_chain(coef0: float, coef1: float, equality: bool = False, enabled: bool = True):
     """Build a fixed-base chain of two revolute Z-joints with a mimic between them.
 
     The leader joint is position-driven; the follower joint has no drive and no spring,
-    so any tracking it does comes from the mimic row alone.
+    so any tracking it does comes from the mimic row alone. With ``equality``, the coupling
+    is a MuJoCo joint equality row (``enabled`` or not) instead of a joint-owned mimic.
     """
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
     # add_link (not add_body): add_body wraps each body in its own free-joint articulation.
@@ -1080,10 +1081,8 @@ def _build_two_revolute_chain(coef0: float, coef1: float, legacy: bool = False):
     b.joint_target_kd[0] = 5.0
     b.joint_target_mode[0] = int(newton.JointTargetMode.POSITION)
     # follower: q_follower = coef0 + coef1 * q_leader
-    if legacy:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            b.add_constraint_mimic(joint0=j_follower, joint1=j_leader, coef0=coef0, coef1=coef1)
+    if equality:
+        newton.solvers.mujoco.add_equality_joint(b, j_follower, j_leader, polycoef=(coef0, coef1), enabled=enabled)
     else:
         b.set_joint_mimic(j_follower, j_leader, coeffs=(coef0, coef1))
     return b, j_leader, j_follower
