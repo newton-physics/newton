@@ -8,7 +8,9 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 
 from __future__ import annotations
 
+import functools
 import logging
+import sys
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -18,6 +20,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import MAXVAL, override
+from ...exceptions import NewtonWarning
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
@@ -39,7 +42,7 @@ from ...sim.collide import (
     _estimate_rigid_contact_max,
 )
 from ...sim.enums import FRICTION_ROLLING_BIT, FRICTION_TORSIONAL_BIT
-from ...utils.deprecation import warn_deprecation
+from ...utils.deprecation import external_stacklevel, warn_deprecation
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase, warn_unsupported_friction_modes
 
@@ -114,6 +117,21 @@ def _estimate_scc_contacts_per_world(model, newton_model: Model) -> int:
 ###
 # Interfaces
 ###
+
+
+def _warp_deterministic_off(method):
+    """Run ``method`` with ``wp.config.deterministic`` off, so the Warp modules it creates get NOT_GUARANTEED."""
+
+    @functools.wraps(method)
+    def wrapper(*args, **kwargs):
+        inherited = wp.config.deterministic
+        wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
+        try:
+            return method(*args, **kwargs)
+        finally:
+            wp.config.deterministic = inherited
+
+    return wrapper
 
 
 class SolverKamino(SolverBase, CouplingInterface):
@@ -373,6 +391,24 @@ class SolverKamino(SolverBase, CouplingInterface):
         Defaults to `False`.
         """
 
+        deterministic: wp.DeterministicMode | None = None
+        """
+        Makes repeated runs on one device give bitwise identical results, provided the contacts passed
+        to :meth:`SolverKamino.step` arrive in the same order each run, e.g. from
+        ``CollisionPipeline(deterministic=True)``.\n
+        Supported only with ``dynamics_solver="padmm"``, ``sparse_dynamics=False`` and
+        ``use_collision_detector=False``, and not with the ``"CRF"`` linear solver or the
+        ``discover_sparse`` linear solver option.\n
+        Pass ``wp.DeterministicMode.RUN_TO_RUN`` to enable determinism or
+        ``wp.DeterministicMode.NOT_GUARANTEED`` to disable it. ``None`` (default)
+        inherits ``wp.config.deterministic`` when the solver is constructed. Unsupported
+        configurations raise :class:`ValueError` for an explicit request, or warn
+        and run ``NOT_GUARANTEED`` for an inherited request. Explicit ``GPU_TO_GPU`` raises
+        :class:`ValueError`; an inherited request warns and selects ``RUN_TO_RUN`` before
+        checking configuration support. Resets through the forward-kinematics solver are
+        outside the guarantee. See :ref:`kamino-determinism`.
+        """
+
         @staticmethod
         def register_custom_attributes(builder: ModelBuilder) -> None:
             """
@@ -577,6 +613,49 @@ class SolverKamino(SolverBase, CouplingInterface):
                     f"Invalid angular velocity damping factor: {self.angular_velocity_damping}. "
                     "Must be in the range [0.0, 1.0]."
                 )
+
+            # The solver repeats this check on its final settings; an explicit request fails early here.
+            if (
+                self.deterministic is not None
+                and self._requested_deterministic_mode() != wp.DeterministicMode.NOT_GUARANTEED
+            ):
+                unsupported = self._deterministic_unsupported()
+                if unsupported is not None:
+                    raise ValueError(unsupported)
+
+        def _requested_deterministic_mode(self) -> wp.DeterministicMode:
+            """Return the configured mode, or the global default when unset, limited to the modes Kamino offers."""
+            inherited = self.deterministic is None
+            deterministic = wp.config.deterministic if inherited else self.deterministic
+            if not isinstance(deterministic, wp.DeterministicMode):
+                raise TypeError(f"deterministic must be a warp.DeterministicMode or None, got {deterministic!r}")
+            if deterministic == wp.DeterministicMode.GPU_TO_GPU:
+                if not inherited:
+                    raise ValueError("SolverKamino supports RUN_TO_RUN or NOT_GUARANTEED, not GPU_TO_GPU")
+                warnings.warn(
+                    "wp.config.deterministic is GPU_TO_GPU; SolverKamino runs RUN_TO_RUN instead.",
+                    NewtonWarning,
+                    stacklevel=3,
+                )
+                deterministic = wp.DeterministicMode.RUN_TO_RUN
+            return deterministic
+
+        def _deterministic_unsupported(self) -> str | None:
+            """Return why these settings cannot run ``RUN_TO_RUN``, or ``None`` if they can."""
+            unsupported = None
+            if self.dynamics_solver != "padmm":
+                unsupported = f'the "{self.dynamics_solver}" backend'
+            elif self.sparse_dynamics:
+                unsupported = "PADMM with sparse dynamics"
+                if self.dynamics.linear_solver_type == "CRF":
+                    unsupported += ', which the "CRF" linear solver enables'
+            elif self.use_collision_detector:
+                unsupported = "Kamino's collision detector"
+            elif self.dynamics.linear_solver_type == "CR" and self.dynamics.linear_solver_kwargs.get("discover_sparse"):
+                unsupported = "the `discover_sparse` linear solver option"
+            if unsupported is None:
+                return None
+            return f"SolverKamino does not support deterministic=RUN_TO_RUN with {unsupported}"
 
         @override
         def __post_init__(self):
@@ -898,7 +977,15 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         config, legacy_spatial_friction = self._resolve_spatial_friction(model, config)
-        self._config = config
+        self._deterministic = config._requested_deterministic_mode()
+        deterministic_inherited = config.deterministic is None
+        # A copy, so that the caller's config keeps its requested mode.
+        self._config = replace(config)
+        self._build(model, legacy_spatial_friction, deterministic_inherited)
+
+    @_warp_deterministic_off
+    def _build(self, model: Model, legacy_spatial_friction: bool, deterministic_inherited: bool) -> None:
+        config = self._config
         if config.use_collision_detector and model._has_body_variants:
             raise NotImplementedError(
                 "SolverKamino supports body variants only with Newton contacts; set use_collision_detector=False."
@@ -1023,8 +1110,42 @@ class SolverKamino(SolverBase, CouplingInterface):
             config=self._config,
         )
 
+        # The implementation may have enabled further settings, so support is checked on what it ended up with.
+        self._deterministic = self._supported_deterministic_mode(
+            self._config, self._deterministic, deterministic_inherited
+        )
+        self._config.deterministic = self._deterministic
+        self._configure_determinism()
+        if self._deterministic == wp.DeterministicMode.RUN_TO_RUN and self._contacts_kamino is not None:
+            # Reads the model back from the device, which a first step inside CUDA graph capture cannot do.
+            from ._src.geometry.contacts import prepare_deterministic_contact_slots  # noqa: PLC0415
+
+            prepare_deterministic_contact_slots(model, self._contacts_kamino, model.rigid_contact_max)
+
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
+
+    @property
+    def deterministic(self) -> wp.DeterministicMode:
+        """The effective determinism mode, fixed at construction."""
+        return self._deterministic
+
+    @staticmethod
+    def _supported_deterministic_mode(
+        config: Config, mode: wp.DeterministicMode, inherited: bool
+    ) -> wp.DeterministicMode:
+        """Return ``mode`` if ``config`` supports it. An explicit request raises; an inherited one falls back."""
+        if mode == wp.DeterministicMode.NOT_GUARANTEED:
+            return mode
+        unsupported = config._deterministic_unsupported()
+        if unsupported is None:
+            return mode
+        if not inherited:
+            raise ValueError(unsupported)
+        warnings.warn(
+            f"{unsupported}; the solver runs NOT_GUARANTEED.", NewtonWarning, stacklevel=external_stacklevel()
+        )
+        return wp.DeterministicMode.NOT_GUARANTEED
 
     @property
     def supported_observables(self) -> frozenset[str]:
@@ -1102,6 +1223,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         return self._solver_kamino.solver_status
 
     @override
+    @_warp_deterministic_off
     def reset(
         self,
         state: State,
@@ -1149,6 +1271,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         if state is None:
             raise ValueError("'state' argument is required.")
+        self._apply_module_options()
         world_mask = self._normalize_reset_world_mask(world_mask)
         local_world_mask = None if world_mask is None else world_mask[: self.model.world_count]
 
@@ -1250,7 +1373,27 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"({contacts.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
             )
 
+    def _configure_determinism(self) -> None:
+        """Set Warp's deterministic mode on the kernel modules whose atomics depend on thread order."""
+        from ._src.dynamics import delassus, dual, wrenches  # noqa: PLC0415
+        from ._src.kinematics import jacobians, limits  # noqa: PLC0415
+
+        # All other Kamino modules get NOT_GUARANTEED instead of the ``wp.config.deterministic`` they were created with.
+        selected = (jacobians, wrenches, dual, delassus, limits)
+        off = {"deterministic": wp.DeterministicMode.NOT_GUARANTEED}
+        for name, module in list(sys.modules.items()):
+            if name.startswith(f"{__package__}._src.") and module is not None and module not in selected:
+                self._set_module_options(off, module=module)
+
+        mode = self._deterministic
+        options = {"deterministic": mode, "deterministic_max_records": 0}
+        for module in (jacobians, wrenches, dual, delassus):
+            self._set_module_options(options, module=module)
+        # The limit kernel claims one slot per DoF of a joint, in a loop; Warp reserves one per call site.
+        self._set_module_options({**options, "deterministic_max_records": 6}, module=limits)
+
     @override
+    @_warp_deterministic_off
     def step(
         self,
         state_in: State,
@@ -1287,6 +1430,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 detection. Consumers reconstructing world-space contact points must
                 retain these input poses.
         """
+        self._apply_module_options()
         self.validate_observables(observables, contacts)
         self._require_unreduced_contacts(contacts)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
@@ -1321,6 +1465,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     kinematic_only_immovable=self._config.dynamics_solver == "lox",
                     contact_dead_zone=self._config.constraints.delta,
                     geom_friction_mode=self._model_kamino.geoms.friction_mode,
+                    deterministic=self._deterministic == wp.DeterministicMode.RUN_TO_RUN,
                 )
         else:
             self._detector = None
@@ -1388,6 +1533,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             )
 
     @override
+    @_warp_deterministic_off
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Propagate Newton model property changes to Kamino's internal ModelKamino.
 
@@ -1484,6 +1630,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         return int(flags)
 
     @override
+    @_warp_deterministic_off
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Update contact geometry from Kamino.
 

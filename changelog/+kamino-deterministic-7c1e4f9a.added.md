@@ -1,0 +1,1 @@
+Add `SolverKamino.Config(deterministic=wp.DeterministicMode.RUN_TO_RUN)` for run-to-run reproducible PADMM simulations with dense dynamics, dense or sparse Jacobians, and contacts from a deterministic Collision Pipeline, including deterministic truncation at Kamino's contact limits.

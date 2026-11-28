@@ -537,6 +537,17 @@ class TestKinematicsSparseSystemJacobians(NewtonTestCase):
         self.assertEqual(len(J_cts_dense), len(J_cts_sparse))
         self.assertEqual(len(J_dofs_dense), len(J_dofs_sparse))
 
+        # A constraint row has at most two blocks, on different bodies. With more, the sums in
+        # _build_delassus_elementwise_sparse would differ between runs on the GPU.
+        bsm = jacobians_sparse._J_cts.bsm
+        coords = bsm.nzb_coords.numpy()
+        for world, (start, count) in enumerate(zip(bsm.nzb_start.numpy(), bsm.num_nzb.numpy(), strict=True)):
+            with self.subTest(world=world):
+                blocks = coords[start : start + count]
+                self.assertEqual(len(np.unique(blocks, axis=0)), count)
+                if count > 0:
+                    self.assertLessEqual(np.bincount(blocks[:, 0]).max(), 2)
+
         # Check that Jacobians match
         for mat_id in range(len(J_cts_dense)):
             if J_dofs_dense[mat_id].size > 0:

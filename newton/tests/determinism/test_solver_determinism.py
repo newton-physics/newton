@@ -15,6 +15,8 @@ import warp as wp
 
 import newton
 import newton.tests.unittest_utils
+from newton._src.solvers.kamino._src.dynamics import delassus, dual, wrenches
+from newton._src.solvers.kamino._src.kinematics import jacobians, limits
 from newton._src.solvers.semi_implicit import kernels_particle as semi_implicit_particle_kernels
 from newton._src.solvers.solver import _set_module_options_if_changed
 from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
@@ -361,8 +363,139 @@ def test_rigid_pile_determinism(test, device, solver_name, use_graph):
     _run_isolated(test, "_check_rigid_pile_determinism", str(device), solver_name, use_graph)
 
 
+def _build_kamino_scene(device):
+    """Per world: two stacked boxes on the ground and a hinged chain that swings into its joint limits."""
+    world = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(gap=0.0)
+    for k in range(2):
+        body = world.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.25 + 0.5 * k), wp.quat_identity()))
+        world.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=cfg)
+        world.add_articulation([world.add_joint_free(parent=-1, child=body)])
+    joints, parent = [], -1
+    for k in range(3):
+        body = world.add_link(xform=wp.transform(wp.vec3(2.25 + 0.5 * k, 0.0, 0.6), wp.quat_identity()))
+        world.add_shape_box(body, hx=0.22, hy=0.05, hz=0.05, cfg=cfg)
+        anchor = wp.vec3(2.0, 0.0, 0.6) if k == 0 else wp.vec3(0.25, 0.0, 0.0)
+        joints.append(
+            world.add_joint_revolute(
+                parent=parent,
+                child=body,
+                axis=newton.Axis.Y,
+                parent_xform=wp.transform(anchor, wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(-0.25, 0.0, 0.0), wp.quat_identity()),
+                limit_lower=-0.4,
+                limit_upper=0.4,
+            )
+        )
+        parent = body
+    world.add_articulation(joints)
+
+    scene = newton.ModelBuilder()
+    scene.add_ground_plane()
+    for w in range(16):
+        scene.add_world(world, xform=wp.transform(wp.vec3(6.0 * w, 0.0, 0.0), wp.quat_identity()))
+    return scene.finalize(device=device)
+
+
+def _run_kamino_rollout(device, sparse_jacobian, capture_first_step):
+    model = _build_kamino_scene(device)
+    config = newton.solvers.SolverKamino.Config.from_model(model)
+    config.sparse_jacobian = sparse_jacobian
+    config.deterministic = DETERMINISTIC_MODE
+    solver = newton.solvers.SolverKamino(model, config=config)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64 * model.world_count, deterministic=True)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    control.joint_f.assign(np.where(np.arange(model.joint_dof_count) % 15 >= 12, 0.5, 0.0).astype(np.float32))
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    def step_pair():
+        for state_in, state_out in ((state_0, state_1), (state_1, state_0)):
+            state_in.clear_forces()
+            pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, 1.0 / 600.0)
+
+    if capture_first_step:
+        # The first step runs inside the capture, so solver setup must not read back from the device there.
+        with wp.ScopedCapture(device=device) as capture:
+            step_pair()
+        for _ in range(74):
+            wp.capture_launch(capture.graph)
+    else:
+        for _ in range(75):
+            step_pair()
+
+    snapshot = _snapshot(state_0, ("body_q", "body_qd"))
+    for field, values in snapshot.items():
+        if not np.isfinite(values).all():
+            raise AssertionError(f"Kamino rollout produced non-finite {field}")
+    for kind, counts in (
+        ("contacts", solver._contacts_kamino.world_active_contacts.numpy()),
+        ("limits", solver._solver_kamino._limits.world_active_limits.numpy()),
+    ):
+        if counts.min() < 2:
+            raise AssertionError(f"Kamino rollout must exercise several {kind} per world, got {counts.min()}")
+    return snapshot
+
+
+def _check_kamino_determinism(device, sparse_jacobian, capture_first_step):
+    with wp.ScopedDevice(device):
+        first = _run_kamino_rollout(device, sparse_jacobian, capture_first_step)
+        second = _run_kamino_rollout(device, sparse_jacobian, capture_first_step)
+    _assert_snapshots_equal(first, second)
+
+
+def test_kamino_determinism(test, device, sparse_jacobian, capture_first_step):
+    _run_isolated(test, "_check_kamino_determinism", str(device), sparse_jacobian, capture_first_step)
+
+
+def _check_kamino_ignores_global_mode(device, case):
+    options = {"disabled": {"deterministic": wp.DeterministicMode.NOT_GUARANTEED}, "scc": {"dynamics_solver": "scc"}}
+    with wp.ScopedDevice(device):
+        model = _build_kamino_scene(device)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64 * model.world_count)
+        contacts = pipeline.contacts()
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        # Compiles the pipeline before the global mode is set, which its narrow phase does not support.
+        pipeline.collide(state_0, contacts)
+        wp.config.deterministic = DETERMINISTIC_MODE
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", newton.NewtonWarning)
+            solver = newton.solvers.SolverKamino(model, config=newton.solvers.SolverKamino.Config(**options[case]))
+        if solver.deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+            raise AssertionError(f"expected NOT_GUARANTEED, got {solver.deterministic.name}")
+        for _ in range(4):
+            state_0.clear_forces()
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, model.control(), contacts, 1.0 / 600.0)
+            state_0, state_1 = state_1, state_0
+        if not np.isfinite(state_0.body_q.numpy()).all():
+            raise AssertionError("Kamino rollout produced non-finite body_q")
+
+
+def test_kamino_ignores_global_mode(test, device, case):
+    _run_isolated(test, "_check_kamino_ignores_global_mode", str(device), case)
+
+
 class TestSolverDeterminism(unittest.TestCase):
-    pass
+    def test_kamino_rejects_unsupported_deterministic_configs(self):
+        """Reject unsupported determinism configurations at construction and after mutation."""
+        for name, options in (
+            ("own collision detector", {"use_collision_detector": True}),
+            ("scc solver", {"dynamics_solver": "scc"}),
+            ("lox solver", {"dynamics_solver": "lox"}),
+            ("padmm with sparse dynamics", {"sparse_jacobian": True, "sparse_dynamics": True}),
+        ):
+            with self.subTest(name):
+                config_type = newton.solvers.SolverKamino.Config
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    config_type(deterministic=DETERMINISTIC_MODE, **options)
+                config = config_type(**options)
+                config.deterministic = DETERMINISTIC_MODE
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    config.validate()
 
 
 def _emit_warning_for_policy_test(category_name, message):
@@ -506,6 +639,11 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             particle_vbd_kernels,
             semi_implicit_particle_kernels,
             vbd_coupling_kernels,
+            jacobians,
+            limits,
+            wrenches,
+            dual,
+            delassus,
         )
         self._saved_config = wp.config.deterministic
         self._saved_options = {
@@ -597,6 +735,47 @@ class TestSolverDeterminismOptions(unittest.TestCase):
                     options = wp.get_module_options(module=semi_implicit_particle_kernels)
                     self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
                     self.assertEqual(options["deterministic_max_records"], 0)
+
+    def test_kamino_selects_deterministic_mode(self):
+        """Resolve config modes and global defaults while preserving sparse Jacobian support."""
+        solver_type = newton.solvers.SolverKamino
+        model = _build_kamino_scene("cpu")
+        config = solver_type.Config.from_model(model, deterministic=DETERMINISTIC_MODE, sparse_jacobian=True)
+        solver = solver_type(model, config=config)
+        self.assertEqual(solver.deterministic, DETERMINISTIC_MODE)
+        wp.config.deterministic = DETERMINISTIC_MODE
+        disabled = solver_type(model, config=solver_type.Config(deterministic=wp.DeterministicMode.NOT_GUARANTEED))
+        self.assertEqual(disabled.deterministic, wp.DeterministicMode.NOT_GUARANTEED)
+        inherited = solver_type.Config()
+        self.assertEqual(solver_type(model, config=inherited).deterministic, DETERMINISTIC_MODE)
+        self.assertIsNone(inherited.deterministic, "resolving the mode must not modify the caller's config")
+        solver._apply_module_options()
+        for module in (jacobians, limits, wrenches, dual, delassus):
+            self.assertEqual(wp.get_module_options(module=module)["deterministic"], DETERMINISTIC_MODE)
+        self.assertEqual(wp.get_module_options(module=limits)["deterministic_max_records"], 6)
+        with self.assertRaisesRegex(TypeError, "warp.DeterministicMode"):
+            solver_type.Config(deterministic=True)
+        with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
+            solver_type.Config(deterministic=wp.DeterministicMode.GPU_TO_GPU)
+        for options in (
+            {"dynamics_solver": "scc"},
+            {"dynamics_solver": "lox"},
+            {"sparse_jacobian": True, "sparse_dynamics": True},
+            {"use_collision_detector": True},
+        ):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    solver_type.Config(deterministic=DETERMINISTIC_MODE, **options)
+                unsupported = solver_type.Config(**options)
+                wp.config.deterministic = DETERMINISTIC_MODE
+                # Checked on the config, without building a solver.
+                requested = unsupported._requested_deterministic_mode()
+                with self.assertWarnsRegex(newton.NewtonWarning, "runs NOT_GUARANTEED"):
+                    mode = solver_type._supported_deterministic_mode(unsupported, requested, True)
+                self.assertEqual(mode, wp.DeterministicMode.NOT_GUARANTEED)
+        wp.config.deterministic = wp.DeterministicMode.GPU_TO_GPU
+        with self.assertWarnsRegex(newton.NewtonWarning, "runs RUN_TO_RUN"):
+            self.assertEqual(solver_type.Config()._requested_deterministic_mode(), DETERMINISTIC_MODE)
 
     def test_vbd_resets_inherited_module_options(self):
         with wp.ScopedDevice("cpu"):
@@ -707,6 +886,31 @@ for solver_name in ("featherstone", "mujoco"):
         test_articulation_determinism,
         devices=devices,
         solver_name=solver_name,
+        check_output=False,
+    )
+
+for name, sparse_jacobian, capture_first_step in (
+    ("dense_jacobian", False, False),
+    ("sparse_jacobian", True, False),
+    ("dense_jacobian_graph", False, True),
+):
+    add_function_test(
+        TestSolverDeterminism,
+        f"test_kamino_determinism_{name}",
+        test_kamino_determinism,
+        devices=devices,
+        sparse_jacobian=sparse_jacobian,
+        capture_first_step=capture_first_step,
+        check_output=False,
+    )
+
+for case in ("disabled", "scc"):
+    add_function_test(
+        TestSolverDeterminism,
+        f"test_kamino_ignores_global_mode_{case}",
+        test_kamino_ignores_global_mode,
+        devices=devices,
+        case=case,
         check_output=False,
     )
 
