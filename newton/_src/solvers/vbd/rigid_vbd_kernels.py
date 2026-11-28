@@ -63,7 +63,7 @@ _SMALL_ANGLE_EPS = wp.constant(1.0e-7)
 """Small-angle threshold [rad] for guards and series expansions"""
 
 _HINGE_ANCHOR_BOUND_TOLERANCE = wp.constant(0.1)
-"""Largest limit violation [rad] at which a re-anchored hinge still counts as resting on that bound"""
+"""Largest distance [rad] past a limit bound at which a re-anchored hinge still counts as resting on that bound"""
 
 _DRIVE_LIMIT_MODE_NONE = wp.constant(0)
 _DRIVE_LIMIT_MODE_LIMIT_LOWER = wp.constant(1)
@@ -2912,11 +2912,16 @@ def _unwrap_hinge_angle(angle: float, reference: float) -> float:
 
 @wp.func
 def _anchor_hinge_angle(angle: float, rest: float, lower: float, upper: float, limit_ke: float) -> float:
-    """Select the equivalent hinge angle with the least active-limit violation, then nearest ``rest``."""
+    """Select the equivalent hinge angle nearest ``rest``, or least violating active limits narrower than a turn."""
     theta = _unwrap_hinge_angle(angle, rest)
-    if not _limit_row_exists(limit_ke, lower, upper):
+    if not (limit_ke > 0.0 and lower > -MAXVAL and upper < MAXVAL and lower <= upper):
         return theta
     two_pi = 2.0 * wp.pi
+    # Only a range narrower than a full turn holds at most one equivalent. Leave a few
+    # float32 spacings so shifted or degree-converted full-turn ranges still keep nearest rest.
+    full_turn_tol = 4.0 * _FLOAT32_EPS * wp.max(two_pi, wp.max(wp.abs(lower), wp.abs(upper)))
+    if upper - lower >= two_pi - full_turn_tol:
+        return theta
     # Compare the two equivalents that straddle the bound the nearest-rest angle violates.
     other = theta
     if theta < lower:
@@ -2925,8 +2930,8 @@ def _anchor_hinge_angle(angle: float, rest: float, lower: float, upper: float, l
     elif theta > upper:
         theta = theta - two_pi * wp.ceil((theta - upper) / two_pi)
         other = theta + two_pi
-    # A hinge pressed into a compliant stop sits slightly past it. Within the tolerance
-    # both equivalents tie, so that pose keeps its turn instead of moving a full turn.
+    # A range just under a full turn (such as URDF +-3.14) leaves a forbidden arc thinner than
+    # a stop's compliance. Within the tolerance both equivalents tie, so a stop keeps its turn.
     tolerance = _HINGE_ANCHOR_BOUND_TOLERANCE
     violation = wp.max(wp.max(lower - theta, theta - upper) - tolerance, 0.0)
     other_violation = wp.max(wp.max(lower - other, other - upper) - tolerance, 0.0)
@@ -4280,7 +4285,7 @@ def step_joint_C0_lambda_rho(
 
     Sole owner of hinge-angle history and all per-step joint maintenance:
       0. revolute and one-axis-D6 winding history (enabled or not; reset-selected
-         worlds re-anchor near the rest coordinate, inside active limits when possible);
+         worlds re-anchor near the rest coordinate, or by least violation of active limits narrower than a turn);
       1. compliant-ALM auto-``rho`` refresh for structural rows;
       2. directional support + multiplier retention for drive/limit rows;
       3. C0 snapshot + lambda retention for stabilized structural rows.
@@ -4316,17 +4321,13 @@ def step_joint_C0_lambda_rho(
             dof = dof + joint_dof_dim[j, 0]
         kappa = compute_kappa(X_wp.q, X_wc.q, X_wp_rest.q, X_wc_rest.q)
         angle = wp.dot(kappa, wp.normalize(joint_axis[dof])) + joint_rest_angle[dof]
+        reference = joint_angle_prev[dof]
         # Re-anchor winding after construction or reset instead of retaining old turns.
         if _world_selected(joint_world[j], pose_rebaseline_mask):
-            joint_angle_prev[dof] = _anchor_hinge_angle(
-                angle,
-                joint_rest_angle[dof],
-                joint_limit_lower[dof],
-                joint_limit_upper[dof],
-                joint_limit_ke[dof],
+            reference = _anchor_hinge_angle(
+                angle, joint_rest_angle[dof], joint_limit_lower[dof], joint_limit_upper[dof], joint_limit_ke[dof]
             )
-        else:
-            joint_angle_prev[dof] = _unwrap_hinge_angle(angle, joint_angle_prev[dof])
+        joint_angle_prev[dof] = _unwrap_hinge_angle(angle, reference)
 
     # Auto-rho refresh has no enabled gate; a disabled joint's rho is unused.
     if c_dim > 0 and child >= 0:

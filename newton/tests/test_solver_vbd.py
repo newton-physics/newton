@@ -16,6 +16,7 @@ import warp as wp
 
 import newton
 from newton import NewtonDeprecationWarning
+from newton._src.core.types import MAXVAL
 from newton._src.geometry.sdf_planar_recovery import MeshRecoveryData
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
 from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
@@ -7437,8 +7438,8 @@ def _rigid_hinge_multiturn_drive(test, device):
 
 
 def _rigid_hinge_multiturn_limits(test, device):
-    """Verify scalar hinge limits beyond pi hold torque in both directions."""
-    model, _, dof_indices = _build_rigid_hinge_winding_model(
+    """Verify scalar hinge limits beyond pi hold torque in both directions and across soft-stop resets."""
+    model, target_indices, dof_indices = _build_rigid_hinge_winding_model(
         device,
         limit_lower=-4.0,
         limit_upper=4.0,
@@ -7465,6 +7466,36 @@ def _rigid_hinge_multiturn_limits(test, device):
         expected = math.copysign(4.0, torque)
         np.testing.assert_allclose(angles, expected, rtol=0.0, atol=2.0e-3)
         test.assertLess(np.max(np.abs(state_in.body_qd.numpy()[:, 5])), 1.0e-2)
+
+    # A compliant one-sided stop at static equilibrium (-2 N*m / 10 N*m/rad = -0.2 rad)
+    # must stay supported across reset(flags=0) instead of re-anchoring to 2*pi - 0.2.
+    limit_lower = model.joint_limit_lower.numpy()
+    limit_upper = model.joint_limit_upper.numpy()
+    limit_ke = model.joint_limit_ke.numpy()
+    limit_lower[dof_indices] = 0.0
+    limit_upper[dof_indices] = MAXVAL
+    limit_ke[dof_indices] = 10.0
+    model.joint_limit_lower.assign(limit_lower)
+    model.joint_limit_upper.assign(limit_upper)
+    model.joint_limit_ke.assign(limit_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    equilibrium = -0.2
+    joint_q = state_in.joint_q.numpy()
+    joint_q[target_indices] = equilibrium
+    state_in.joint_q.assign(joint_q)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    solver.reset(state_in, flags=0)
+    joint_forces[dof_indices] = -2.0
+    control.joint_f.assign(joint_forces)
+
+    angles = np.full(model.body_count, equilibrium)
+    for _ in range(20):
+        solver.step(state_in, state_out, control, None, 0.02)
+        state_in, state_out = state_out, state_in
+        angles = _accumulate_body_z_angles(state_in, angles)
+
+    np.testing.assert_allclose(angles, equilibrium, rtol=0.0, atol=1.0e-3)
 
 
 def _rigid_hinge_bounded_reset_hold(test, device):
@@ -7507,7 +7538,7 @@ def _rigid_hinge_bounded_reset_hold(test, device):
 
 
 def _rigid_hinge_anchor_angle_selection(test, device):
-    """Verify the reset winding anchor prefers active limits but keeps a pose resting on a bound."""
+    """Verify the reset winding anchor prefers limits narrower than a turn and keeps the nearest-rest turn otherwise."""
     pi = math.pi
     # angle, rest, lower, upper, limit_ke -> expected anchored angle
     cases = [
@@ -7517,8 +7548,19 @@ def _rigid_hinge_anchor_angle_selection(test, device):
         ((-0.75 * pi, 0.0, 0.0, 1.5 * pi, 0.0), -0.75 * pi),
         # No turn is in range; the smaller violation wins over nearest rest (1.9 pi).
         ((1.9 * pi, 1.4 * pi, 0.0, 1.5 * pi, 1.0e4), -0.1 * pi),
-        # A pose pressed 0.01 rad into its stop keeps its turn although a full turn up is in range.
-        ((-0.01, 0.0, 0.0, 3.0 * pi, 1.0e4), -0.01),
+        # A one-sided stop with an in-range turn a full turn up: a soft stop pressed 0.2 rad keeps its turn.
+        ((-0.2, 0.0, 0.0, MAXVAL, 10.0), -0.2),
+        # Full-turn ranges (including a reference-shifted one whose float32 span rounds 1 ULP below 2*pi):
+        # a soft stop pressed 0.2 rad past its lower bound keeps its turn beyond the 0.1 rad tolerance.
+        ((pi - 0.2, -1.5, -pi, pi, 10.0), -pi - 0.2),
+        ((pi - 0.3, -1.5, -pi - 0.1, pi - 0.1, 10.0), -pi - 0.3),
+        # Inverted or non-finite bounds are not a valid narrow interval and keep nearest rest.
+        ((0.0, -2.0 * pi, 1.0, -1.0, 1.0e4), -2.0 * pi),
+        ((0.0, -2.0 * pi, math.inf, math.inf, 1.0e4), -2.0 * pi),
+        # A range just under a full turn (URDF +-3.14): a hinge pressed 0.005 rad into its stop keeps its turn.
+        ((3.145, 0.5, -3.14, 3.14, 1.0e4), 3.145),
+        # The same range, in range but over half a turn from rest: the in-range turn wins over nearest rest.
+        ((-3.0, 0.5, -3.14, 3.14, 1.0e4), -3.0),
     ]
     inputs = wp.array([case for case, _ in cases], dtype=float, device=device)
     result = wp.empty(len(cases), dtype=float, device=device)

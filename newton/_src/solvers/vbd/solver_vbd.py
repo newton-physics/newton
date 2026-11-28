@@ -285,9 +285,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
           of relative rotation per solver step, including prediction and
           solver corrections. The first step after construction or
           :meth:`reset` starts from the pose-equivalent angle nearest the rest
-          coordinate, preferring one inside the joint's limits when
-          :attr:`~newton.Model.joint_limit_ke` is positive. A pose up to
-          0.1 rad past a bound counts as resting on that bound.
+          coordinate (the joint's :attr:`~newton.Model.joint_q` value at
+          solver construction). If the joint's limits span less than a full
+          turn and :attr:`~newton.Model.joint_limit_ke` is positive, it starts
+          from the equivalent with the least limit violation instead (counting
+          up to 0.1 rad past a bound as resting on that bound, and breaking
+          ties toward the rest coordinate).
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported,
           including six-component world-frame wrenches for ROD joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
@@ -2866,10 +2869,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Mutable tendon material and routing state is restored to its initialized
         values regardless of *flags*.
         REVOLUTE and one-axis-D6 winding re-anchors to the pose-equivalent angle
-        nearest the authored rest coordinate, preferring an angle inside the
-        joint's limits when its limit stiffness is positive, unless the pose
-        rests slightly past a bound; a pose alone cannot restore an
-        independently intended multi-turn coordinate.
+        nearest the authored rest coordinate or, when positive-stiffness limits
+        span less than a full turn, to the one with the least limit violation
+        (counting up to 0.1 rad past a bound as resting on it, then nearest
+        rest); a pose alone cannot restore an independently intended multi-turn
+        coordinate.
         Selected-world contact warm-start is cold-started when fresh rigid contacts
         are next processed. Internal rigid history is reset regardless of *flags*.
         When an external solver integrates the bodies, reset performs no rigid
