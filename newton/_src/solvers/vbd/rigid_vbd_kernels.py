@@ -2148,6 +2148,40 @@ def _compute_body_particle_contact_force(
     Hessian from those scalar/vector inputs. Damping acts on a closing gap only, or in both
     directions when ``contact_damping_bidirectional`` is set.
     """
+    return _compute_body_particle_contact_force_slip(
+        distance,
+        collision_radius,
+        n,
+        relative_translation,
+        relative_translation,
+        ke,
+        kd,
+        mu,
+        friction_epsilon,
+        dt,
+        use_log_barrier,
+        contact_damping_bidirectional,
+    )
+
+
+@wp.func
+def _compute_body_particle_contact_force_slip(
+    distance: float,
+    collision_radius: float,
+    n: wp.vec3,
+    relative_translation: wp.vec3,
+    friction_slip: wp.vec3,
+    ke: float,
+    kd: float,
+    mu: float,
+    friction_epsilon: float,
+    dt: float,
+    use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
+):
+    """:func:`_compute_body_particle_contact_force` with the friction slip given separately from the step's
+    relative translation (which drives the normal damping). Static friction passes the slip from the contact's
+    stick anchor."""
     dE_dD, d2E_dDdD = _evaluate_rigid_soft_contact_force_norm(distance, collision_radius, ke, use_log_barrier)
     f_n = -dE_dD
     force = n * f_n
@@ -2159,7 +2193,7 @@ def _compute_body_particle_contact_force(
         force = force - damping_hessian * relative_translation
 
     eps_u = friction_epsilon * dt
-    friction_force, friction_hessian = compute_projected_isotropic_friction(mu, f_n, n, relative_translation, eps_u)
+    friction_force, friction_hessian = compute_projected_isotropic_friction(mu, f_n, n, friction_slip, eps_u)
     force = force + friction_force
     hessian = hessian + friction_hessian
 
@@ -2248,6 +2282,162 @@ def _eval_body_particle_contact(
         )
     else:
         return wp.vec3(0.0), wp.mat33(0.0)
+
+
+@wp.func
+def _eval_body_particle_contact_anchored(
+    particle_index: int,
+    particle_pos: wp.vec3,
+    particle_prev_pos: wp.vec3,
+    contact_index: int,
+    body_particle_contact_ke: float,
+    body_particle_contact_kd: float,
+    friction_mu: float,
+    friction_epsilon: float,
+    particle_radius: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    dt: float,
+    use_log_barrier: bool,
+    contact_damping_bidirectional: bool,
+    friction_anchor: wp.array[wp.vec3],
+    friction_anchor_shape: wp.array[wp.int32],
+):
+    """:func:`_eval_body_particle_contact` with static friction: while the particle stays in contact with the same
+    shape, its friction slip is measured from its stick anchor (in the shape's body frame) instead of from the step's
+    start, so a sticking contact under a steady tangential load holds instead of creeping one regularized slip per
+    step. Falls back to the step slip for a new contact or when anchors are off (empty arrays)."""
+    shape_index = contact_shape[contact_index]
+    body_index = shape_body[shape_index]
+
+    X_wb = wp.transform_identity()
+    X_com = wp.vec3()
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+        X_com = body_com[body_index]
+
+    bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
+    n = contact_normal[contact_index]
+
+    margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+    distance = wp.dot(n, particle_pos - bx)
+    collision_radius = particle_radius[particle_index] + margin
+    penetration_depth = collision_radius - distance
+    if penetration_depth > 0.0:
+        dx = particle_pos - particle_prev_pos
+
+        if body_q_prev:
+            X_wb_prev = wp.transform_identity()
+            if body_index >= 0:
+                X_wb_prev = body_q_prev[body_index]
+            bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
+            bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+        else:
+            r = bx - wp.transform_point(X_wb, X_com)
+            body_v_s = wp.spatial_vector()
+            if body_index >= 0:
+                body_v_s = body_qd[body_index]
+            body_w = wp.spatial_bottom(body_v_s)
+            body_v = wp.spatial_top(body_v_s)
+            bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+
+        relative_translation = dx - bv * dt
+        friction_slip = relative_translation
+        if friction_anchor_shape.shape[0] > 0:
+            if friction_anchor_shape[particle_index] == shape_index:
+                friction_slip = particle_pos - wp.transform_point(X_wb, friction_anchor[particle_index])
+
+        return _compute_body_particle_contact_force_slip(
+            distance,
+            collision_radius,
+            n,
+            relative_translation,
+            friction_slip,
+            body_particle_contact_ke,
+            body_particle_contact_kd,
+            friction_mu,
+            friction_epsilon,
+            dt,
+            use_log_barrier,
+            contact_damping_bidirectional,
+        )
+    else:
+        return wp.vec3(0.0), wp.mat33(0.0)
+
+
+@wp.kernel
+def friction_anchor_begin(
+    friction_anchor_shape: wp.array[wp.int32],
+    friction_anchor_shape_prev: wp.array[wp.int32],
+):
+    """Start an anchor update: remember each particle's anchored shape and clear it (re-set by contacts that hold)."""
+    i = wp.tid()
+    friction_anchor_shape_prev[i] = friction_anchor_shape[i]
+    friction_anchor_shape[i] = -1
+
+
+@wp.kernel
+def friction_anchor_update(
+    dt: float,
+    friction_epsilon: float,
+    pos: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    contact_indices: wp.array[wp.vec3i],
+    contact_count: wp.array[int],
+    contact_max: int,
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    friction_anchor_shape_prev: wp.array[wp.int32],
+    # outputs
+    friction_anchor: wp.array[wp.vec3],
+    friction_anchor_shape: wp.array[wp.int32],
+):
+    """After a step, per particle contact still touching: keep the stick anchor while the tangential slip from it is
+    within the regularization distance ``friction_epsilon * dt`` (sticking), drag it to that distance behind the
+    particle when beyond (sliding; kinetic friction then acts along the slip), or start one at the particle for a new
+    contact. Anchors live in the shape's body frame, so they move with a moving collider."""
+    t_id = wp.tid()
+    count = wp.min(contact_max, contact_count[0])
+    if t_id >= count:
+        return
+    corners = contact_indices[t_id]
+    if corners[1] >= 0:
+        return  # edge/face records keep the step slip
+    p = corners[0]
+    shape_index = contact_shape[t_id]
+    body_index = shape_body[shape_index]
+    X_wb = wp.transform_identity()
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+    bx = wp.transform_point(X_wb, contact_body_pos[t_id])
+    n = contact_normal[t_id]
+    margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+    x = pos[p]
+    if particle_radius[p] + margin - wp.dot(n, x - bx) <= 0.0:
+        return
+    anchor_world = x
+    if friction_anchor_shape_prev[p] == shape_index:
+        anchor_world = wp.transform_point(X_wb, friction_anchor[p])
+        u = x - anchor_world
+        u_t = u - n * wp.dot(n, u)
+        length = wp.length(u_t)
+        eps_u = friction_epsilon * dt
+        if length > eps_u:
+            anchor_world = anchor_world + u_t * (1.0 - eps_u / length)
+    friction_anchor[p] = wp.transform_point(wp.transform_inverse(X_wb), anchor_world)
+    friction_anchor_shape[p] = shape_index
 
 
 @wp.func

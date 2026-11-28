@@ -138,6 +138,8 @@ def _evaluate(solver, state, contacts, gather, buffers):
                     solver._particle_contact_next,
                     *material_and_body,
                     data,
+                    wp.zeros(0, dtype=wp.vec3, device=device),  # static friction anchors: off
+                    wp.zeros(0, dtype=wp.int32, device=device),
                 ],
                 outputs=[particle_f, particle_h],
                 device=device,
@@ -162,6 +164,8 @@ def _evaluate(solver, state, contacts, gather, buffers):
                     contacts.soft_contact_max,
                     solver._particle_contact_worker_count,
                     *material_and_body,
+                    wp.zeros(0, dtype=wp.vec3, device=device),  # static friction anchors: off
+                    wp.zeros(0, dtype=wp.int32, device=device),
                 ],
                 outputs=[particle_f, particle_h],
                 device=device,

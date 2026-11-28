@@ -2817,6 +2817,8 @@ def _body_particle_contact_gather_damping_is_absolute(test, device):
                 wp.zeros(0, dtype=float, device=device),
                 wp.zeros(4, dtype=wp.vec3, device=device),  # barycentric (unused on the particle path)
                 _SoftContactFilterData(),
+                wp.zeros(0, dtype=wp.vec3, device=device),  # static friction anchors: off
+                wp.zeros(0, dtype=wp.int32, device=device),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -2941,6 +2943,8 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
                 contact_next,
                 *_particle_contact_gather_material_inputs(data),
                 _SoftContactFilterData(),
+                wp.zeros(0, dtype=wp.vec3, device=device),  # static friction anchors: off
+                wp.zeros(0, dtype=wp.int32, device=device),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -3004,6 +3008,8 @@ def _particle_contact_gather_order_pinned(test, device):
                     rev_next_wp,
                     *_particle_contact_gather_material_inputs(data),
                     _SoftContactFilterData(),
+                    wp.zeros(0, dtype=wp.vec3, device=device),  # static friction anchors: off
+                    wp.zeros(0, dtype=wp.int32, device=device),
                 ],
                 outputs=[forces_rev, hessians_rev],
                 device=device,
@@ -3247,6 +3253,8 @@ def _launch_particle_contact_scatter(data, contact_count, worker_count, forces, 
                 data["capacity"],
                 worker_count,
                 *_particle_contact_gather_material_inputs(data),
+                wp.zeros(0, dtype=wp.vec3, device=device),  # static friction anchors: off
+                wp.zeros(0, dtype=wp.int32, device=device),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -8411,6 +8419,8 @@ def _run_face_section2(device, shape_margin):
             shape_margin,
             contacts.soft_contact_barycentric,
             _SoftContactFilterData(),
+            wp.zeros(0, dtype=wp.vec3, device=device),  # static friction anchors: off
+            wp.zeros(0, dtype=wp.int32, device=device),
         ],
         outputs=[forces, hessians],
         device=device,
@@ -10641,6 +10651,64 @@ add_function_test(
     test_solver_residual_decreases_with_iterations,
     devices=devices,
 )
+
+def _block_on_slope(device, slope: float):
+    """A soft 12 cm block on a 2 cm tet grid resting on ground with friction 0.5, gravity tilted so the ground is a
+    slope of ``slope`` (tan of its angle) along +X."""
+    angle = math.atan(slope)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(9.81 * math.sin(angle), -9.81 * math.cos(angle), 0.0))
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    builder.add_soft_grid(pos=wp.vec3(0.0, 0.001, 0.0), rot=wp.quat_identity(), vel=wp.vec3(0.0, 0.0, 0.0), dim_x=6,
+                          dim_y=6, dim_z=6, cell_x=0.02, cell_y=0.02, cell_z=0.02, density=50.0, k_mu=4.0e3,
+                          k_lambda=6.0e3, k_damp=25.0, particle_radius=0.001)
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke = 2.0e4
+    model.soft_contact_mu = 0.5
+    return model, angle
+
+
+def _slide(model, static: bool, steps: int, dt: float, settle: int = 0) -> float:
+    """Mass-centre travel along the slope (+X) from step ``settle`` to ``steps``."""
+    solver = newton.solvers.SolverVBD(model, iterations=10, particle_static_friction=static)
+    pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.004)
+    contacts = pipeline.contacts()
+    state, following, control = model.state(), model.state(), model.control()
+    mass = model.particle_mass.numpy()
+    start = None
+    for step in range(steps):
+        if step == settle:
+            start = (mass * state.particle_q.numpy()[:, 0]).sum() / mass.sum()
+        state.clear_forces()
+        pipeline.collide(state, contacts)
+        solver.step(state, following, control, contacts, dt)
+        state, following = following, state
+    return float((mass * state.particle_q.numpy()[:, 0]).sum() / mass.sum() - start)
+
+
+def _particle_static_friction(test, device):
+    """Regularized friction measures slip from each step's start, so a contact under a steady tangential load
+    creeps by one regularized slip every step: a block on a slope below its friction angle slowly slides down.
+    ``particle_static_friction`` measures slip from a per-particle stick anchor: the block holds. Above the
+    friction angle it slides the same with and without it (kinetic friction is unchanged; both run about 19% short of
+    Coulomb's ``g (sin a - mu cos a)`` here, VBD's own sliding)."""
+    dt = 1.0 / 600.0
+    model, _angle = _block_on_slope(device, 0.3)  # below mu = 0.5: must stick
+    creep = _slide(model, False, 600, dt, settle=120)  # 0.2 to 1.0 s
+    test.assertGreater(creep, 0.001)  # the creep the option removes (about 3 mm/s at friction_epsilon 0.01)
+    held = _slide(model, True, 600, dt, settle=120)
+    test.assertLess(abs(held), 5.0e-5)
+
+    model, angle = _block_on_slope(device, 0.8)  # above mu: slides
+    coulomb = 0.5 * 9.81 * (math.sin(angle) - 0.5 * math.cos(angle)) * (300 * dt) ** 2  # 0.5 s: 0.29 m
+    regularized = _slide(model, False, 300, dt)
+    anchored = _slide(model, True, 300, dt)
+    test.assertGreater(anchored, 0.5 * coulomb)
+    test.assertAlmostEqual(anchored, regularized, delta=0.02 * regularized)
+
+
+add_function_test(TestSolverVBD, "test_particle_static_friction", _particle_static_friction, devices=devices)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

@@ -20,6 +20,7 @@ from newton._src.math import orthonormal_basis
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _attachment_auto_rho,
     _eval_body_particle_contact,
+    _eval_body_particle_contact_anchored,
     _eval_soft_ef_contact,
     _reset_world_selected,
     dat_separation_epsilon,
@@ -2102,6 +2103,9 @@ def gather_particle_body_contact_force_and_hessian(
     shape_margin: wp.array[float],
     contact_barycentric: wp.array[wp.vec3],
     contact_filter: _SoftContactFilterData,
+    # Static friction stick anchors per particle (empty: off).
+    friction_anchor: wp.array[wp.vec3],
+    friction_anchor_shape: wp.array[wp.int32],
     # outputs
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2141,7 +2145,7 @@ def gather_particle_body_contact_force_and_hessian(
         contact_mu = body_particle_contact_material_mu[contact_index]
 
         if corners[1] < 0:
-            contact_force, contact_hessian = _eval_body_particle_contact(
+            contact_force, contact_hessian = _eval_body_particle_contact_anchored(
                 particle_index,
                 pos[particle_index],
                 pos_anchor[particle_index],
@@ -2164,6 +2168,8 @@ def gather_particle_body_contact_force_and_hessian(
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
                 contact_damping_bidirectional,
+                friction_anchor,
+                friction_anchor_shape,
             )
             force += contact_force
             hessian += contact_hessian
@@ -2238,6 +2244,9 @@ def scatter_particle_body_contact_force_and_hessian(
     contact_normal: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     contact_barycentric: wp.array[wp.vec3],
+    # Static friction stick anchors per particle (empty: off).
+    friction_anchor: wp.array[wp.vec3],
+    friction_anchor_shape: wp.array[wp.int32],
     # outputs
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2267,7 +2276,7 @@ def scatter_particle_body_contact_force_and_hessian(
             if particle_colors[particle_index] == current_color and _soft_contact_force_enabled(
                 contact_index, contact_filter
             ):
-                contact_force, contact_hessian = _eval_body_particle_contact(
+                contact_force, contact_hessian = _eval_body_particle_contact_anchored(
                     particle_index,
                     pos[particle_index],
                     pos_anchor[particle_index],
@@ -2290,6 +2299,8 @@ def scatter_particle_body_contact_force_and_hessian(
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
                     contact_damping_bidirectional,
+                    friction_anchor,
+                    friction_anchor_shape,
                 )
                 wp.atomic_add(particle_forces, particle_index, contact_force)
                 wp.atomic_add(particle_hessians, particle_index, contact_hessian)
