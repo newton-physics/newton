@@ -566,7 +566,7 @@ def add_critical_strain_offset(
         offset = float(0.0)
         for k in range(nodes_per_element):
             offset += eigenvectors[element, local_node, k] * critical_strain_offset[element * nodes_per_element + k]
-    unilateral_strain_offset[i] += wp.max(offset, 0.0)
+    unilateral_strain_offset[i] = unilateral_strain_offset[i] + wp.max(offset, 0.0)
 
 
 @wp.func

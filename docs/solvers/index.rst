@@ -101,7 +101,7 @@ Supported Features
      - ❌
      - ❌
      - ❌
-     - ❌
+     - ✅ :sup:`3`
    * - :class:`~newton.solvers.SolverKamino`
      - Semi-implicit: Euler, Moreau-Jean
      - ✅ maximal coordinates

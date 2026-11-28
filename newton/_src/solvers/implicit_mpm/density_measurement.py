@@ -163,11 +163,17 @@ def make_free_box_mask_kernel(grid):
     return free_box_masks
 
 
-def make_grid_volume_kernel(grid):
+def make_grid_volume_kernel(grid, deterministic=None):
     """Scatter particle volumes to cell centers with quadratic B-spline weights, as cell volume fractions."""
     containing_cell, neighbor_cell = make_cell_locator(grid)
 
-    @cache.dynamic_kernel(suffix=grid.name)
+    kernel_options = {}
+    if deterministic is not None:
+        # Include the mode in the specialization key and budget one record
+        # per cell of the particle's stencil.
+        kernel_options = {"deterministic": deterministic, "deterministic_max_records": 27}
+
+    @cache.dynamic_kernel(suffix=grid.name, kernel_options=kernel_options)
     def grid_volume(
         geo: grid.CellArg,
         positions: wp.array[wp.vec3],
