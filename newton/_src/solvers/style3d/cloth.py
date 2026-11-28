@@ -16,6 +16,7 @@ from ...core.types import Vec2, Vec3
 from ...exceptions import NewtonWarning
 from ...geometry.flags import ParticleFlags
 from ...geometry.kernels import compute_edge_aabbs
+from ...sim.builder import _as_quat
 from ...utils.mesh import MeshAdjacency
 
 if TYPE_CHECKING:
@@ -272,7 +273,7 @@ def add_cloth_mesh(
             this cloth.
     """
     vertices_np = np.array(vertices, dtype=float) * scale
-    rot_mat = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
+    rot_mat = np.array(wp.quat_to_matrix(_as_quat(rot)), dtype=np.float32).reshape(3, 3)
     verts_3d = np.dot(vertices_np, rot_mat.T) + np.array(pos, dtype=float)
 
     panel_verts_np = np.array(panel_verts, dtype=float) * scale if panel_verts is not None else vertices_np[:, :2]
