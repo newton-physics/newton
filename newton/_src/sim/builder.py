@@ -1560,8 +1560,10 @@ class ModelBuilder:
             [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
             self.target_q = 0.0 if target_q is None else target_q
             """The target position of the joint axis.
-            If the initial `target_q` is outside the limits,
-            it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
+            Explicit targets are preserved during construction independently of joint limits.
+            SolverXPBD and SolverVBD still clamp drive targets to the limits during solving;
+            preserving an out-of-range target does not enable preload in those solvers.
+            If omitted, use zero when in range, otherwise the limit midpoint."""
             self.target_qd = 0.0 if target_qd is None else target_qd
             """The target velocity of the joint axis."""
             self.target_ke = target_ke
@@ -1589,8 +1591,10 @@ class ModelBuilder:
             """Actuator mode for this DOF. Determines which actuators are installed (see :class:`JointTargetMode`).
             If None, the mode is inferred from gains and targets."""
 
-            if self.target_q > self.limit_upper or self.target_q < self.limit_lower:
+            if target_q is None and (self.target_q > self.limit_upper or self.target_q < self.limit_lower):
                 self.target_q = 0.5 * (self.limit_lower + self.limit_upper)
+            if not math.isfinite(self.target_q):
+                raise ValueError("target_q must be finite")
 
         @property
         def target_pos(self) -> float:

@@ -2940,6 +2940,61 @@ class TestModelJoints(unittest.TestCase):
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
 
+    def test_explicit_drive_targets_are_independent_of_joint_limits(self):
+        """Preserve explicit position targets through joint construction and finalization."""
+        builder = newton.ModelBuilder()
+        expected = []
+        for kind in ("revolute", "prismatic"):
+            for target in (-0.08, 0.0, 0.2, 0.6):
+                with self.subTest(kind=kind, target=target):
+                    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                    joint = getattr(builder, f"add_joint_{kind}")(
+                        parent=-1,
+                        child=body,
+                        limit_lower=0.0,
+                        limit_upper=0.45,
+                        target_q=target,
+                        target_ke=10.0,
+                    )
+                    builder.add_articulation([joint])
+                    expected.append(target)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.joint_target_q.numpy(), expected, atol=1e-7)
+        np.testing.assert_array_equal(model.joint_q.numpy(), 0.0)
+        np.testing.assert_array_equal(model.joint_limit_lower.numpy(), 0.0)
+        np.testing.assert_allclose(model.joint_limit_upper.numpy(), 0.45)
+
+    def test_drive_target_default_and_legacy_alias(self):
+        """Distinguish omitted targets from explicit zero and deprecated aliases."""
+        config = newton.ModelBuilder.JointDofConfig
+        self.assertEqual(config(limit_lower=1.0, limit_upper=2.0).target_q, 1.5)
+        self.assertEqual(config(limit_lower=-1.0, limit_upper=2.0).target_q, 0.0)
+        self.assertEqual(config(limit_lower=1.0, limit_upper=2.0, target_q=0.0).target_q, 0.0)
+        with self.assertWarns(newton.NewtonDeprecationWarning):
+            legacy = config(limit_lower=0.0, limit_upper=0.45, target_pos=-0.08)
+        self.assertEqual(legacy.target_q, -0.08)
+
+        for kind in ("revolute", "prismatic"):
+            for target in (0.0, -0.08):
+                with self.subTest(kind=kind, inherited_target=target):
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.target_q = target
+                    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                    joint = getattr(builder, f"add_joint_{kind}")(
+                        parent=-1,
+                        child=body,
+                        limit_lower=1.0,
+                        limit_upper=2.0,
+                    )
+                    self.assertEqual(builder.joint_target_q[builder.joint_q_start[joint]], target)
+
+    def test_nonfinite_drive_target_is_rejected(self):
+        """Reject nonfinite position targets instead of substituting a midpoint."""
+        for target in (math.nan, math.inf, -math.inf):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(ValueError, "target_q must be finite"):
+                    newton.ModelBuilder.JointDofConfig(target_q=target)
+
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
         """Match position targets to coordinates and velocity targets to DOFs.
 
