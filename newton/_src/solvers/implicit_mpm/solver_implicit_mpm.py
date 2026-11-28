@@ -8,8 +8,11 @@ from __future__ import annotations
 import math
 import operator
 import re
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from functools import wraps
 from itertools import pairwise
 from typing import Any, Literal
 
@@ -21,6 +24,7 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
@@ -262,6 +266,25 @@ class _DomainNamedPicQuadrature(fem.PicQuadrature):
 
 
 _PicQuadrature = fem.PicQuadrature if _WARP_AT_LEAST_1_19 else _DomainNamedPicQuadrature
+
+
+def _deprecate_config_positional_arguments(cls):
+    """Preserve legacy dataclass initialization while warning on positional options."""
+    init = cls.__init__
+
+    @wraps(init)
+    def wrapper(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        if args:
+            warnings.warn(
+                "Passing positional arguments to SolverImplicitMPM.Config() is deprecated. "
+                "Pass these arguments as keyword arguments instead.",
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
+
+    cls.__init__ = wrapper
+    return cls
 
 
 def _recovery_time(time: float | None, name: str) -> float | None:
@@ -950,9 +973,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             or particles that are not stored contiguously by world.
     """
 
+    @_deprecate_config_positional_arguments
     @dataclass
     class Config:
         """Configuration for :class:`SolverImplicitMPM`.
+
+        .. deprecated:: 1.9
+
+            Passing configuration options positionally is deprecated. Use keyword
+            arguments, for example ``Config(max_iterations=100)``.
 
         Per-particle properties can be configured using custom attributes on the Model.
         See :meth:`SolverImplicitMPM.register_custom_attributes` for details.
@@ -1094,7 +1123,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Cell-local contact solver ordering may change.
         """
-        collider_recovery_time: float | None = None
+        collider_recovery_time: float | None = dataclass_field(default=None, kw_only=True)
         """Time constant of collider penetration recovery [s].
 
         Each step adds an outward normal target velocity of
@@ -1111,7 +1140,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Collider recovery may change without prior notice.
         """
-        volume_recovery_time: float | None = None
+        volume_recovery_time: float | None = dataclass_field(default=None, kw_only=True)
         """Time constant of particle overpacking recovery [s].
 
         Each step adds the nonpositive offset
@@ -1129,7 +1158,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Density-based divergence feedback may change without prior notice.
         """
-        volume_recovery_target: float = 1.0
+        volume_recovery_target: float = dataclass_field(default=1.0, kw_only=True)
         """Packing fraction restored by :attr:`volume_recovery_time`.
 
         Particle volumes are ``(2 * radius)**3``, so particles spaced closer
@@ -1142,7 +1171,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Density-based divergence feedback may change without prior notice.
         """
-        volume_recovery_measurement: Literal["grid", "particle"] = "grid"
+        volume_recovery_measurement: Literal["grid", "particle"] = dataclass_field(default="grid", kw_only=True)
         """Measurement of the packing fractions for :attr:`volume_recovery_time`.
 
         Each particle contributes its deformed volume, the reference volume
@@ -1160,7 +1189,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Density measurements may change without prior notice.
         """
-        critical_fraction_measurement: Literal["grid", "particle"] = "particle"
+        critical_fraction_measurement: Literal["grid", "particle"] = dataclass_field(default="particle", kw_only=True)
         """Measurement of the packing fractions for :attr:`critical_fraction`.
 
         Accepts the measurements of :attr:`volume_recovery_measurement`. The
@@ -1171,7 +1200,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Density measurements may change without prior notice.
         """
-        collider_winding_number: bool = False
+        collider_winding_number: bool = dataclass_field(default=False, kw_only=True)
         """Sign collider distances with generalized winding numbers.
 
         Default collider meshes are then built with winding-number support, and planes become slabs below their
@@ -1190,7 +1219,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         cell. Particle collider bases (``"pic"`` and ``"picN"``) also take their gap from this
         reconstruction; grid collider bases keep the exact distance at their nodes.
         """
-        collider_contact_shielding: bool = True
+        collider_contact_shielding: bool = dataclass_field(default=True, kw_only=True)
         """Deactivate particle collider contacts that another particle shields from the collider.
 
         Applies to particle collider bases (``"pic"`` and ``"picN"``). A contact is shielded when
