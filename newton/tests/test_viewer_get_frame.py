@@ -254,8 +254,20 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 viewer.begin_frame(0.0)
                 viewer.end_frame()
                 frame = viewer.get_frame()
+                self.assertEqual(frame.shape, (48, 64, 3))
+                self.assertEqual((viewer.camera.width, viewer.camera.height), (64, 48))
 
-            self.assertEqual(frame.shape, (48, 64, 3))
+                # A resize that changes the aspect ratio must reach the camera
+                # too, or the projection stretches the captured frame.
+                viewer.renderer._on_window_resize(96, 48)
+                viewer.begin_frame(1.0)
+                viewer.end_frame()
+                frame = viewer.get_frame()
+                self.assertEqual(frame.shape, (48, 96, 3))
+                self.assertEqual((viewer.camera.width, viewer.camera.height), (96, 48))
+
+                viewer.set_model(_make_box_model("cpu"))
+                self.assertEqual((viewer.camera.width, viewer.camera.height), (96, 48))
         finally:
             viewer.close()
 
