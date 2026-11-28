@@ -421,6 +421,7 @@ def update_particle_strains(
     stress: fem.Field,
     dt: float,
     kinematic_elastic_strain: bool,
+    enable_compliance: bool,
     particle_flags: wp.array[wp.int32],
     particle_density: wp.array[float],
     particle_volume: wp.array[float],
@@ -449,6 +450,8 @@ def update_particle_strains(
 
     elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters)
     compliance, _poisson, _damping = extract_elastic_parameters(elastic_parameters_vec)
+    # Without compliance, every particle keeps the rigid elastic strain
+    compliance = wp.where(enable_compliance, compliance, 0.0)
 
     yield_parameters_vec = get_yield_parameters(s.qp_index, material_parameters, particle_Jp_new, dt)
     stress_0 = fem.SymmetricTensorMapper.value_to_dof_3d(stress(s))
@@ -772,6 +775,7 @@ def rotate_matrix_rows(
     eigenvectors: wp.array3d[float],
     mat_offsets: wp.array[int],
     mat_columns: wp.array[int],
+    mat_row_counts: wp.array[int],
     mat_values: wp.array[Any],
     mat_values_out: wp.array[Any],
 ):
@@ -780,7 +784,7 @@ def rotate_matrix_rows(
     nodes_per_elt = eigenvectors.shape[1]
     node_count = eigenvectors.shape[0] * nodes_per_elt
 
-    row = wps.bsr_row_index(mat_offsets, node_count, block)
+    row = wps.bsr_row_index(mat_offsets, node_count, block, mat_row_counts)
     if row == -1:
         return
 
@@ -793,7 +797,7 @@ def rotate_matrix_rows(
     val = mat_values.dtype(0.0)
     for k in range(nodes_per_elt):
         row_k = element * nodes_per_elt + k
-        block_k = wps.bsr_block_index(row_k, col, mat_offsets, mat_columns)
+        block_k = wps.bsr_block_index(row_k, col, mat_offsets, mat_columns, mat_row_counts)
         if block_k != -1:
             val += ev[elt_node, k] * mat_values[block_k]
 
@@ -886,6 +890,7 @@ def rotate_matrix_columns(
     eigenvectors: wp.array3d[float],
     mat_offsets: wp.array[int],
     mat_columns: wp.array[int],
+    mat_row_counts: wp.array[int],
     mat_values: wp.array[Any],
     mat_values_out: wp.array[Any],
 ):
@@ -894,7 +899,7 @@ def rotate_matrix_columns(
     nodes_per_elt = eigenvectors.shape[1]
     node_count = eigenvectors.shape[0] * nodes_per_elt
 
-    row = wps.bsr_row_index(mat_offsets, node_count, block)
+    row = wps.bsr_row_index(mat_offsets, node_count, block, mat_row_counts)
     if row == -1:
         return
 
@@ -908,7 +913,7 @@ def rotate_matrix_columns(
     val = mat_values.dtype(0.0)
     for k in range(nodes_per_elt):
         col_k = element * nodes_per_elt + k
-        block_k = wps.bsr_block_index(row, col_k, mat_offsets, mat_columns)
+        block_k = wps.bsr_block_index(row, col_k, mat_offsets, mat_columns, mat_row_counts)
         if block_k != -1:
             val += ev[elt_node, k] * mat_values[block_k]
 

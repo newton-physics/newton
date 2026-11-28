@@ -164,6 +164,14 @@ def compute_vel_node_multiplicity(
             multiplicity[bi, u_i] += 1.0
 
 
+@wp.func
+def compliance_row_end(offsets: wp.array[int], row_counts: wp.array[int], row: int):
+    """End of the active blocks of a compliance matrix row; ``row_counts`` is empty for compact storage."""
+    if row_counts:
+        return offsets[row] + row_counts[row]
+    return offsets[row + 1]
+
+
 @wp.kernel
 def compute_delassus_diagonal(
     strain_mat_offsets: wp.array[int],
@@ -172,6 +180,7 @@ def compute_delassus_diagonal(
     inv_volume: wp.array[float],
     compliance_mat_offsets: wp.array[int],
     compliance_mat_columns: wp.array[int],
+    compliance_mat_row_counts: wp.array[int],
     compliance_mat_values: wp.array[mat66],
     strain_batch: wp.array[int],
     mass_multiplicity: wp.array2d[float],
@@ -198,7 +207,9 @@ def compute_delassus_diagonal(
     block_beg = strain_mat_offsets[tau_i]
     block_end = strain_mat_offsets[tau_i + 1]
 
-    compliance_diag_index = sp.bsr_block_index(tau_i, tau_i, compliance_mat_offsets, compliance_mat_columns)
+    compliance_diag_index = sp.bsr_block_index(
+        tau_i, tau_i, compliance_mat_offsets, compliance_mat_columns, compliance_mat_row_counts
+    )
     if compliance_diag_index == -1:
         diag_block = mat66(0.0)
     else:
@@ -303,6 +314,7 @@ def preprocess_stress_and_strain(
 def postprocess_stress_and_strain(
     compliance_mat_offsets: wp.array[int],
     compliance_mat_columns: wp.array[int],
+    compliance_mat_row_counts: wp.array[int],
     compliance_mat_values: wp.array[mat66],
     strain_mat_offsets: wp.array[int],
     strain_mat_columns: wp.array[int],
@@ -338,7 +350,7 @@ def postprocess_stress_and_strain(
     offset_strain = unilateral_offset_to_strain_rhs(unilateral_strain_offset[tau_i])
     minus_elastic_strain = strain_rhs[tau_i] - offset_strain
     comp_block_beg = compliance_mat_offsets[tau_i]
-    comp_block_end = compliance_mat_offsets[tau_i + 1]
+    comp_block_end = compliance_row_end(compliance_mat_offsets, compliance_mat_row_counts, tau_i)
     for b in range(comp_block_beg, comp_block_end):
         sig_i = compliance_mat_columns[b]
         minus_elastic_strain += compliance_mat_values[b] * stress[sig_i]
@@ -853,6 +865,7 @@ def make_compute_local_strain(has_compliance_mat: bool = True, strain_velocity_n
         tau_i: int,
         compliance_mat_offsets: wp.array[int],
         compliance_mat_columns: wp.array[int],
+        compliance_mat_row_counts: wp.array[int],
         compliance_mat_values: wp.array[mat66],
         strain_mat_offsets: wp.array[int],
         strain_mat_columns: wp.array[int],
@@ -880,7 +893,7 @@ def make_compute_local_strain(has_compliance_mat: bool = True, strain_velocity_n
         # tau += C sigma
         if wp.static(has_compliance_mat):
             comp_block_beg = compliance_mat_offsets[tau_i]
-            comp_block_end = compliance_mat_offsets[tau_i + 1]
+            comp_block_end = compliance_row_end(compliance_mat_offsets, compliance_mat_row_counts, tau_i)
             for b in range(comp_block_beg, comp_block_end):
                 sig_i = compliance_mat_columns[b]
                 tau += compliance_mat_values[b] @ local_stress[sig_i]
@@ -958,6 +971,7 @@ def make_jacobi_solve_kernel(
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
         compliance_mat_columns: wp.array[int],
+        compliance_mat_row_counts: wp.array[int],
         local_compliance_mat_values: wp.array[mat66],
         strain_mat_offsets: wp.array[int],
         strain_mat_columns: wp.array[int],
@@ -979,6 +993,7 @@ def make_jacobi_solve_kernel(
             tau_i,
             compliance_mat_offsets,
             compliance_mat_columns,
+            compliance_mat_row_counts,
             local_compliance_mat_values,
             strain_mat_offsets,
             strain_mat_columns,
@@ -1142,6 +1157,7 @@ def make_solve_strain_rows(
         strain_node_volume: wp.array[float],
         compliance_offsets: wp.array[int],
         compliance_columns: wp.array[int],
+        compliance_row_counts: wp.array[int],
         compliance_values: wp.array[mat66],
         diagonal: wp.array[vec6],
         rotation: wp.array[mat55],
@@ -1187,7 +1203,9 @@ def make_solve_strain_rows(
                     v = velocity[node]
                 tau += _symmetric_part_op(weight, v)
             if wp.static(has_compliance_mat):
-                for b in range(compliance_offsets[tau_i], compliance_offsets[tau_i + 1]):
+                for b in range(
+                    compliance_offsets[tau_i], compliance_row_end(compliance_offsets, compliance_row_counts, tau_i)
+                ):
                     tau += compliance_values[b] @ stress[compliance_columns[b]]
             ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
                 tau_i, tau, yield_params, strain_node_volume, diagonal, rotation, stress
@@ -1284,6 +1302,7 @@ def make_gs_solve_kernel(
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
         compliance_mat_columns: wp.array[int],
+        compliance_mat_row_counts: wp.array[int],
         compliance_mat_values: wp.array[mat66],
         delassus_diagonal: wp.array[vec6],
         delassus_rotation: wp.array[mat55],
@@ -1324,6 +1343,7 @@ def make_gs_solve_kernel(
                 strain_node_volume,
                 compliance_mat_offsets,
                 compliance_mat_columns,
+                compliance_mat_row_counts,
                 compliance_mat_values,
                 delassus_diagonal,
                 delassus_rotation,

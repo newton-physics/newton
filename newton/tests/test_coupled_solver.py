@@ -4371,6 +4371,22 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [1.0, 0.5])
         np.testing.assert_allclose(self.model.particle_mass.numpy(), [2.0, 2.0])
 
+    def test_particle_properties_keep_view_particle_masses(self):
+        """Particle property updates keep scaled proxy masses and zero masses of particles another entry owns."""
+        _ParticleForceRecordingSolver.instances.clear()
+        coupled = self._make_coupled()
+        src_view = coupled.view("src")
+        dst_view = coupled.view("dst")
+
+        self.model.particle_mass.assign([4.0, 2.0])
+        self.model.particle_inv_mass.assign([0.25, 0.5])
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+
+        np.testing.assert_allclose(src_view.particle_mass.numpy(), [4.0, 0.0])
+        np.testing.assert_allclose(src_view.particle_inv_mass.numpy(), [0.25, 0.0])
+        np.testing.assert_allclose(dst_view.particle_mass.numpy(), [2.0, 2.0])
+        np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [0.5, 0.5])
+
     def test_particle_proxy_feedback_is_applied_on_next_step(self):
         _ParticleForceRecordingSolver.instances.clear()
         coupled = self._make_coupled()
@@ -4534,6 +4550,42 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         self.assertEqual(src_view.particle_flags.numpy()[0] & proxy_flag, 0)
         self.assertNotEqual(dst_view.particle_flags.numpy()[0] & proxy_flag, 0)
         self.assertEqual(self.model.particle_flags.numpy()[0] & proxy_flag, 0)
+
+    def test_particle_flags_notify_refreshes_view_flags_in_place(self):
+        """PARTICLE_PROPERTIES re-derives view-local particle flags while keeping disabled and proxy marks."""
+        coupled = self._make_coupled()
+        active = int(newton.ParticleFlags.ACTIVE)
+        proxy = int(newton.ParticleFlags.PROXY)
+        views = {name: coupled.view(name) for name in ("src", "dst")}
+        pointers = {name: view.particle_flags.ptr for name, view in views.items()}
+
+        def view_flags(name):
+            local_to_global = coupled._entries[name].particle_local_to_global.numpy()
+            return dict(zip(local_to_global.tolist(), views[name].particle_flags.numpy().tolist(), strict=True))
+
+        def check(parent_flags):
+            src, dst = view_flags("src"), view_flags("dst")
+            # src owns particle 0; particle 1 belongs to dst and stays disabled in the src view.
+            self.assertEqual(src[0], parent_flags[0])
+            self.assertEqual(src.get(1, 0) & active, 0)
+            # dst owns particle 1 and keeps particle 0 as a proxy.
+            self.assertEqual(dst[1], parent_flags[1])
+            self.assertEqual(dst[0], parent_flags[0] | proxy)
+            for name, view in views.items():
+                self.assertEqual(view.particle_flags.ptr, pointers[name])
+
+        flags = self.model.particle_flags.numpy()
+        check(flags)
+
+        flags[:] &= ~active
+        self.model.particle_flags.assign(flags)
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+        check(flags)
+
+        flags[:] |= active
+        self.model.particle_flags.assign(flags)
+        coupled.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+        check(flags)
 
     def test_xpbd_ignores_proxy_proxy_particle_contacts(self):
         flags = int(newton.ParticleFlags.ACTIVE) | int(newton.ParticleFlags.PROXY)

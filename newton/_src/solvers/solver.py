@@ -1365,6 +1365,12 @@ class SolverBase:
           properties have changed.
         * ``ModelFlags.ACTUATOR_PROPERTIES``: Actuator gains, biases, limits,
           or force properties have changed.
+        * ``ModelFlags.PARTICLE_PROPERTIES``: Particle flags, masses, radii, or
+          per-particle solver attributes have changed, for example particles
+          activated or deactivated at runtime. Solvers that read these arrays
+          directly may ignore it; solvers that derive data from them refresh
+          it, on the device where possible, so that this notification can be
+          issued every step and recorded in a CUDA graph.
 
         :meth:`Model.get_attribute_update_flags() <newton.Model.get_attribute_update_flags>`
         returns the flags that cover an edited attribute, and

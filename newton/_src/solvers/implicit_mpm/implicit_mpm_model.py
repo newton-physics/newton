@@ -200,12 +200,58 @@ def _compute_particle_volume_density(
     particle_mass: wp.array[float],
     particle_volume: wp.array[float],
     particle_density: wp.array[float],
+    max_particle_radius: wp.array[float],
 ):
     i = wp.tid()
     r = particle_radius[i]
     v = 8.0 * r * r * r
     particle_volume[i] = v
     particle_density[i] = particle_mass[i] / v
+    wp.atomic_max(max_particle_radius, 0, r)
+
+
+@wp.kernel
+def _refresh_particle_masks(
+    model_flags: wp.array[wp.int32],
+    is_collider_particle: wp.array[wp.int32],
+    particle_volume: wp.array[float],
+    particle_density: wp.array[float],
+    particle_world: wp.array[wp.int32],
+    separate_worlds: int,
+    young_modulus: wp.array[float],
+    transfer_flags: wp.array[wp.int32],
+    material_flags: wp.array[wp.int32],
+    material_particle_volume: wp.array[float],
+    has_compliant_particles: wp.array[wp.int32],
+    environment_max_particle_density: wp.array[float],
+):
+    """Derive the transfer and material masks from ``model.particle_flags``.
+
+    Collider particles are never active for either transfer or material;
+    proxy particles transfer momentum but carry no material. Also reduces the
+    densest active material of each environment (a single one without
+    separate worlds); kinematic particles have zero density and stay out of
+    the maximum.
+    """
+    i = wp.tid()
+    f = model_flags[i]
+    if is_collider_particle[i] != 0:
+        f = f & ~newton.ParticleFlags.ACTIVE
+    transfer_flags[i] = f
+    if f & newton.ParticleFlags.PROXY:
+        f = f & ~newton.ParticleFlags.ACTIVE
+    material_flags[i] = f
+    if f & newton.ParticleFlags.ACTIVE:
+        material_particle_volume[i] = particle_volume[i]
+        if young_modulus[i] < _INFINITY:
+            has_compliant_particles[0] = 1
+        environment = 0
+        if separate_worlds != 0:
+            environment = particle_world[i]
+        if environment >= 0 and environment < environment_max_particle_density.shape[0]:
+            wp.atomic_max(environment_max_particle_density, environment, particle_density[i])
+    else:
+        material_particle_volume[i] = 0.0
 
 
 def _get_body_collision_shapes(model: newton.Model, body_index: int):
@@ -357,24 +403,31 @@ class ImplicitMPMModel:
         self.collider_body_q = None
         self.deformable_collider_vertex_ranges: list[tuple[int, int, int]] = []
 
+        self.enable_compliance = bool(options.enable_compliance)
+        """Whether the elasticity system is built, see ``SolverImplicitMPM.Config.enable_compliance``."""
+
         self.notify_particle_material_changed()
         self.setup_collider()
 
     def notify_particle_material_changed(self):
-        """Rebind per-particle material arrays and refresh derived state.
+        """Refresh the solver data derived from the particle properties.
 
-        Called once during ``__init__`` and whenever particle counts, masses,
-        radii, or any ``model.mpm.*`` material array are reassigned. Binds
-        references from the ``model.mpm.*`` namespace (registered via
+        Called once during ``__init__`` and whenever particle flags, masses,
+        radii, or any ``model.mpm.*`` material array change. The particle
+        count must not change after construction. Binds references from the
+        ``model.mpm.*`` namespace (registered via
         :meth:`SolverImplicitMPM.register_custom_attributes`) into
-        ``self.material_parameters``, then recomputes:
+        ``self.material_parameters``, then recomputes on the device:
 
-        - ``particle_radius``, ``particle_volume``, and ``particle_density``,
-          from ``model.particle_radius`` and ``model.particle_mass``.
-        - Cached extrema (``min_young_modulus``, ``max_hardening``,
-          ``max_particle_radius``, ``environment_max_particle_density``) and feature
-          flags (``has_viscosity``, ``has_dilatancy``) used to toggle code
-          paths without rescanning every step.
+        - ``particle_volume`` and ``particle_density``, from
+          ``model.particle_radius`` and ``model.particle_mass``.
+        - The transfer and material particle masks, the compliant-particle
+          flag, and ``environment_max_particle_density`` (see
+          :meth:`refresh_particle_flags`).
+        - ``max_particle_radius``, the largest particle radius.
+
+        After the first call, this only launches kernels that write existing
+        arrays, so it may be recorded in a CUDA graph.
         """
         model = self.model
 
@@ -397,65 +450,90 @@ class ImplicitMPMModel:
         with wp.ScopedDevice(model.device):
             num_particles = model.particle_q.shape[0]
             self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
-            self.max_particle_radius = float(np.max(self.particle_radius.numpy(), initial=0.0))
             self.particle_volume = _reuse_or_allocate(getattr(self, "particle_volume", None), num_particles)
             self.particle_density = _reuse_or_allocate(getattr(self, "particle_density", None), num_particles)
+            self.max_particle_radius = _reuse_or_allocate(getattr(self, "max_particle_radius", None), 1)
+            self.max_particle_radius.zero_()
             wp.launch(
                 _compute_particle_volume_density,
                 dim=num_particles,
                 inputs=[self.particle_radius, model.particle_mass],
-                outputs=[self.particle_volume, self.particle_density],
+                outputs=[self.particle_volume, self.particle_density, self.max_particle_radius],
             )
 
-        self._refresh_particle_flags_and_extrema()
+        self._require_particle_arrays()
+        self.refresh_particle_flags()
 
-    def _refresh_particle_flags_and_extrema(self):
-        """Refresh transfer/material particle masks and material extrema."""
+    def refresh_particle_flags(self):
+        """Refresh the transfer and material particle masks from ``model.particle_flags``.
+
+        Runs a single kernel that writes the existing ``particle_flags``,
+        ``material_particle_flags``, ``material_particle_volume``,
+        ``has_compliant_particles`` and ``environment_max_particle_density``
+        arrays in place: no host synchronization or allocation, so it may be
+        called every step and recorded in a CUDA graph.
+        """
         model = self.model
-        active_flag = int(newton.ParticleFlags.ACTIVE)
-        proxy_flag = int(newton.ParticleFlags.PROXY)
+        self.has_compliant_particles.zero_()
+        self.environment_max_particle_density.zero_()
+        wp.launch(
+            _refresh_particle_masks,
+            dim=model.particle_count,
+            inputs=[
+                model.particle_flags,
+                self._is_collider_particle,
+                self.particle_volume,
+                self.particle_density,
+                model.particle_world,
+                int(self._separate_worlds),
+                self.material_parameters.young_modulus,
+            ],
+            outputs=[
+                self.particle_flags,
+                self.material_particle_flags,
+                self.material_particle_volume,
+                self.has_compliant_particles,
+                self.environment_max_particle_density,
+            ],
+            device=model.device,
+        )
 
-        transfer_flags = model.particle_flags.numpy().copy()
-        material_flags = transfer_flags.copy()
+    def _require_particle_arrays(self):
+        """Allocate the particle masks on first use; later calls keep the same arrays.
 
+        The arrays are written in place afterwards, so arrays bound in captured graphs stay valid.
+        """
+        model = self.model
+        num_particles = model.particle_count
+        with wp.ScopedDevice(model.device):
+            self.particle_flags = _reuse_or_allocate(getattr(self, "particle_flags", None), num_particles, wp.int32)
+            self.material_particle_flags = _reuse_or_allocate(
+                getattr(self, "material_particle_flags", None), num_particles, wp.int32
+            )
+            self.material_particle_volume = _reuse_or_allocate(
+                getattr(self, "material_particle_volume", None), num_particles
+            )
+            if getattr(self, "has_compliant_particles", None) is None:
+                # Device flag, nonzero when an active material particle is compliant;
+                # selects the elasticity assembly in a conditional graph node.
+                self.has_compliant_particles = wp.zeros(1, dtype=wp.int32)
+            if getattr(self, "environment_max_particle_density", None) is None:
+                # Densest active material of each environment; sets the rheology regularization.
+                environment_count = model.world_count if self._separate_worlds else 1
+                self.environment_max_particle_density = wp.zeros(environment_count, dtype=float)
+            if getattr(self, "_is_collider_particle", None) is None:
+                # Filled by setup_collider(); no particle is a collider before that.
+                self._is_collider_particle = wp.zeros(num_particles, dtype=wp.int32)
+
+    def _refresh_collider_particle_mask(self):
+        """Mark the particles that belong to deformable colliders, which never carry material."""
+        is_collider_particle = np.zeros(self.model.particle_count, dtype=np.int32)
         collider_particle_ids = getattr(self.collider, "collider_particle_ids", None)
         if collider_particle_ids is not None:
             collider_particle_ids_np = collider_particle_ids.numpy()
             if collider_particle_ids_np.size:
-                transfer_flags[collider_particle_ids_np] &= ~active_flag
-                material_flags[collider_particle_ids_np] &= ~active_flag
-
-        proxy_mask = (material_flags & proxy_flag) != 0
-        material_flags[proxy_mask] &= ~active_flag
-
-        self.particle_flags = wp.array(transfer_flags, dtype=wp.int32, device=model.device)
-        self.material_particle_flags = wp.array(material_flags, dtype=wp.int32, device=model.device)
-
-        material_active = (material_flags & active_flag) != 0
-        material_particle_volume = self.particle_volume.numpy().copy()
-        material_particle_volume[~material_active] = 0.0
-        self.material_particle_volume = wp.array(material_particle_volume, dtype=float, device=model.device)
-
-        # Densest material of each independent environment (all particles share one without separate worlds);
-        # kinematic particles have zero density and stay out of the maximum
-        material_density = self.particle_density.numpy()[material_active]
-        environment_max_density = np.zeros(model.world_count if self._separate_worlds else 1, dtype=np.float32)
-        if self._separate_worlds:
-            np.maximum.at(environment_max_density, model.particle_world.numpy()[material_active], material_density)
-        else:
-            environment_max_density[0] = np.max(material_density, initial=0.0)
-        self.environment_max_particle_density = wp.array(environment_max_density, dtype=float, device=model.device)
-
-        if np.any(material_active):
-            self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()[material_active]))
-            self.max_hardening = float(np.max(self.material_parameters.hardening.numpy()[material_active]))
-            self.has_viscosity = bool(np.any(self.material_parameters.viscosity.numpy()[material_active] > 0.0))
-            self.has_dilatancy = bool(np.any(self.material_parameters.dilatancy.numpy()[material_active] > 0.0))
-        else:
-            self.min_young_modulus = math.inf
-            self.max_hardening = 0.0
-            self.has_viscosity = False
-            self.has_dilatancy = False
+                is_collider_particle[collider_particle_ids_np] = 1
+        self._is_collider_particle.assign(is_collider_particle)
 
     def notify_collider_changed(self, body_mass: np.ndarray | None = None):
         """Refresh cached extrema for collider parameters.
@@ -998,16 +1076,9 @@ class ImplicitMPMModel:
             if collider_particle_offsets[collider_id + 1] > collider_particle_offsets[collider_id]
         ]
 
-        self._refresh_particle_flags_and_extrema()
+        self._refresh_collider_particle_mask()
+        self.refresh_particle_flags()
         self.notify_collider_changed(effective_body_mass)
-
-    @property
-    def has_compliant_particles(self):
-        return self.min_young_modulus < _INFINITY
-
-    @property
-    def has_hardening(self):
-        return self.max_hardening > 0.0
 
     @property
     def has_compliant_colliders(self):

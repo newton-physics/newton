@@ -38,7 +38,7 @@ class ModelFlags(IntEnum):
     """Indicates shape property updates: shape_transform, shape_scale, shape_margin, shape_gap, shape_collision_radius, shape_is_solid, and the shape_material_* coefficients such as shape_material_mu, shape_material_mu_static, shape_material_restitution, shape_material_ke, shape_material_kd, shape_material_mu_torsional, and shape_material_mu_rolling."""
 
     MODEL_PROPERTIES = 1 << 5
-    """Indicates model property updates: gravity, particle_mass, particle_radius, particle_flags, and other global parameters."""
+    """Indicates model property updates: gravity and other global parameters. Particle attributes are :attr:`PARTICLE_PROPERTIES`."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
     """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp), mimic relationships (joint_mimic_coeffs), and particle-body attachments (attachment_particle_body_stiffness, attachment_particle_body_damping, attachment_particle_body_enabled)."""
@@ -66,6 +66,9 @@ class ModelFlags(IntEnum):
         Body variants, including this flag, may change without a deprecation period.
     """
 
+    PARTICLE_PROPERTIES = 1 << 13
+    """Indicates particle property updates: particle_flags (for example particles activated or deactivated at runtime), particle_mass, particle_inv_mass, particle_radius, and per-particle solver attributes such as the ``mpm:*`` material parameters. :class:`~newton.solvers.SolverImplicitMPM` refreshes the data it derives from them on the device, so the notification may be issued every step and recorded in a CUDA graph."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -80,6 +83,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
         | SHAPE_TYPE_AND_SOURCE
+        | PARTICLE_PROPERTIES
     )
     """Indicates all property updates."""
 

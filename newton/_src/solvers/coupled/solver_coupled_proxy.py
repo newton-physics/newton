@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected
-from ...sim import JointType, StateFlags
+from ...sim import JointType, ModelFlags, StateFlags
 from .interface import (
     CouplingEndpointKind,
 )
@@ -1333,10 +1333,13 @@ class SolverCoupledProxy(SolverCoupled):
             self._apply_particle_mass_override(dst, proxy.proxy_ids_local, proxy_masses)
 
     def notify_model_changed(self, flags: int) -> None:
-        """Refresh proxy inertia after source solvers consume model updates."""
+        """Refresh proxy masses after source solvers consume model updates."""
         super().notify_model_changed(flags)
         if int(flags) & self._effective_mass_refresh_flags():
             self._apply_proxy_body_effective_masses()
+        if int(flags) & int(ModelFlags.PARTICLE_PROPERTIES):
+            # The refresh above copied parent masses over the proxy particle masses.
+            self._apply_proxy_particle_effective_masses()
 
     def _step_coupled(
         self,

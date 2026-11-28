@@ -149,6 +149,30 @@ def test_project_outside_keeps_particle_radius(test, device):
                 test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), height, delta=1.0e-5)
 
 
+def test_captured_query_follows_radius_growth(test, device):
+    """Reach collider surfaces within a radius grown after capture with particle contacts."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        builder.add_particle(pos=(0.5, 0.5, 0.2), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
+        model = builder.finalize(device=device)
+        voxel_size = 0.1
+        solver = SolverImplicitMPM(model, config=_config(voxel_size))
+        state = model.state()
+        # The surface lies beyond the initial query distance, a cell diagonal plus the radius
+        solver.project_outside(state, state, 0.1)
+        test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), 0.2, delta=1.0e-6)
+        with wp.ScopedCapture() as capture:
+            solver.project_outside(state, state, 0.1)
+
+        model.particle_radius.fill_(0.25)
+        solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
+        wp.capture_launch(capture.graph)
+        # Projection lets particles sink up to the default threshold of 0.01 voxel
+        test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), 0.25 - 0.01 * voxel_size, delta=1.0e-5)
+
+
 def test_sdf_gradient_normals_particle_contacts(test, device):
     """Give particles beside a box wall normals from the collider distance gradient, pointing out of the wall."""
     with wp.ScopedDevice(device):
@@ -571,6 +595,13 @@ for function in (
     test_recovery_config_validation,
 ):
     add_function_test(TestImplicitMPMRecovery, function.__name__, function, devices=get_test_devices(mode="basic"))
+
+add_function_test(
+    TestImplicitMPMRecovery,
+    test_captured_query_follows_radius_growth.__name__,
+    test_captured_query_follows_radius_growth,
+    devices=get_cuda_test_devices(mode="basic"),
+)
 
 # Sparse grids with separate worlds build their per-world volumes on CUDA devices
 add_function_test(

@@ -418,6 +418,7 @@ def test_delassus_majorizer(test, device):
             wp.empty(0, dtype=float),
             wp.array(np.arange(count + 1), dtype=int),
             wp.array(np.arange(count), dtype=int),
+            None,
             wp.array(values, dtype=mat66),
             wp.empty(0, dtype=int),
             wp.empty((0, 0), dtype=float),
@@ -511,6 +512,7 @@ def _postprocessed_plastic_strain(diagonal_scale, device):
         inputs=[
             wp.array([0, 0], dtype=int, device=device),
             wp.empty(0, dtype=int, device=device),
+            None,
             wp.empty(0, dtype=mat66, device=device),
             wp.array([0, 1], dtype=int, device=device),
             wp.array([0], dtype=int, device=device),
@@ -1534,7 +1536,7 @@ def test_unbinned_particles_keep_state(test, device):
             frozen = initial_flags.copy()
             frozen[half:] &= ~active
             model.particle_flags.assign(frozen)
-            solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+            solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
             before = {name: getattr(state.mpm, name).numpy()[half:].copy() for name in history}
             next_state = model.state()
             solver.step(state, next_state, None, None, 1.0 / 240.0)
@@ -1557,7 +1559,7 @@ def test_unbinned_particles_keep_state(test, device):
             frozen = initial_flags.copy()
             frozen[::2] &= ~active
             model.particle_flags.assign(frozen)
-            solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+            solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
             velocity = state.particle_qd.numpy()[::2].copy()
             test.assertLess(velocity[:, 2].max(), -0.5)
             next_state = model.state()
@@ -3251,7 +3253,6 @@ def test_inactive_viscous_particles(test, device):
     )
     state = model.state()
     initial = state.particle_q.numpy().copy()
-    test.assertTrue(solver._mpm_model.has_viscosity)
     np.testing.assert_array_equal(solver._mpm_model.material_particle_volume.numpy()[-2:], 0.0)
 
     def assert_finite():
@@ -3273,7 +3274,7 @@ def test_inactive_viscous_particles(test, device):
     flags = model.particle_flags.numpy()
     flags[-2] |= int(newton.ParticleFlags.ACTIVE)
     model.particle_flags.assign(flags)
-    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.PARTICLE_PROPERTIES)
     test.assertGreater(solver._mpm_model.material_particle_volume.numpy()[-2], 0.0)
     solver.step(state, state, None, None, 1.0 / 240.0)
     assert_finite()

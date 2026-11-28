@@ -115,6 +115,14 @@ class Collider:
     query_max_dist: float
     """Maximum distance to query collider sdf"""
 
+    max_particle_radius: wp.array[float]
+    """Optional largest particle radius [m], read on the device from ``max_particle_radius[0]``, for contacts
+    measured from particle surfaces. Queries then reach at least :attr:`query_reach` beyond it. Shape (1,)"""
+
+    query_reach: float
+    """Distance [m] that queries reach beyond the largest particle radius, when :attr:`max_particle_radius`
+    is set."""
+
     collider_winding_number: wp.array[int]
     """Per collider, nonzero to sign distances with generalized winding numbers (closed meshes built with
     ``support_winding_number=True``); zero to sign them from the average normal around the closest point."""
@@ -246,6 +254,15 @@ def get_average_face_normal(
 
 
 @wp.func
+def collider_query_distance(collider: Collider, collider_id: int):
+    """Closest-point query distance [m] for one collider, including its thickness and the largest particle radius."""
+    max_dist = collider.query_max_dist
+    if collider.max_particle_radius:
+        max_dist = wp.max(max_dist, collider.max_particle_radius[0] + collider.query_reach)
+    return max_dist + collider.collider_max_thickness[collider_id]
+
+
+@wp.func
 def _query_collider_sdf(
     x: wp.vec3,
     collider: Collider,
@@ -253,7 +270,6 @@ def _query_collider_sdf(
     stable_collider_id: int,
 ):
     mesh = collider.collider_mesh[stable_collider_id]
-    thickness = collider.collider_max_thickness[stable_collider_id]
     body_id = collider.collider_body_index[stable_collider_id]
 
     if body_id >= 0:
@@ -263,7 +279,7 @@ def _query_collider_sdf(
     else:
         x_local = x
 
-    max_dist = collider.query_max_dist + thickness
+    max_dist = collider_query_distance(collider, stable_collider_id)
 
     winding = collider.collider_winding_number[stable_collider_id] != 0
     if winding:
@@ -1248,7 +1264,7 @@ def fill_collider_coupling_matrices(
     elif collider_is_deformable(collider_id, collider):
         mesh = collider.collider_mesh[collider_id]
         x = node_positions[i]
-        max_dist = collider.query_max_dist + collider.collider_max_thickness[collider_id]
+        max_dist = collider_query_distance(collider, collider_id)
         query = wp.mesh_query_point_no_sign(mesh, x, max_dist)
         if not query.result:
             return
