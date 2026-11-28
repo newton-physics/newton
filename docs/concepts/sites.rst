@@ -69,7 +69,7 @@ Sites can also be attached to the world frame (body=-1) to create fixed referenc
 Alternative: Using Shape Methods with ``as_site=True``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Sites can also be created using shape creation methods (``add_shape_sphere``, ``add_shape_box``, ``add_shape_capsule``, ``add_shape_cylinder``, ``add_shape_ellipsoid``, ``add_shape_cone``) by passing ``as_site=True``. This is particularly useful when programmatically generating shapes or conditionally creating sites:
+Sites can also be created using shape creation methods (``add_shape_sphere``, ``add_shape_box``, ``add_shape_capsule``, ``add_shape_cylinder``, ``add_shape_ellipsoid``, ``add_shape_cone``, ``add_shape_plane``, ``add_shape_mesh``, ``add_shape_gaussian``) by passing ``as_site=True``. Note that ``add_shape_gaussian(..., as_site=True)`` cannot be combined with a non-``None`` ``collision_proxy`` (raises ``ValueError``). This is particularly useful when programmatically generating shapes or conditionally creating sites:
 
 .. testcode:: sites-shape-methods
 
